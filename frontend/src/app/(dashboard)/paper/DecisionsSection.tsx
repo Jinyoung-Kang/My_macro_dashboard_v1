@@ -7,11 +7,13 @@ import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useElapsedSeconds } from "@/hooks/useElapsedSeconds";
 import { apiPost } from "@/lib/api";
 import { endpoints } from "@/lib/endpoints";
-import { EMPTY, formatKst } from "@/lib/format";
+import { EMPTY, formatKst, formatWithUnit } from "@/lib/format";
 import {
   type Badge,
   bookOptions,
   candidatesNote,
+  CLAUDE_COST_NOTE,
+  claudeDecisionView,
   type ClosedSignalRow,
   type ContributionRow,
   decisionBookNote,
@@ -50,15 +52,18 @@ import type {
   PaperOrder,
   PaperRunDecisionResult,
 } from "@/lib/types";
+import { ClaudeDecisionBody } from "./ClaudeDecisionBody";
 import { GateIndicatorBody } from "./GateIndicatorBody";
 
 /** 결정 목록에 보일 최근 건수. */
 const RECENT_LIMIT = 50;
 
 /**
- * 결정 로그 탭 — 책(규칙·Claude)을 골라 거래일마다의 결정 기록을 봅니다. 행을 펼치면 그 결정의 상세(선정·신호 풀·13F 신호 이벤트·
- * 매수 후보와 점수 기여·매도 신호·주문·고르지 못한 후보·게이트 참고)를 그때 읽습니다 — 목록 50건의 상세를 미리 다 읽으면 신호
- * 이벤트가 수백 줄씩 붙어 탭이 무거워집니다.
+ * 결정 로그 탭 — 책(규칙·Claude)을 골라 거래일마다의 결정 기록을 봅니다. 행을 펼치면 그 결정의 상세(규칙 책: 선정·신호 풀·13F 신호
+ * 이벤트·매수 후보와 점수 기여·매도 신호·주문·고르지 못한 후보·게이트 참고, Claude 책: 판단·제안 주문·검증·사용량·입력 패킷)를 그때
+ * 읽습니다 — 목록 50건의 상세를 미리 다 읽으면 신호 이벤트·패킷이 수백 줄씩 붙어 탭이 무거워집니다.
+ *
+ * Claude 책의 '지금 결정 실행'은 Claude를 한 번 부르므로(비용·하루 호출 상한) 확인 단계를 한 번 거칩니다.
  *
  * 숫자는 결정 기록(서버 계산) 그대로이고, 화면은 기관 이름을 붙이고 표로 늘어놓기만 합니다(ADR 0004). 책 목록은 개요 응답에서
  * 받습니다(page.tsx) — 수동 결정이 성공하면 이 탭의 목록과 개요(onChanged)를 함께 다시 읽습니다(결정이 주문을 내면 책 카드가 바뀜).
@@ -76,6 +81,8 @@ export function DecisionsSection({ books, onChanged }: { books: PaperBookSummary
   // 버튼 결과는 그 책을 보고 있을 때만 — 다른 책으로 바꾼 뒤 옛 책의 결과가 새 책 이름 아래 남지 않게(보유 탭과 같음).
   const [ranFor, setRanFor] = useState<string | null>(null);
   const [open, setOpen] = useState<number[]>([]);
+  // Claude 책 수동 결정의 확인 단계 — 어느 책에서 열었는지(책을 바꾸면 닫힌 것으로 봄).
+  const [confirmingFor, setConfirmingFor] = useState<string | null>(null);
 
   if (!code) {
     return <Banner tone="info">결정을 내는 책이 아직 없습니다 — 개요 탭에서 초기화하면 규칙 책·Claude 책이 생깁니다.</Banner>;
@@ -85,10 +92,14 @@ export function DecisionsSection({ books, onChanged }: { books: PaperBookSummary
   const blocked = decisionRunBlocked(book);
   const runView = run.result && ranFor === code ? runDecisionResultView(run.result) : null;
   const runError = run.error && ranFor === code ? run.error : null;
+  const claude = book?.kind === "CLAUDE";
+  const confirming = claude && confirmingFor === code;
 
   const runNow = async () => {
     setRanFor(code);
-    if (await run.run(code)) {
+    const ok = await run.run(code);
+    setConfirmingFor(null);
+    if (ok) {
       void list.reload();
       onChanged();
     }
@@ -109,12 +120,26 @@ export function DecisionsSection({ books, onChanged }: { books: PaperBookSummary
             }}
             options={bookOptions(decisionBooks(books))}
           />
-          <Button onClick={() => void runNow()} disabled={run.busy || blocked !== null}>
+          <Button
+            onClick={() => (claude ? setConfirmingFor(code) : void runNow())}
+            disabled={run.busy || blocked !== null || confirming}
+          >
             {run.busy ? `결정 중… ${elapsed}초` : "지금 결정 실행"}
           </Button>
         </div>
         <p className="mt-3 text-xs leading-relaxed text-muted">{decisionBookNote(book?.kind)}</p>
         {blocked && <p className="mt-2 text-xs text-warn">{blocked}</p>}
+        {confirming && (
+          <div className="mt-3 flex flex-col gap-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-3">
+            <p className="text-sm leading-relaxed text-warn">Claude를 지금 부를까요? {CLAUDE_COST_NOTE}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="primary" onClick={() => void runNow()} disabled={run.busy}>
+                {run.busy ? `결정 중… ${elapsed}초` : "결정 실행 확인"}
+              </Button>
+              <Button onClick={() => setConfirmingFor(null)} disabled={run.busy}>취소</Button>
+            </div>
+          </div>
+        )}
         {runError && <div className="mt-3"><Banner tone="warn">{runError}</Banner></div>}
         {runView && <div className="mt-3"><Banner tone={runView.tone}>{runView.text}</Banner></div>}
       </Card>
@@ -127,7 +152,9 @@ export function DecisionsSection({ books, onChanged }: { books: PaperBookSummary
         {list.loading && !list.data && <Loading label="결정 기록을 읽는 중…" />}
         {list.error && <ErrorState message={list.error} onRetry={list.reload} />}
         {list.data && !list.data.available && <Banner tone="warn">{list.data.message ?? "결정 기록을 읽을 수 없습니다."}</Banner>}
-        {list.data?.available && <DecisionTable rows={list.data.decisions ?? []} open={open} onToggle={toggle} />}
+        {list.data?.available && (
+          <DecisionTable rows={list.data.decisions ?? []} open={open} onToggle={toggle} showExposure={claude} />
+        )}
       </Card>
     </>
   );
@@ -145,10 +172,13 @@ function DecisionTable({
   rows,
   open,
   onToggle,
+  showExposure,
 }: {
   rows: PaperDecisionSummary[];
   open: readonly number[];
   onToggle: (id: number) => void;
+  /** Claude 책이면 목표 노출 칸을 더합니다(규칙 책은 늘 비어 있는 칸이라 그리지 않음). */
+  showExposure: boolean;
 }) {
   if (rows.length === 0) {
     return (
@@ -186,6 +216,14 @@ function DecisionTable({
       ),
     },
     { key: "orders", header: "주문", align: "right", render: (row) => <span className="whitespace-nowrap">{decisionOrdersText(row)}</span> },
+    ...(showExposure
+      ? [{
+        key: "exposure",
+        header: "목표 노출",
+        align: "right" as const,
+        render: (row: PaperDecisionSummary) => <span className="whitespace-nowrap">{formatWithUnit(row.targetExposurePct, 1, "%")}</span>,
+      }]
+      : []),
     { key: "summary", header: "요약", render: (row) => <span className="text-xs text-body">{row.summary || EMPTY}</span> },
     {
       key: "prices",
@@ -240,7 +278,8 @@ function DecisionTable({
 
 /**
  * 결정 한 건의 상세 — 펼칠 때 GET /api/paper/decisions/{id}를 한 번 읽습니다(결정 기록은 바뀌지 않아 자동 갱신하지 않음).
- * 규칙 책 기록 모양이 아니면(Claude 책 기록 등) 표 대신 원본 JSON만 보입니다 — 모르는 모양을 빈 표로 그리면 "신호 없음"으로 읽힙니다.
+ * Claude 책 기록이면 판단·제안 주문·검증·사용량을, 규칙 책 기록이면 선정·신호 표를 그립니다. 둘 다 아닌 모양이면 표 대신 원본 JSON만
+ * 보입니다 — 모르는 모양을 빈 표로 그리면 "신호 없음"으로 읽힙니다.
  */
 function DecisionDetail({ id }: { id: number }) {
   const { data, loading, error, reload } = useApi<PaperDecisionDetailResponse>(endpoints.paper.decision(id));
@@ -252,10 +291,23 @@ function DecisionDetail({ id }: { id: number }) {
   const decision = data.decision ?? null;
   if (!decision) return <Banner tone="warn">결정 기록을 찾지 못했습니다.</Banner>;
 
+  const claude = claudeDecisionView({
+    book: decision.book,
+    status: decision.status,
+    response: decision.response,
+    usage: decision.usage,
+    targetExposurePct: decision.targetExposurePct,
+    exposureMismatch: decision.exposureMismatch,
+  });
   const view = ruleDecisionView(decision.response);
+  // 규칙 책 표(선정·신호·게이트)는 규칙 책 기록에만 — Claude 기록에 참고용 gate 같은 키가 있어도 빈 신호 표를 그리지 않습니다.
+  // 처리 메모(notes)는 두 책 모두 그대로 보입니다.
+  const rules = view.recognized && !claude.recognized;
+  const selection = claude.recognized ? null : view.selection;
   const orders = data.orders ?? [];
   const response = prettyJson(decision.response);
   const packet = prettyJson(decision.packet);
+  const raw = typeof decision.responseRaw === "string" && decision.responseRaw ? decision.responseRaw : null;
 
   return (
     <section aria-label={`${decision.asOfTradingDate} ${decisionKindLabel(decision.kind)} 상세`} className="flex flex-col gap-4">
@@ -269,6 +321,8 @@ function DecisionDetail({ id }: { id: number }) {
       </dl>
       {decision.error && <Banner tone="warn">오류 — {decision.error}</Banner>}
 
+      {claude.recognized && <ClaudeDecisionBody view={claude} />}
+
       {view.notes.length > 0 && (
         <Part title="처리 메모">
           <ul aria-label="결정 메모" className="list-disc space-y-0.5 pl-5 text-xs text-body">
@@ -277,23 +331,23 @@ function DecisionDetail({ id }: { id: number }) {
         </Part>
       )}
 
-      {view.selection && (
+      {selection && (
         <Part
-          title={`선정 — ${view.selection.asOf} 기준`}
-          note={view.selection.groupANames !== null || view.selection.pool.length > 0
+          title={`선정 — ${selection.asOf} 기준`}
+          note={selection.groupANames !== null || selection.pool.length > 0
             ? [
-              view.selection.groupANames !== null ? `그룹 A: ${view.selection.groupANames}.` : null,
-              view.selection.groupBNames !== null ? `그룹 B: ${view.selection.groupBNames}.` : null,
+              selection.groupANames !== null ? `그룹 A: ${selection.groupANames}.` : null,
+              selection.groupBNames !== null ? `그룹 B: ${selection.groupBNames}.` : null,
               `신호 풀(A ∪ B)과 기관 가중은 선정 때 값입니다${
-                view.selection.groupWeightA !== null ? `(그룹 A 몫 ${formatRatioPercent(view.selection.groupWeightA)})` : ""
+                selection.groupWeightA !== null ? `(그룹 A 몫 ${formatRatioPercent(selection.groupWeightA)})` : ""
               }. 순위표는 그룹마다 선정 때의 상위 10입니다(공시일 기준 복제 수익률).`,
             ].filter(Boolean).join(" ")
-            : `신호 기관: ${view.selection.selectedNames}. 순위표는 선정 때의 상위 10입니다(공시일 기준 복제 수익률).`}
+            : `신호 기관: ${selection.selectedNames}. 순위표는 선정 때의 상위 10입니다(공시일 기준 복제 수익률).`}
         >
           {/* 그룹 섞기(D27) 뒤 기록은 신호 풀 표와 그룹별 순위표, 그 전 기록은 순위표 하나 — 결정 기록은 바뀌지 않는 이력이라 둘 다 그립니다. */}
-          {view.selection.pool.length > 0 && (
+          {selection.pool.length > 0 && (
             <Table<PoolRow>
-              rows={view.selection.pool}
+              rows={selection.pool}
               rowKey={(row) => row.key}
               columns={[
                 { key: "name", header: "기관", render: (row) => row.name },
@@ -308,24 +362,24 @@ function DecisionDetail({ id }: { id: number }) {
               ]}
             />
           )}
-          {view.selection.rankingA.length > 0 && (
+          {selection.rankingA.length > 0 && (
             <Part title="그룹 A 순위표">
-              <RankingTable rows={view.selection.rankingA} />
+              <RankingTable rows={selection.rankingA} />
             </Part>
           )}
-          {view.selection.rankingB.length > 0 && (
+          {selection.rankingB.length > 0 && (
             <Part title="그룹 B 순위표">
-              <RankingTable rows={view.selection.rankingB} />
+              <RankingTable rows={selection.rankingB} />
             </Part>
           )}
-          {(view.selection.ranking.length > 0
-            || (view.selection.pool.length === 0 && view.selection.rankingA.length === 0)) && (
-            <RankingTable rows={view.selection.ranking} />
+          {(selection.ranking.length > 0
+            || (selection.pool.length === 0 && selection.rankingA.length === 0)) && (
+            <RankingTable rows={selection.ranking} />
           )}
         </Part>
       )}
 
-      {view.recognized && (
+      {rules && (
         <>
           <Part
             title="13F 신호 이벤트"
@@ -406,7 +460,13 @@ function DecisionDetail({ id }: { id: number }) {
         </>
       )}
 
-      <Part title="주문" note="이 결정이 낸 주문입니다. 근거에 어느 기관(그룹·순위·가중)의 어떤 행동이 이 주문을 냈는지가 남습니다.">
+      <Part
+        title="주문"
+        note={claude.recognized
+          ? "이 결정이 장부에 남긴 주문입니다 — 검증을 통과한 주문은 대기(체결 전), 거절된 주문은 거절과 사유로 남습니다. 대기 주문이 "
+            + "집행 전에 취소되면(다음 결정이 대신함·일시정지) 취소와 사유가 보입니다. 근거는 모델이 쓴 문장입니다."
+          : "이 결정이 낸 주문입니다. 근거에 어느 기관(그룹·순위·가중)의 어떤 행동이 이 주문을 냈는지가 남습니다."}
+      >
         <Table<PaperOrder>
           rows={orders}
           rowKey={(row) => String(row.id)}
@@ -451,7 +511,7 @@ function DecisionDetail({ id }: { id: number }) {
         </Part>
       )}
 
-      {view.recognized && (
+      {rules && (
         <Part title="게이트 (참고)">
           <GateIndicatorBody gate={view.gate} compact />
         </Part>
@@ -461,6 +521,12 @@ function DecisionDetail({ id }: { id: number }) {
         <details className="rounded-md border border-border px-3 py-2 text-xs">
           <summary className="cursor-pointer text-muted">결정 기록 원본(JSON)</summary>
           <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all text-[11px] text-body">{response}</pre>
+        </details>
+      )}
+      {raw && (
+        <details className="rounded-md border border-border px-3 py-2 text-xs">
+          <summary className="cursor-pointer text-muted">모델 응답 원문</summary>
+          <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all text-[11px] text-body">{raw}</pre>
         </details>
       )}
       {packet && (

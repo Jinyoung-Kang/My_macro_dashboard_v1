@@ -138,19 +138,30 @@ describe("결정 목록 표기", () => {
     expect(resolveDecisionBook("", BOOKS.slice(2))).toBeNull();
   });
 
-  it("책 안내 — Claude 책은 다음 단계, 규칙 책은 매수일·게이트 없음·수동 결정", () => {
-    expect(decisionBookNote("CLAUDE")).toContain("다음 단계(3a)");
+  it("책 안내 — Claude 책은 검증·노출·실패·상한·비용, 규칙 책은 매수일·게이트 없음·수동 결정", () => {
+    const claude = decisionBookNote("CLAUDE");
+    expect(claude).not.toContain("다음 단계");
+    expect(claude).toContain("검증기(하드 규칙)가 주문마다 통과·거절");
+    expect(claude).toContain("현금 비중은 Claude가 정하고 검사하지 않습니다");
+    expect(claude).toContain("API 오류는 같은 거래일에 한 번 다시 시도");
+    expect(claude).toContain("apiDailyCallCap");
+    expect(claude).toContain("Sonnet 5.5 호출 1회, 약 $0.1");
     expect(decisionBookNote("RULES")).toContain("매수는 재선정일");
     expect(decisionBookNote("RULES")).toContain("그 재선정일 기준 선정으로 한 번 따라잡습니다");
     expect(decisionBookNote("RULES")).toContain("매크로 게이트는 쓰지 않고");
     expect(decisionBookNote("RULES")).toContain("'지금 결정 실행'");
   });
 
-  it("수동 결정 버튼 — 시작 전인 책은 막고 시작하는 길을, 시작한 책은 null", () => {
+  it("수동 결정 버튼 — 시작 전인 책·일시정지 중인 Claude 책은 막고 그 길을, 운용 중인 책·일시정지 규칙 책은 null", () => {
     expect(decisionRunBlocked(BOOKS[0])).toContain("'규칙 책 시작'");
-    expect(decisionRunBlocked(BOOKS[1])).toContain("다음 단계(3a)");
+    expect(decisionRunBlocked(BOOKS[1])).toContain("'Claude 재량 책 시작'");
+    expect(decisionRunBlocked(BOOKS[1])).not.toContain("다음 단계");
+    expect(decisionRunBlocked({ kind: "CLAUDE", status: "ACTIVE" })).toBeNull();
     expect(decisionRunBlocked({ kind: "RULES", status: "ACTIVE" })).toBeNull();
     expect(decisionRunBlocked({ kind: "RULES", status: "PAUSED" })).toBeNull();
+    // 일시정지 중인 Claude 책 — 서버가 Claude를 부르지 않고 400을 내므로 버튼에서 먼저 막고 재개하는 길을
+    expect(decisionRunBlocked({ kind: "CLAUDE", status: "PAUSED" })).toContain("일시정지 중인 Claude 책");
+    expect(decisionRunBlocked({ kind: "CLAUDE", status: "PAUSED" })).toContain("재개한 뒤");
     expect(decisionRunBlocked(null)).toBe("책이 없습니다.");
   });
 
@@ -163,6 +174,9 @@ describe("결정 목록 표기", () => {
     expect(runDecisionResultView({ ok: false, message: "모의 매매 테이블이 아직 없습니다." }))
       .toEqual({ tone: "warn", text: "모의 매매 테이블이 아직 없습니다." });
     expect(runDecisionResultView({ ok: true }).tone).toBe("warn");
+    // 결정 기록 없이 서버 문구만 오면(다른 결정이 돌고 있음 등) 그 문구를 경고로 — 기본 문구로 덮지 않습니다.
+    expect(runDecisionResultView({ ok: true, decision: null, message: "다른 결정을 실행하고 있습니다 — 끝난 뒤 다시 누르세요." }))
+      .toEqual({ tone: "warn", text: "다른 결정을 실행하고 있습니다 — 끝난 뒤 다시 누르세요." });
   });
 
   it("후보 안내 — 매수하는 결정(재선정일·초기)과 아닌 결정을 구별", () => {

@@ -137,6 +137,14 @@ describe("값 인코딩", () => {
   });
 });
 
+describe("모의 매매 설정 경로", () => {
+  it("설정 저장은 읽기와 같은 경로에 POST하고, 이력은 그 아래", () => {
+    expect(endpoints.paper.saveSettings).toBe(endpoints.paper.settings);
+    expect(endpoints.paper.settings).toBe("/api/paper/settings");
+    expect(endpoints.paper.settingsHistory).toBe("/api/paper/settings/history");
+  });
+});
+
 /** endpoints의 잎(문자열 경로·경로를 만드는 함수)을 모읍니다. */
 function leaves(value: unknown, out = { strings: [] as string[], functions: 0 }) {
   if (typeof value === "string") out.strings.push(value);

@@ -190,8 +190,17 @@ export const endpoints = {
     decision: (id: number) => `/api/paper/decisions/${segment(String(id))}`,
     /** 수동 결정 — 본문 `{book}`. 시각 조건 없이 그 책만 종류 MANUAL로 한 번. */
     runDecision: "/api/paper/run/decision",
-    /** 초기 결정("시작") — 본문 `{book}`. 규칙 책은 출발일 종가로 사후 체결해 시작합니다. */
+    /**
+     * 초기 결정("시작") — 본문 `{book}`. 출발일 종가로 사후 체결해 시작합니다. Claude 책은 `{book:"claude", preview:true}`로
+     * 미리보기(호출·검증만, 장부에 쓰지 않음)도 합니다.
+     */
     runInitialDecision: "/api/paper/run/initial-decision",
+    /** 지금 설정(버전·본문·기본값·키 설명). */
+    settings: "/api/paper/settings",
+    /** 설정 변경 이력(버전마다 바뀐 키). */
+    settingsHistory: "/api/paper/settings/history",
+    /** 설정 저장 — POST, 본문은 바꿀 키만 담은 patch(`{"키": 값}`). 읽기와 같은 경로입니다. */
+    saveSettings: "/api/paper/settings",
   },
 
   // 🔌 토스증권 연결 테스트 (경로는 /api/ai/toss 이지만 AI와 관계없음)

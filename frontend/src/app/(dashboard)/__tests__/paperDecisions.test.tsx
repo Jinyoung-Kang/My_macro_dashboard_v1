@@ -428,15 +428,16 @@ describe("결정 로그 탭", () => {
     expect(await screen.findByText(message)).toBeTruthy();
   });
 
-  it("Claude 책은 다음 단계 안내, 시작 전이라 수동 결정 버튼이 막힌다", async () => {
+  it("Claude 책은 결정 안내(검증·비용), 시작 전이라 수동 결정 버튼이 막히고 시작하는 길을 적는다", async () => {
     reads["/api/paper/decisions?book=claude"] = () => Promise.resolve({ available: true, decisions: [] });
     await openDecisionsTab();
 
     fireEvent.change(screen.getByLabelText("책 고르기"), { target: { value: "claude" } });
 
-    expect(await screen.findByText(/Claude 책의 결정\(입력 패킷·모델 응답·검증 결과·목표 주식 노출\)은 다음 단계\(3a\)/)).toBeTruthy();
+    expect(await screen.findByText(/검증기\(하드 규칙\)가 주문마다 통과·거절을 정하고/)).toBeTruthy();
+    expect(screen.queryByText(/다음 단계\(3a\)/)).toBeNull();
     expect((screen.getByRole("button", { name: "지금 결정 실행" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/시작 전인 책은 결정을 내지 않습니다/)).toBeTruthy();
+    expect(screen.getByText(/시작 전인 책은 결정을 내지 않습니다 — 개요 탭의 'Claude 재량 책 시작'/)).toBeTruthy();
     expect(api.apiGetShared).toHaveBeenCalledWith("/api/paper/decisions?book=claude&limit=50", 0);
   });
 

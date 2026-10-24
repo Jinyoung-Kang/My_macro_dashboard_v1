@@ -10,8 +10,10 @@ import { apiPost } from "@/lib/api";
 import { endpoints } from "@/lib/endpoints";
 import { deltaColor, EMPTY, formatKst } from "@/lib/format";
 import {
+  apiUsageView,
   type Badge,
   bookCard,
+  claudeExposureChart,
   initialDecisionResultView,
   initPrompt,
   initResultText,
@@ -36,6 +38,7 @@ import type {
   PaperRiskResult,
   PaperStatusResponse,
 } from "@/lib/types";
+import { ClaudeStartSection } from "./ClaudeStartSection";
 import { GateIndicatorBody } from "./GateIndicatorBody";
 
 /**
@@ -51,13 +54,20 @@ const BOOK_COLORS: Record<string, string> = {
 const SPARE_COLORS = ["#A371F7", "#39C5CF", "#DB6D28"];
 
 /**
- * 개요 탭 — 책 카드 네 개, 순자산 곡선, 신호 기관(최근 선정), OS 게이트 지표(참고), 장부 관측치 신선도, 작업 기록.
- * 초기화 전이거나 벤치마크가 아직 사후 체결을 기다리면(pendingBackfill) "초기화" 버튼, 규칙 책이 시작 전이면 "규칙 책 시작" 버튼.
+ * Claude 노출 추이의 두 선 — 목표는 순자산 곡선의 Claude 책 색(주황), 실제는 검증된 팔레트의 다음 색(파랑). 두 색은 charts의
+ * 팔레트 검증을 통과한 이웃 쌍이라 색약에서도 갈립니다. 한 축(%)이고, 범례가 이름을 함께 적어 색만으로 구분하지 않습니다.
+ */
+const EXPOSURE_COLORS: Record<string, string> = { target: SERIES_COLORS.orange, actual: SERIES_COLORS.blue };
+
+/**
+ * 개요 탭 — 책 카드 네 개, 순자산 곡선, Claude 노출 추이(목표 vs 실제), Claude 호출 사용량(오늘·이달 — 상태 응답), 신호 기관(최근
+ * 선정), OS 게이트 지표(참고), 장부 관측치 신선도, 작업 기록. 초기화 전이거나 벤치마크가 아직 사후 체결을 기다리면(pendingBackfill) "초기화" 버튼, 규칙 책이 시작 전이면
+ * "규칙 책 시작" 버튼, Claude 책이 시작 전이면 "미리보기"·"Claude 재량 책 시작" 버튼(ClaudeStartSection).
  *
  * 숫자는 개요 응답 그대로 그립니다. 버튼이 성공하면 onChanged(개요 다시 읽기)를 불러 카드·곡선을 새 장부로 바꿉니다.
  */
 export function OverviewSection({ overview, onChanged }: { overview: PaperOverviewResponse; onChanged: () => void }) {
-  // 정기 작업이 꺼져 있는지·설정 버전은 개요 응답에 없어 상태 응답에서 읽습니다(실패해도 개요는 그대로).
+  // 정기 작업이 꺼져 있는지·설정 버전·Claude 호출 사용량은 개요 응답에 없어 상태 응답에서 읽습니다(실패해도 개요는 그대로).
   const status = useApi<PaperStatusResponse>(endpoints.paper.status, 60_000);
 
   const init = useAsyncAction(() => apiPost<PaperInitResult>(endpoints.paper.init), "초기화하지 못했습니다.");
@@ -101,6 +111,10 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
   const startView = start.result ? initialDecisionResultView(start.result) : null;
   const startResult = startView && <Banner tone={startView.tone}>{startView.text}</Banner>;
   const selection = selectedFilersView(overview.selection);
+  const hasClaude = books.some((book) => book.kind === "CLAUDE");
+  const exposure = claudeExposureChart(overview.claudeExposureSeries);
+  const exposureSeries = exposure.series.map((line) => ({ ...line, color: EXPOSURE_COLORS[line.key] ?? SPARE_COLORS[0] }));
+  const usage = status.data?.available ? apiUsageView(status.data.apiUsage) : null;
 
   return (
     <>
@@ -153,6 +167,8 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
       {/* 시작한 뒤(개요를 다시 읽어 카드가 사라짐)에도 결과는 남깁니다 — 주문·사후 체결 수를 읽을 수 있게. */}
       {!startPrompt && startResult}
 
+      <ClaudeStartSection overview={overview} onChanged={onChanged} />
+
       <Card
         title="책"
         subtitle={`순자산·수익률·노출은 마지막 관측치 기준 · 통계는 거래일별 순자산 기준${
@@ -187,6 +203,42 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
       >
         <MultiLineSeries data={chart.rows} series={series} precision={0} height={300} />
       </Card>
+
+      {hasClaude && (
+        <Card
+          title="Claude 노출 추이"
+          subtitle="목표 = Claude가 결정마다 정한 주식 노출(기록·표시용 — 집행은 주문 기준) · 실제 = 그 거래일 장부의 주식 노출. 기록이 없는 날은 선을 끊어 그립니다."
+          source={PAPER_SOURCES.exposure}
+        >
+          {exposure.rows.length === 0 ? (
+            <p className="text-sm text-muted">
+              아직 Claude 결정 기록이 없습니다 — Claude 책을 시작하면 결정마다 정한 목표 노출과 그 거래일의 실제 노출을 그립니다.
+            </p>
+          ) : (
+            <>
+              <MultiLineSeries data={exposure.rows} series={exposureSeries} unit="%" precision={0} height={240} domain={[0, 100]} />
+              {exposure.latest && <p className="mt-2 text-xs text-muted">마지막 {exposure.latest}</p>}
+            </>
+          )}
+        </Card>
+      )}
+
+      {hasClaude && usage && (
+        <Card
+          title="Claude 호출 사용량"
+          subtitle="결정·미리보기·시작·재시도의 호출 수와 토큰(KST 날짜 기준) — 하루 상한에 닿으면 그날은 Claude를 부르지 않습니다"
+          source={PAPER_SOURCES.apiUsage}
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            <UsageCells label={usage.todayLabel} cells={usage.today} />
+            <UsageCells label={usage.monthLabel} cells={usage.month} />
+          </div>
+          {usage.capReached && (
+            <p className="mt-2 text-xs text-warn">오늘 호출이 하루 상한에 닿았습니다 — 오늘 남은 결정은 Claude를 부르지 않고 건너뜁니다.</p>
+          )}
+          <p className="mt-2 text-xs text-muted">{usage.note}</p>
+        </Card>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card
@@ -315,6 +367,20 @@ function RiskResult({ result }: { result: PaperRiskResult }) {
         </div>
       )}
     </Banner>
+  );
+}
+
+/** 사용량 칸 묶음 하나(오늘·이달). */
+function UsageCells({ label, cells }: { label: string; cells: readonly { key: string; label: string; value: string }[] }) {
+  return (
+    <section aria-label={`Claude 호출 사용량 ${label}`} className="flex flex-col gap-1">
+      <h3 className="text-xs font-semibold text-bright">{label}</h3>
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
+        {cells.map((cell) => (
+          <Cell key={cell.key} label={cell.label} value={cell.value} small />
+        ))}
+      </dl>
+    </section>
   );
 }
 

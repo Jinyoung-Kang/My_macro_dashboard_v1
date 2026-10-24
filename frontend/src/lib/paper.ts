@@ -10,6 +10,7 @@ import type {
   PaperBookResetResult,
   PaperBookStatusResult,
   PaperBookSummary,
+  PaperClaudePreviewResult,
   PaperDecisionDetail,
   PaperDecisionSummary,
   PaperGateIndicator,
@@ -27,6 +28,9 @@ import type {
   PaperRunDecisionResult,
   PaperSelectedFiler,
   PaperSelectionHistoryEntry,
+  PaperSettingKey,
+  PaperSettingsResponse,
+  PaperSettingsSaveResult,
   PaperStats,
   PaperTrackRecordCandidate,
   PaperTrackRecordCollection,
@@ -53,6 +57,10 @@ export const PAPER_SOURCES = {
   decisions: "대시보드 결정 기록 (PostgreSQL paper_decisions·paper_orders) — 13F 신호는 SEC EDGAR 13F-HR"
     + "(신호 풀 기관 저장본 sec.13f.{cik}.q30 — 없으면 q8)",
   gate: "매크로 카드 저장본 macro.collected(미국 10년물·브렌트·WTI·USD/JPY) — 게이트 단계는 대시보드 백엔드 계산(PostgreSQL paper_gate_log)",
+  exposure: "대시보드 결정 기록 (PostgreSQL paper_decisions.target_exposure_pct — Claude 응답) · 대시보드 모의 장부 "
+    + "(paper_nav_daily.exposure_pct)",
+  settings: "대시보드 모의 매매 설정 (PostgreSQL paper_settings·paper_settings_history)",
+  apiUsage: "대시보드 Claude 호출 사용량 (PostgreSQL paper_api_usage — 토큰은 Anthropic API 응답의 usage)",
 } as const;
 
 /**
@@ -69,10 +77,8 @@ export const PAPER_TABS = [
     key: "framework", label: "프레임·메모", opensIn: "단계 3b",
     upcoming: "Claude 책의 판단 프레임 버전(승인 전후)과 시장 메모",
   },
-  {
-    key: "settings", label: "설정", opensIn: "단계 3a",
-    upcoming: "모델·슬리피지·상한·스탑 비율·재진입 금지일 등 설정과 바꾼 기록(버전)",
-  },
+  // 설정은 단계 3a에서 엽니다 — 키별 입력·저장(규칙 책 영향 키는 한 번 더 확인)·바꾼 기록(버전).
+  { key: "settings", label: "설정", opensIn: null, upcoming: null },
 ] as const;
 
 export type PaperTabKey = (typeof PAPER_TABS)[number]["key"];
@@ -291,8 +297,22 @@ export function orderReasonText(reason: unknown, maxLength = 120): string {
     if (typeof text === "string" && text.trim()) return text;
     const contributed = contributionReason(reason);
     if (contributed) return contributed;
+    const thesis = claudeReason(reason);
+    if (thesis) return thesis;
   }
   return jsonSummary(reason, maxLength);
+}
+
+/**
+ * Claude 주문 근거 한 줄 — "근거 [사실·가설] · 무효화: 조건". Claude 책 주문의 근거는 모델이 쓴 `{thesis, labels, invalidation}`이라
+ * 키: 값으로 이어 붙이면 라벨이 배열 글자로 섞이고 무효화 조건이 잘립니다. 근거(thesis)가 없으면 null(호출한 쪽이 키: 값 요약으로).
+ */
+function claudeReason(reason: Record<string, unknown>): string | null {
+  const thesis = textOf(reason.thesis);
+  if (!thesis) return null;
+  const labels = listOf(reason.labels).filter((label): label is string => typeof label === "string" && label.length > 0);
+  const invalidation = textOf(reason.invalidation);
+  return `${thesis}${labels.length > 0 ? ` [${labels.join("·")}]` : ""}${invalidation ? ` · 무효화: ${invalidation}` : ""}`;
 }
 
 /**
@@ -374,14 +394,18 @@ export function orderStatusBadge(status: string | null | undefined): Badge {
  * 주문 크기 — 수량이 있으면 수량, 없으면 살 금액(매수) 또는 매도 비율. 매도에 셋 다 없으면 전량입니다
  * (백엔드 규칙: sellFraction이 null이면 전량). 매수에 셋 다 없으면 모름(—).
  *
- * 주문의 `targetWeightPct`는 이름과 달리 "체결 시점 순자산 대비 살 금액(%)"입니다(장부가 그렇게 읽음). 규칙 책은 이미 든 종목이면
- * 모자란 만큼(목표 − 현재), SHY면 늘릴 만큼만 넣고 진짜 목표 비중은 근거 `reason.targetWeightPct`에 남기므로, 근거의 목표가
- * 주문 값과 다르면 함께 적습니다.
+ * 주문의 `targetWeightPct`는 이름과 달리 "체결 시점 순자산 대비 살 금액(%)"입니다(장부가 그렇게 읽음). 규칙 책·Claude 책 모두 이미 든
+ * 종목이면 모자란 만큼(목표 − 현재), SHY면 늘릴 만큼만 넣고 진짜 목표 비중은 근거 `reason.targetWeightPct`에 남기므로, 근거의 목표가
+ * 주문 값과 다르면 함께 적습니다. 검증기가 거절한 Claude 매수(REJECTED)는 집행되지 않아 받은 값 그대로(모델이 준 목표 비중)
+ * 남으므로 "목표 …% (제안)"으로 적습니다 — "순자산의 …% 매수"로 읽으면 이미 든 비중까지 더 사려 한 것처럼 보입니다.
  */
 export function orderSizeText(
-  order: Pick<PaperOrder, "side" | "qty" | "targetWeightPct" | "sellFraction"> & { reason?: unknown },
+  order: Pick<PaperOrder, "side" | "qty" | "targetWeightPct" | "sellFraction"> & { reason?: unknown; status?: string | null },
 ): string {
   if (order.qty !== null && order.qty !== undefined) return `${formatNumber(order.qty, 0)}주`;
+  if (order.status === "REJECTED" && order.side === "BUY" && order.targetWeightPct !== null && order.targetWeightPct !== undefined) {
+    return `목표 ${formatNumber(order.targetWeightPct, 2)}% (제안)`;
+  }
   if (order.targetWeightPct !== null && order.targetWeightPct !== undefined) {
     const amount = formatNumber(order.targetWeightPct, 2);
     const target = isRecord(order.reason) ? numberOf(order.reason.targetWeightPct) : null;
@@ -470,7 +494,11 @@ export function notStartedNote(kind: string | null | undefined): string {
     return "시작 전인 규칙 책은 개요 탭의 '규칙 책 시작'(초기 결정)으로 시작합니다 — 출발일 기준 선정·신호로 고른 종목을 "
       + "출발일 종가에 사후 체결합니다. 지금은 현금만 듭니다.";
   }
-  return "시작 전인 책은 다음 단계의 초기 결정으로 시작합니다 — 지금은 현금만 듭니다.";
+  if (kind === "CLAUDE") {
+    return "시작 전인 Claude 책은 개요 탭의 'Claude 재량 책 시작'(초기 결정)으로 시작합니다 — 출발일 기준 입력 패킷으로 Claude가 "
+      + "고른 주문 가운데 검증(하드 규칙)을 통과한 것만 출발일 종가에 사후 체결합니다. 지금은 현금만 듭니다.";
+  }
+  return "시작 전인 책은 초기 결정으로 시작합니다 — 지금은 현금만 듭니다.";
 }
 
 /** 보유·체결 탭의 기본 책 — 고른 책이 목록에 있으면 그것, 아니면 처음으로 시작한 책, 그것도 없으면 첫 책. */
@@ -499,8 +527,8 @@ export function initPrompt(
     return {
       title: "장부 초기화",
       body: `아직 장부가 없습니다. 초기화하면 책 네 개를 만들고, 두 벤치마크 책을 출발일(${start}) 종가로 사후 체결합니다. `
-        + "규칙 책·Claude 책은 현금만 든 채 '시작 전'으로 둡니다 — 규칙 책은 초기화 뒤 '규칙 책 시작'으로, "
-        + "Claude 책은 다음 단계의 초기 결정으로 시작합니다. "
+        + "규칙 책·Claude 책은 현금만 든 채 '시작 전'으로 둡니다 — 초기화 뒤 개요의 '규칙 책 시작'·'Claude 재량 책 시작'"
+        + "(초기 결정)으로 각각 시작합니다. "
         + "여러 번 눌러도 이미 있는 책은 다시 만들지 않습니다.",
     };
   }
@@ -1005,9 +1033,16 @@ export function rulesStartPrompt(
 /**
  * 초기 결정("시작") 결과 — 배너 색과 한 줄. ok:false면 서버 문구를 경고로.
  * 주문이 하나도 없으면(NO_TRADE) 시작은 했지만 현금만 든다는 것을 경고색으로 적습니다 — 정보색이면 "종목을 샀다"로 읽힙니다.
+ * 결정에 오류가 있으면(Claude 책의 응답 형식 오류·모델 거절·API 오류) 경고색으로 오류를 붙입니다 — 그때는 그날 재량 주문이 없습니다.
+ *
+ * @param bookLabel 시작한 책 이름(기본 "규칙 책"). Claude 책 카드는 그 책 이름을 넘깁니다.
  */
-export function initialDecisionResultView(result: PaperInitialDecisionResult): { tone: "warn" | "info"; text: string } {
-  if (result.ok === false) return { tone: "warn", text: result.message ?? "규칙 책을 시작하지 못했습니다." };
+export function initialDecisionResultView(
+  result: PaperInitialDecisionResult,
+  bookLabel = "규칙 책",
+): { tone: "warn" | "info"; text: string } {
+  const object = `${bookLabel}${bookLabel.endsWith("책") ? "을" : "을(를)"}`;
+  if (result.ok === false) return { tone: "warn", text: result.message ?? `${object} 시작하지 못했습니다.` };
   const decision = result.decision ?? null;
   const noTrade = decision?.status === "NO_TRADE";
   const parts = [
@@ -1015,9 +1050,10 @@ export function initialDecisionResultView(result: PaperInitialDecisionResult): {
     `주문 ${formatWithUnit(decision?.orderCount, 0, "건")}`,
     `사후 체결 ${formatWithUnit(countOf(result.fills), 0, "건")}`,
   ];
-  const head = noTrade ? "규칙 책을 시작했지만 주문이 없습니다 — 현금만 듭니다" : "규칙 책을 시작했습니다";
+  const head = noTrade ? `${object} 시작했지만 주문이 없습니다 — 현금만 듭니다` : `${object} 시작했습니다`;
   const summary = decision?.summary ? ` — ${decision.summary}` : "";
-  return { tone: noTrade ? "warn" : "info", text: `${head} · ${parts.join(" · ")}${summary}` };
+  const error = decision?.error ? ` — 오류: ${decision.error}` : "";
+  return { tone: noTrade || error ? "warn" : "info", text: `${head} · ${parts.join(" · ")}${summary}${error}` };
 }
 
 // ---------------------------------------------------------------- 결정 로그
@@ -1078,7 +1114,12 @@ export function resolveDecisionBook(picked: string, books: readonly PaperBookSum
 /** 책마다 결정이 언제·무엇을 하는지 한 문단. */
 export function decisionBookNote(kind: string | null | undefined): string {
   if (kind === "CLAUDE") {
-    return "Claude 책의 결정(입력 패킷·모델 응답·검증 결과·목표 주식 노출)은 다음 단계(3a)에서 엽니다 — 지금은 기록이 없습니다.";
+    return "Claude 책은 거래일마다 한 번(KST 07:30 이후, 확정 종가를 확인한 뒤 — 12:00까지 오지 않으면 있는 값으로 '확정 전 값') 입력 "
+      + "패킷을 Claude에 보내 주문 목록과 목표 주식 노출을 받습니다. 검증기(하드 규칙)가 주문마다 통과·거절을 정하고 통과한 주문만 "
+      + "대기 주문이 됩니다. 현금 비중은 Claude가 정하고 검사하지 않습니다 — 목표 노출은 기록·표시용이고 집행은 주문 기준입니다. "
+      + "응답 형식 오류·모델 거절·API 오류면 그날 재량 주문이 없고(API 오류는 같은 거래일에 한 번 다시 시도), 트레일링 스탑은 계속 돕니다. "
+      + "하루 호출 상한(설정 apiDailyCallCap)에 닿으면 그날 결정은 건너뜁니다. '지금 결정 실행'은 시각 조건 없이 Claude를 한 번 "
+      + "부릅니다(종류 '수동' — Sonnet 5.5 호출 1회, 약 $0.1, 상한에 셈).";
   }
   return "규칙 책은 거래일마다 한 번(KST 07:30 이후, 확정 종가를 확인한 뒤) 결정을 남깁니다. 매수는 재선정일(분기 13F 공시 기한 "
     + "다음 거래일)과 초기 결정 때만 내고(재선정일 결정을 놓쳤거나 그날 선정을 건너뛰었으면 다음 결정 날에 그 재선정일 기준 선정으로 "
@@ -1089,15 +1130,20 @@ export function decisionBookNote(kind: string | null | undefined): string {
 }
 
 /**
- * 수동 결정 버튼을 막는 이유 — 시작 전인 책이면 문구, 아니면 null. 시작 전 책은 장부가 체결하지 않으므로(현금만) 결정을 내도
- * 주문이 쌓이기만 합니다. 서버도 다시 판단하고, 그 문구는 버튼 결과로 그대로 보입니다.
+ * 수동 결정 버튼을 막는 이유 — 시작 전인 책·일시정지 중인 Claude 책이면 문구, 아니면 null. 시작 전 책은 장부가 체결하지 않으므로
+ * (현금만) 결정을 내도 주문이 쌓이기만 합니다. 일시정지 중인 Claude 책은 서버가 Claude를 부르지 않고 400을 냅니다(확인 단계의
+ * "Claude를 지금 부를까요?"가 틀린 말이 되지 않게 여기서 먼저 막음). 규칙 책은 일시정지 중에도 누를 수 있습니다(주문 없이 '건너뜀'
+ * 기록 — 비용 없음). 서버도 다시 판단하고, 그 문구는 버튼 결과로 그대로 보입니다.
  */
 export function decisionRunBlocked(book: Pick<PaperBookSummary, "status" | "kind"> | null | undefined): string | null {
   if (!book) return "책이 없습니다.";
+  if (book.kind === "CLAUDE" && book.status === "PAUSED") {
+    return "일시정지 중인 Claude 책은 결정을 내지 않습니다(Claude를 부르지 않음) — 보유·체결 탭에서 재개한 뒤 누르세요.";
+  }
   if (book.status !== "NOT_STARTED") return null;
   return book.kind === "RULES"
     ? "시작 전인 책은 결정을 내지 않습니다 — 개요 탭의 '규칙 책 시작'으로 먼저 시작하세요."
-    : "시작 전인 책은 결정을 내지 않습니다 — 다음 단계(3a)의 초기 결정으로 시작합니다.";
+    : "시작 전인 책은 결정을 내지 않습니다 — 개요 탭의 'Claude 재량 책 시작'(초기 결정)으로 먼저 시작하세요.";
 }
 
 /** 수동 결정 결과 — 배너 색과 한 줄. ok:false면 서버 문구를, 결정에 오류가 있으면 경고색으로 오류를 붙입니다. */
@@ -1132,6 +1178,9 @@ export function decisionMeta(decision: PaperDecisionDetail): DecisionMetaCell[] 
   if (decision.model) cells.push({ key: "model", label: "모델", value: decision.model });
   if (isNumber(decision.frameworkVersion)) {
     cells.push({ key: "frameworkVersion", label: "프레임 버전", value: `v${decision.frameworkVersion}` });
+  } else if (decision.book === "claude") {
+    // 프레임 v1(사용자 OS 원문, 단계 3b) 전에는 임시 시스템 프롬프트로 부르고 버전을 남기지 않습니다 — 빈 칸이면 "프레임 없이"로 읽힙니다.
+    cells.push({ key: "frameworkVersion", label: "프레임 버전", value: "임시 — 프레임 v1 준비 전" });
   }
   if (isNumber(decision.targetExposurePct)) {
     cells.push({ key: "targetExposurePct", label: "목표 주식 노출", value: formatWithUnit(decision.targetExposurePct, 1, "%") });
@@ -1730,4 +1779,770 @@ export function selectedFilersView(selection: PaperOverviewSelection | null | un
       rankB: rankIn(groupB, entry.cik),
     }))),
   };
+}
+
+// ---------------------------------------------------------------- Claude 재량 책(단계 3a)
+
+/**
+ * Claude를 한 번 부를 때의 비용 안내 — 기본 모델(Sonnet 5.5) 한 번의 추정(설계 §5-9: 입력 약 25K·출력 약 4K 토큰 ≈ $0.09).
+ * 설정에서 모델을 바꿨으면 그 모델로 부르므로 "기본 모델 기준"이라고 적고, 하루 호출 상한(명세 C8·D18)에 세는 것도 함께 적습니다.
+ * 화면이 지금 설정의 모델을 따로 읽어 비용을 다시 계산하지 않습니다(숫자는 설계 표의 추정 그대로).
+ */
+export const CLAUDE_COST_NOTE = "Sonnet 5.5 호출 1회, 약 $0.1 — 기본 모델 기준 추정입니다(설정 탭에서 모델을 바꿨으면 그 모델로 "
+  + "부릅니다). 하루 호출 상한(설정 apiDailyCallCap)에 셉니다.";
+
+const STANCE: Record<string, { label: string; tone: BadgeTone }> = {
+  RISK_ON: { label: "위험 선호", tone: "ok" },
+  RISK_OFF: { label: "위험 회피", tone: "warn" },
+  NEUTRAL: { label: "중립", tone: "muted" },
+  UNCERTAIN: { label: "불확실", tone: "muted" },
+};
+
+/** 판단 자세 배지 — "위험 선호 (RISK_ON)". 자세가 없으면 null, 모르는 값은 받은 글자 그대로. */
+export function stanceBadge(stance: unknown): Badge | null {
+  const code = textOf(stance);
+  if (!code) return null;
+  const known = STANCE[code];
+  return { key: `stance-${code}`, label: known ? `${known.label} (${code})` : code, className: TONE[known?.tone ?? "muted"] };
+}
+
+/**
+ * 주장 라벨(사실 · 해석 · 가설 · 확인 필요 · 결정)의 색. 사실은 확인된 것, 가설·확인 필요는 아직 아닌 것이라 색을 달리합니다 —
+ * 근거 문장만 읽으면 가설이 사실처럼 읽힙니다.
+ */
+const CLAIM_LABEL: Record<string, BadgeTone> = { 사실: "ok", 해석: "info", 가설: "muted", "확인 필요": "warn", 결정: "info" };
+
+/** 주문 근거의 라벨 배지(받은 순서대로, 중복 없이). 모르는 라벨은 흐린 색으로 그대로. */
+export function claimLabelBadges(labels: unknown): Badge[] {
+  const seen: string[] = [];
+  for (const entry of listOf(labels)) {
+    const label = textOf(entry);
+    if (label && !seen.includes(label)) seen.push(label);
+  }
+  return seen.map((label) => ({ key: `label-${label}`, label, className: TONE[CLAIM_LABEL[label] ?? "muted"] }));
+}
+
+/**
+ * 검증기 거절 사유(설계 §5-4) — 이름과 설명. 설명에는 숫자 대신 설정 키 이름을 적습니다(상한 값은 설정이 정하고, 그 결정에 쓴 값은
+ * 검증 결과의 detail에 서버가 적어 보냅니다). 현금 비중·매크로 조건은 사유가 아닙니다(명세 D7).
+ */
+const REJECT_REASON: Record<string, { label: string; title: string }> = {
+  OUT_OF_UNIVERSE: { label: "유니버스 밖", title: "모의 매매 유니버스(13F 매핑 종목 + 설정 universeExtraTickers의 ETF)에 없는 종목입니다." },
+  DUPLICATE_TICKER: { label: "같은 종목 중복", title: "한 응답에 같은 종목의 주문이 둘 이상입니다." },
+  MALFORMED: { label: "크기 형식 오류", title: "매수에 목표 비중이 없거나 범위 밖, 또는 매도 비율이 0~1 밖입니다." },
+  NOT_HELD: { label: "보유 없음", title: "들고 있지 않은 종목을 팔려 했습니다." },
+  // 장부는 floor(보유 주식 수 × 매도 비율)이 1주 미만이면 전량을 팝니다(설계 §3-1) — 통과시키면 소량 트림이 전량 청산으로 집행됩니다.
+  BELOW_ONE_SHARE: {
+    label: "1주 미만 부분 매도",
+    title: "보유 주식 수 × 매도 비율이 1주 미만인 일부 매도입니다. 장부는 이런 매도를 전량 매도로 집행하므로 거절했습니다 — "
+      + "전량을 팔려면 매도 비율을 비우거나 1로 냅니다.",
+  },
+  LOCKED_OUT: { label: "재진입 금지 중", title: "트레일링 스탑으로 판 뒤 재진입 금지 기간(설정 lockoutTradingDays)입니다." },
+  WEIGHT_CAP: {
+    label: "비중 상한 초과",
+    title: "목표 비중이 종목 상한(설정 maxWeightStockPct)이나 ETF 상한(maxWeightEtfPct)을 넘습니다. 현금성 ETF는 상한이 없습니다.",
+  },
+  MAX_POSITIONS: { label: "최대 종목 수 초과", title: "사고 나면 보유 종목 수가 설정 maxPositions를 넘습니다." },
+  OVER_ALLOCATED: {
+    label: "배분 합 100% 초과",
+    title: "매수 목표 합과 매도 뒤 남는 보유 비중의 합이 100%를 넘어, 목표 비중이 큰 주문부터 받고 넘친 주문을 거절했습니다.",
+  },
+  MIN_NOTIONAL: { label: "최소 금액 미만", title: "매수로 늘어나는 금액이 설정 minOrderNotional보다 작습니다." },
+  MONTHLY_CAP: { label: "월 주문 상한", title: "이달 재량 주문 누계가 설정 maxDiscretionaryOrdersPerMonth에 닿았습니다." },
+  MIN_HOLD: { label: "최소 보유일 전", title: "보유한 지 설정 minHoldTradingDaysForSell 거래일이 안 된 재량 매도입니다(트레일링 스탑은 예외)." },
+  STALE_INPUT: { label: "입력 자료 오래됨", title: "가격 저장본이 오래돼 그날 주문을 모두 거절했습니다." },
+  NO_PRICE: { label: "가격 없음", title: "그 종목의 가격이 없거나 지난 값이라 금액을 정할 수 없습니다." },
+};
+
+/** 거절 사유 칸 — "비중 상한 초과 (WEIGHT_CAP)"와 설명. 사유가 없으면 "—", 모르는 코드는 받은 글자 그대로. */
+export function rejectReasonText(code: string | null | undefined): { label: string; title?: string } {
+  if (!code) return { label: EMPTY };
+  const known = REJECT_REASON[code];
+  return known ? { label: `${known.label} (${code})`, title: known.title } : { label: code };
+}
+
+/**
+ * 제안 주문의 크기 — 매수는 "목표 비중 10.00%", 매도는 "보유의 50%"(비율이 없으면 전량). 매수에 목표 비중이 없으면 "—"
+ * (검증기가 MALFORMED로 거절). 장부 주문 표의 크기(orderSizeText — 체결 시점 순자산 대비 살 금액)와 뜻이 달라 함수를 나눕니다.
+ */
+export function proposedSizeText(side: unknown, targetWeightPct: unknown, sellFraction: unknown): string {
+  if (side === "BUY") {
+    const target = numberOf(targetWeightPct);
+    return target === null ? EMPTY : `목표 비중 ${formatNumber(target, 2)}%`;
+  }
+  if (side === "SELL") {
+    const fraction = numberOf(sellFraction);
+    return fraction === null ? "전량" : `보유의 ${formatNumber(fraction * 100, 0)}%`;
+  }
+  return EMPTY;
+}
+
+/** 모델이 제안한 주문 한 줄(표시 문자열). */
+export interface ClaudeOrderRow {
+  key: string;
+  ticker: string;
+  side: string;
+  /** BUY · SELL — 글자색을 고를 때. */
+  sideKey: string;
+  size: string;
+  timing: string;
+  thesis: string;
+  labels: Badge[];
+  invalidation: string;
+}
+
+/** 검증 결과 한 줄(표시 문자열). */
+export interface ValidationRow {
+  key: string;
+  ticker: string;
+  side: string;
+  sideKey: string;
+  size: string;
+  result: Badge;
+  reason: string;
+  reasonTitle?: string;
+  detail: string;
+}
+
+/** 관찰 목록 한 줄. */
+export interface WatchRow {
+  key: string;
+  ticker: string;
+  condition: string;
+}
+
+/** Claude 책 결정(또는 미리보기)을 화면에 그릴 모양. */
+export interface ClaudeDecisionView {
+  /** Claude 책 기록인가(책이 claude이거나 응답이 Claude 모양). 아니면 화면은 이 부분을 그리지 않습니다. */
+  recognized: boolean;
+  /** 검사한 모델 응답이 있는가 — 형식 오류·거절·API 오류, Claude를 부르지 않은 기록(SKIPPED)이면 없습니다(그날 재량 주문 없음). */
+  hasResponse: boolean;
+  /**
+   * 응답이 없을 때 판단 칸에 적을 한 줄(상태에 맞춰). 응답이 있으면 null. 건너뛴 기록(호출 상한·일시정지)에 "형식 오류·거절·API
+   * 오류"를 적으면 실제 사유가 원본 JSON에만 남습니다.
+   */
+  noResponse: string | null;
+  /**
+   * Claude를 부르지 않았거나 집행하지 않은 사유 — 서버 문구 그대로(response.skipped, 응답이 없으면 response.summary도). 없으면 null.
+   */
+  skipped: string | null;
+  stance: Badge | null;
+  targetExposure: string;
+  confidence: string;
+  /** 목표 노출과 주문이 어긋남(15%p 넘게) 배지. 어긋나지 않았거나 모르면 null. */
+  mismatch: Badge | null;
+  summary: string | null;
+  exposureRationale: string | null;
+  noTradeReason: string | null;
+  orders: ClaudeOrderRow[];
+  validation: ValidationRow[];
+  watchlist: WatchRow[];
+  /** 모델·토큰 사용량 칸(있는 값만). */
+  usage: DecisionMetaCell[];
+}
+
+/** Claude 결정 화면의 입력 — 결정 기록 상세(PaperDecisionDetail) 또는 미리보기 응답(PaperClaudePreviewResult)에서 고른 값. */
+export interface ClaudeDecisionSource {
+  book?: string | null;
+  /** 결정 상태(OK·NO_TRADE·REFUSED·FORMAT_ERROR·API_ERROR·SKIPPED) — 응답이 없을 때 무엇을 적을지 고릅니다. 모르면 없음. */
+  status?: string | null;
+  response: unknown;
+  /** 검증 결과를 응답 밖에 따로 보내면(미리보기) 그것, 아니면 response.validation. */
+  validation?: unknown;
+  usage?: unknown;
+  model?: string | null;
+  /** 결정 표의 목표 노출(target_exposure_pct). 없으면 response.targetEquityExposurePct. */
+  targetExposurePct?: number | null;
+  exposureMismatch?: boolean | null;
+}
+
+/** 사용량 JSON에서 토큰 수 하나 — 서버 이름(camelCase)과 Anthropic 원래 이름(snake_case) 어느 쪽이든. 모르면 null. */
+function tokensOf(usage: Record<string, unknown> | null, ...names: string[]): number | null {
+  if (!usage) return null;
+  for (const name of names) {
+    const value = numberOf(usage[name]);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
+/** 모델이 답하지 못한 상태 — 그날 재량 주문이 없고 사유는 상태와 오류에 있습니다. */
+const CLAUDE_FAILED_STATUSES = ["REFUSED", "FORMAT_ERROR", "API_ERROR"];
+
+/**
+ * 응답이 없을 때의 한 줄. 건너뛴 기록(SKIPPED — 호출 상한·일시정지)은 Claude를 부르지 않았으니 서버가 남긴 사유를, 형식 오류·거절·API
+ * 오류는 상태와 오류를 보라고 적습니다. 상태를 모르면(옛 기록·미리보기 성공 모양) 어느 쪽이라고 단정하지 않습니다.
+ */
+function claudeNoResponseText(status: string | null, skipped: string | null, skippedKey: boolean): string {
+  // 상태를 모를 때는 건너뛴 기록만 남기는 키(response.skipped)로만 알아봅니다 — summary는 모델 응답에도 있는 키입니다.
+  if (status === "SKIPPED" || (status === null && skippedKey)) {
+    return skipped ? `Claude를 부르지 않음 — ${skipped}` : "Claude를 부르지 않음 — 서버가 사유를 남기지 않았습니다.";
+  }
+  if (status !== null && CLAUDE_FAILED_STATUSES.includes(status)) {
+    return "검사한 모델 응답이 없습니다 — 응답 형식 오류·모델 거절·API 오류면 그날 재량 주문이 없습니다(상태와 오류를 보세요).";
+  }
+  return "검사한 모델 응답이 없습니다(상태와 오류를 보세요).";
+}
+
+/**
+ * Claude 책 결정 기록(또는 미리보기)을 판단·제안 주문·검증 결과·관찰 목록·사용량으로.
+ *
+ * 숫자는 응답·서버 값 그대로입니다(목표 노출·목표 비중·매도 비율·확신도·토큰). 통과·거절과 사유는 검증기(서버)가 정한 값이고 화면은
+ * 다시 판정하지 않습니다. 목표 노출이 주문과 어긋났는지(exposureMismatch)도 서버가 정합니다 — 화면은 노출과 주문을 맞춰 보지 않습니다.
+ * JSON이라 모양을 믿지 않고 하나씩 확인해 읽습니다(모양이 다른 칸은 "—").
+ */
+export function claudeDecisionView(source: ClaudeDecisionSource): ClaudeDecisionView {
+  const record = isRecord(source.response) ? source.response : null;
+  const verdicts = Array.isArray(source.validation) ? source.validation : listOf(record?.validation);
+  const usage = isRecord(source.usage) ? source.usage : null;
+  const recognized = source.book === "claude"
+    || Array.isArray(source.validation)
+    || Array.isArray(record?.validation)
+    || isNumber(record?.targetEquityExposurePct);
+  const hasResponse = record !== null && (textOf(record.stance) !== null || Array.isArray(record.orders));
+  // 건너뛴 기록(recordSkipped)은 사유를 skipped와 summary 둘 다에 둡니다. 모델 응답이 있으면 summary는 모델의 요약이라 사유로 읽지 않습니다.
+  const skippedKey = textOf(record?.skipped);
+  const skipped = skippedKey ?? (hasResponse ? null : textOf(record?.summary));
+  const status = textOf(source.status);
+
+  const orders: ClaudeOrderRow[] = listOf(record?.orders).filter(isRecord).flatMap((order, index) => {
+    const ticker = textOf(order.ticker);
+    if (!ticker) return [];
+    const side = textOf(order.side) ?? "";
+    return [{
+      key: `${index}-${ticker}`,
+      ticker,
+      side: sideLabel(side || null),
+      sideKey: side,
+      size: proposedSizeText(side, order.targetWeightPct, order.sellFraction),
+      timing: timingLabel(textOf(order.timing)),
+      thesis: textOf(order.thesis) ?? EMPTY,
+      labels: claimLabelBadges(order.labels),
+      invalidation: textOf(order.invalidation) ?? EMPTY,
+    }];
+  });
+
+  const validation: ValidationRow[] = verdicts.filter(isRecord).flatMap((verdict, index) => {
+    // 자바 record 그대로면 주문이 order 안에, 펼쳐 보내면 같은 줄에 있습니다.
+    const order = isRecord(verdict.order) ? verdict.order : verdict;
+    const ticker = textOf(order.ticker);
+    if (!ticker) return [];
+    const side = textOf(order.side) ?? "";
+    const accepted = verdict.accepted === true;
+    const rejected = verdict.accepted === false;
+    const reason = rejectReasonText(textOf(verdict.rejectReason));
+    return [{
+      key: `${index}-${ticker}`,
+      ticker,
+      side: sideLabel(side || null),
+      sideKey: side,
+      size: proposedSizeText(side, order.targetWeightPct, order.sellFraction),
+      result: accepted
+        ? { key: "accepted", label: "통과", className: TONE.ok }
+        : rejected
+          ? { key: "rejected", label: "거절", className: TONE.warn }
+          : { key: "unknown", label: EMPTY, className: TONE.muted },
+      reason: reason.label,
+      reasonTitle: reason.title,
+      detail: textOf(verdict.detail) ?? EMPTY,
+    }];
+  });
+
+  const watchlist: WatchRow[] = listOf(record?.watchlist).filter(isRecord).flatMap((entry, index) => {
+    const ticker = textOf(entry.ticker);
+    return ticker ? [{ key: `${index}-${ticker}`, ticker, condition: textOf(entry.condition) ?? EMPTY }] : [];
+  });
+
+  const target = isNumber(source.targetExposurePct) ? source.targetExposurePct : numberOf(record?.targetEquityExposurePct);
+  const mismatch = source.exposureMismatch === true || record?.exposureMismatch === true;
+
+  const usageCells: DecisionMetaCell[] = [];
+  const model = source.model ?? textOf(usage?.model);
+  if (model) usageCells.push({ key: "model", label: "모델", value: model });
+  const tokenCells: [string, string, string[]][] = [
+    ["inputTokens", "입력 토큰", ["inputTokens", "input_tokens"]],
+    ["outputTokens", "출력 토큰", ["outputTokens", "output_tokens"]],
+    ["cacheReadTokens", "캐시 읽기 토큰", ["cacheReadTokens", "cacheReadInputTokens", "cache_read_input_tokens"]],
+    ["cacheWriteTokens", "캐시 쓰기 토큰", ["cacheWriteTokens", "cacheCreationInputTokens", "cache_creation_input_tokens"]],
+  ];
+  if (usage) {
+    for (const [key, label, names] of tokenCells) {
+      usageCells.push({ key, label, value: formatNumber(tokensOf(usage, ...names), 0) });
+    }
+    const stop = textOf(usage.stopReason) ?? textOf(usage.stop_reason);
+    if (stop) usageCells.push({ key: "stopReason", label: "멈춘 이유", value: stop });
+  }
+
+  return {
+    recognized,
+    hasResponse,
+    noResponse: hasResponse ? null : claudeNoResponseText(status, skipped, skippedKey !== null),
+    skipped,
+    stance: stanceBadge(record?.stance),
+    targetExposure: formatWithUnit(target, 1, "%"),
+    confidence: formatRatioPercent(numberOf(record?.confidence)),
+    mismatch: mismatch
+      ? {
+        key: "exposureMismatch", label: "목표 노출 ≠ 주문", className: TONE.warn,
+        title: "Claude가 정한 목표 주식 노출과 주문 반영 뒤 예상 주식 비중이 15%p 넘게 다릅니다. 집행은 주문 기준이고, 숫자를 맞추지 "
+          + "않고 그대로 기록합니다(설계 §5-3).",
+      }
+      : null,
+    summary: textOf(record?.summary),
+    exposureRationale: textOf(record?.exposureRationale),
+    noTradeReason: textOf(record?.noTradeReason),
+    orders,
+    validation,
+    watchlist,
+    usage: usageCells,
+  };
+}
+
+/** 개요의 "Claude 재량 책 시작" 카드. */
+export interface ClaudeStartPrompt {
+  /** 초기 결정을 보낼 책 코드(본문 `{book}`). */
+  bookCode: string;
+  bookLabel: string;
+  title: string;
+  body: string;
+  /** 프레임이 아직 임시라는 안내와 권고(OS 원문 적용 뒤 시작). */
+  interim: string;
+  cost: string;
+  confirmPreview: string;
+  confirmStart: string;
+}
+
+/**
+ * Claude 책 시작 카드 — Claude 책이 시작 전(NOT_STARTED)일 때만, 아니면 null.
+ *
+ * 시작은 한 번뿐이고 되돌리려면 책 초기화로 장부를 지워야 해서, 버튼은 확인 단계를 한 번 거칩니다. 미리보기도 Claude를 부르므로(비용·
+ * 하루 상한) 같은 확인을 거칩니다. 지금 시스템 프롬프트는 임시 프레임(프레임 v1 — 사용자 OS 원문 적용은 단계 3b)이라, 카드는 OS 원문을
+ * 적용한 뒤 시작하기를 권합니다(막지는 않음 — 사용자가 정함).
+ */
+export function claudeStartPrompt(
+  overview: Pick<PaperOverviewResponse, "initialized" | "startDate" | "books">,
+): ClaudeStartPrompt | null {
+  if (overview.initialized === false) return null;
+  const claude = (overview.books ?? []).find((book) => book.kind === "CLAUDE");
+  if (!claude || claude.status !== "NOT_STARTED") return null;
+  const start = overview.startDate ?? EMPTY;
+  const label = claude.label;
+  const object = `${label}${label.endsWith("책") ? "을" : "을(를)"}`;
+  return {
+    bookCode: claude.code,
+    bookLabel: label,
+    title: `${label} 시작`,
+    body: `${label}은 아직 현금만 들고 있습니다. 시작하면 출발일(${start}) 기준 입력 패킷 — 그날 이전의 가격·FRED·13F·트랙레코드만, `
+      + "매크로 카드는 그날 이력이 없어 지금 수집본을 참고로 — 을 Claude에 한 번 보내 주문 목록과 목표 주식 노출을 받고, 검증기(하드 규칙)를 "
+      + "통과한 주문만 출발일 종가에 사후 체결합니다. 현금 비중은 Claude가 정합니다 — 노출 0%도 100%도 거절 사유가 아닙니다. 응답 형식 "
+      + "오류·모델 거절·API 오류면 주문 없이 결정 기록에 사유가 남습니다.",
+    interim: "지금 판단 프레임은 임시입니다(프레임 v1 준비 전) — 사용자의 투자 OS 원문을 프레임으로 적용하는 것은 다음 단계(3b)이고, 그 전까지 "
+      + "Claude는 임시 시스템 프롬프트로 판단합니다. 시작은 한 번뿐이라 OS 원문을 적용한 뒤 시작하기를 권합니다. 미리보기로 임시 프레임의 "
+      + "판단을 먼저 볼 수 있습니다.",
+    cost: CLAUDE_COST_NOTE,
+    confirmPreview: `미리보기를 부를까요? ${CLAUDE_COST_NOTE} 출발일 기준 패킷으로 호출·검증까지 하고, 장부·결정·주문 기록은 바꾸지 않습니다`
+      + "(사용량과, 없을 때만 출발일 기관 선정·제안 종목의 출발일 종가를 남김 — 시작이 같은 값을 씀).",
+    confirmStart: `정말 시작할까요? ${CLAUDE_COST_NOTE} 검증을 통과한 주문을 출발일(${start}) 종가로 사후 체결하고 ${object} '운용 중'으로 `
+      + "바꿉니다. 미리보기와 같은 답이 나온다는 보장은 없습니다(다시 부름). 되돌리려면 보유·체결 탭의 '책 초기화'로 이 책의 장부를 모두 "
+      + "지워야 합니다. 프레임은 아직 임시(v1 준비 전)입니다.",
+  };
+}
+
+/**
+ * 미리보기 결과 — 배너 색과 한 줄. ok:false면 서버 문구를, 응답을 쓰지 못했으면(형식 오류·거절·API 오류·상한) 경고색으로 사유를.
+ * 어느 쪽이든 장부·결정·주문 기록은 바꾸지 않았다는 것(남긴 것도 함께)과, 시작하면 Claude를 다시 부르므로 답이 달라질 수 있다는 것을 적습니다
+ * (명세 §6 — Claude 책은 같은 입력에도 답이 달라질 수 있음).
+ */
+export function claudePreviewResultView(result: PaperClaudePreviewResult): { tone: "warn" | "info"; text: string } {
+  if (result.ok === false) return { tone: "warn", text: result.message ?? "미리보기를 하지 못했습니다." };
+  const status = textOf(result.status);
+  const failed = textOf(result.error) !== null || (status !== null && status !== "OK" && status !== "NO_TRADE");
+  const untouched = "장부·결정·주문 기록은 바꾸지 않았습니다(남긴 것: 사용량, 없을 때만 출발일 기관 선정·제안 종목의 출발일 종가).";
+  if (failed) {
+    const label = status ? decisionStatusBadge(status).label : "응답 없음";
+    return { tone: "warn", text: `미리보기 — ${label}${result.error ? `: ${result.error}` : ""}. ${untouched}` };
+  }
+  return {
+    tone: "info",
+    text: `미리보기 — ${result.model ?? "모델 미상"}의 응답을 검증까지 했습니다. ${untouched} 시작하면 Claude를 다시 부르므로 답이 `
+      + "달라질 수 있습니다.",
+  };
+}
+
+/** Claude 노출 추이 차트 — 행·계열과 마지막 날 한 줄. */
+export interface ClaudeExposureChart {
+  rows: Record<string, string | number | null>[];
+  series: NavSeriesLine[];
+  /** 마지막 거래일 한 줄("2026-10-27 — 목표 60.0% · 실제 58.2%"). 기록이 없으면 null. */
+  latest: string | null;
+}
+
+/**
+ * Claude 노출 추이(개요 claudeExposureSeries)를 차트 행으로 — 서버 순서(거래일 오름차순) 그대로. 모르는 값은 null로 두어 선을
+ * 끊습니다(0이나 앞 값으로 채우면 없는 노출이 생김). 목표는 Claude가 적은 값, 실제는 장부 값이고 화면은 둘의 차를 계산하지 않습니다.
+ */
+export function claudeExposureChart(series: unknown): ClaudeExposureChart {
+  const rows = listOf(series).filter(isRecord).flatMap((point) => {
+    const date = textOf(point.tradingDate);
+    return date ? [{ date, target: numberOf(point.targetExposurePct), actual: numberOf(point.actualExposurePct) }] : [];
+  });
+  const last = rows.at(-1) ?? null;
+  return {
+    rows,
+    series: [
+      { key: "target", name: "목표 노출(Claude가 정함)" },
+      { key: "actual", name: "실제 노출(장부)" },
+    ],
+    latest: last
+      ? `${last.date} — 목표 ${formatWithUnit(last.target, 1, "%")} · 실제 ${formatWithUnit(last.actual, 1, "%")}`
+      : null,
+  };
+}
+
+/** Claude 호출 사용량 카드(명세 C8) — 오늘·이달 칸과 안내. */
+export interface ApiUsageView {
+  /** "오늘(KST 2026-10-27)". */
+  todayLabel: string;
+  today: DecisionMetaCell[];
+  /** "이달(KST 2026-10)". */
+  monthLabel: string;
+  month: DecisionMetaCell[];
+  /** 오늘 호출이 상한에 닿았나 — 그날 남은 결정·미리보기·시작은 Claude를 부르지 않습니다. */
+  capReached: boolean;
+  /** 서버 안내(호출 수의 뜻·토큰 출처·추정 비용을 내지 않는 이유). 없으면 API_COST_NOT_SHOWN. */
+  note: string;
+}
+
+/** 추정 비용을 보이지 않는 이유 — 단가를 코드에 적어 두면 바뀌어도 모르는 숫자가 됩니다(없는 숫자를 만들지 않음). */
+export const API_COST_NOT_SHOWN = "추정 비용은 보이지 않습니다 — 단가를 코드·설정에 두지 않아(바뀌면 모르는 숫자가 됨) 토큰만 셉니다.";
+
+/**
+ * 상태 응답의 apiUsage → 사용량 카드. 숫자는 서버 값 그대로(호출 수·토큰 합)이고, 모르는 값은 "—"입니다(0으로 채우지 않음).
+ * 응답에 사용량이 없으면(구 서버·테이블 없음) null — 화면은 카드를 그리지 않습니다.
+ */
+export function apiUsageView(usage: unknown): ApiUsageView | null {
+  if (!isRecord(usage)) return null;
+  const today = isRecord(usage.today) ? usage.today : null;
+  const month = isRecord(usage.month) ? usage.month : null;
+  if (!today && !month) return null;
+  const count = (value: unknown) => formatNumber(numberOf(value), 0);
+  const tokens = (row: Record<string, unknown> | null): DecisionMetaCell[] => [
+    { key: "inputTokens", label: "입력 토큰", value: count(row?.inputTokens) },
+    { key: "outputTokens", label: "출력 토큰", value: count(row?.outputTokens) },
+    { key: "cacheReadTokens", label: "캐시 읽기 토큰", value: count(row?.cacheReadTokens) },
+    { key: "cacheWriteTokens", label: "캐시 쓰기 토큰", value: count(row?.cacheWriteTokens) },
+  ];
+  const calls = numberOf(today?.calls);
+  const cap = numberOf(today?.cap);
+  const serverNote = textOf(usage.note);
+  return {
+    todayLabel: `오늘(KST ${textOf(today?.day) ?? EMPTY})`,
+    today: [
+      { key: "calls", label: "호출 / 하루 상한", value: `${count(calls)} / ${count(cap)}회` },
+      ...tokens(today),
+    ],
+    monthLabel: `이달(KST ${textOf(month?.month) ?? EMPTY})`,
+    month: [
+      { key: "calls", label: "호출", value: `${count(month?.calls)}회` },
+      ...tokens(month),
+    ],
+    capReached: calls !== null && cap !== null && calls >= cap,
+    note: serverNote ?? API_COST_NOT_SHOWN,
+  };
+}
+
+// ---------------------------------------------------------------- 설정(명세 S1~S3, 설계 §4-4)
+
+/**
+ * 설정 입력의 종류. json은 이 화면에서 바꾸지 않는 값입니다(서버 형 이름도 값 모양도 알 수 없음 — 원문만 보임).
+ * 서버가 보낸 형 이름(keys[].type)을 먼저 보고, 모르는 이름이면 지금 값의 모양으로 정합니다.
+ */
+export type SettingKind = "number" | "integer" | "boolean" | "list" | "text" | "choice" | "json";
+
+/** 설정 키 묶음(점 경로의 첫 마디) 이름. 모르는 묶음은 이름 그대로. */
+const SETTING_GROUP: Record<string, string> = {
+  "": "일반 — Claude 책 · 장부 · 검증기 · 규칙 책 · 메모",
+  trackRecord: "기관 선정 — 트랙레코드(그룹 A)",
+  blend: "두 기관 그룹 섞기(D27)",
+  rules: "규칙 책",
+  gate: "OS 게이트 지표 — 참고 임계치(구속하지 않음)",
+};
+
+/** 설정 한 줄(표시·입력용). */
+export interface SettingRow {
+  key: string;
+  /** 묶음 키(점 경로의 첫 마디, 점이 없으면 ""). */
+  group: string;
+  kind: SettingKind;
+  /** 지금 값(설정 본문 그대로) — 입력이 바뀌었는지 이 값과 맞춰 봅니다. */
+  value: unknown;
+  /** 입력 상자의 처음 글자. */
+  initial: string;
+  /** 지금 값 표기. */
+  current: string;
+  /** 기본값 표기. 기본값을 모르면 "—". */
+  defaultText: string;
+  /** 지금 값이 기본값과 같은가. 기본값을 모르면 null. */
+  isDefault: boolean | null;
+  /** 범위 표기("0~20", "1 이상"). 범위가 없으면 null. */
+  range: string | null;
+  min: number | null;
+  max: number | null;
+  affectsRules: boolean;
+  description: string | null;
+  /** 선택 상자의 선택지(choice만). 지금 값이 목록에 없으면 뒤에 붙입니다(선택 상자가 다른 값을 가리키지 않게). */
+  options: string[];
+}
+
+/** 설정 묶음 하나 — 서버가 보낸 키 순서대로 처음 나온 묶음 순. */
+export interface SettingGroup {
+  key: string;
+  title: string;
+  rows: SettingRow[];
+}
+
+/**
+ * 설정 본문에서 점 경로 하나의 값. 본문 맨 위에 점 이름 그대로 든 키가 있으면 그것, 아니면 묶음을 따라 내려갑니다. 없으면 undefined.
+ */
+export function settingValueAt(body: unknown, key: string): unknown {
+  if (!isRecord(body)) return undefined;
+  if (Object.hasOwn(body, key)) return body[key];
+  let node: unknown = body;
+  for (const part of key.split(".")) {
+    if (!isRecord(node) || !Object.hasOwn(node, part)) return undefined;
+    node = node[part];
+  }
+  return node;
+}
+
+/** 설정 값 표기 — 참·거짓은 "예"·"아니오", 목록은 쉼표로, 빈 목록은 "(없음)", 모르면 "—". 숫자는 입력 상자와 같은 글자(천 단위 쉼표 없음). */
+export function settingText(value: unknown): string {
+  if (value === null || value === undefined) return EMPTY;
+  if (typeof value === "boolean") return value ? "예" : "아니오";
+  if (Array.isArray(value)) return value.length > 0 ? value.map((entry) => settingText(entry)).join(", ") : "(없음)";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : EMPTY;
+  if (typeof value === "string") return value || "(빈 글자)";
+  return jsonTitle(value) ?? EMPTY;
+}
+
+/** 입력 상자에 넣을 글자 — 참·거짓은 "true"·"false"(선택용), 목록은 쉼표로, 없으면 빈 글자. */
+function settingInputText(value: unknown, kind: SettingKind): string {
+  if (value === null || value === undefined) return "";
+  if (kind === "boolean") return value === true ? "true" : value === false ? "false" : "";
+  if (Array.isArray(value)) return value.map((entry) => (typeof entry === "string" ? entry : String(entry))).join(", ");
+  if (typeof value === "number" || typeof value === "string") return String(value);
+  return jsonTitle(value) ?? "";
+}
+
+function settingKind(type: unknown, options: readonly string[], value: unknown): SettingKind {
+  if (options.length > 0) return "choice";
+  const name = (textOf(type) ?? "").trim().toLowerCase();
+  if (["integer", "int", "long", "short"].includes(name)) return "integer";
+  if (["number", "double", "float", "decimal"].includes(name)) return "number";
+  if (["boolean", "bool"].includes(name)) return "boolean";
+  if (name.startsWith("list") || name.startsWith("array") || name.endsWith("[]")) return "list";
+  if (["string", "text", "time", "enum"].includes(name)) return "text";
+  // 서버 형 이름을 모르면 지금 값의 모양으로 — 정수인지 소수인지는 값 하나로 알 수 없어 숫자는 모두 number입니다.
+  if (Array.isArray(value)) return "list";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number") return "number";
+  if (typeof value === "string") return "text";
+  return "json";
+}
+
+/** 범위 표기 — "0~20", "1 이상", "100 이하". 둘 다 없으면 null. 서버가 보낸 숫자 그대로입니다. */
+export function settingRangeText(min: number | null | undefined, max: number | null | undefined): string | null {
+  const low = isNumber(min) ? String(min) : null;
+  const high = isNumber(max) ? String(max) : null;
+  if (low !== null && high !== null) return `${low}~${high}`;
+  if (low !== null) return `${low} 이상`;
+  if (high !== null) return `${high} 이하`;
+  return null;
+}
+
+const sameSettingValue = (left: unknown, right: unknown) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+
+/**
+ * 설정 응답을 묶음별 줄로 — 키 순서는 서버가 보낸 keys 순서 그대로이고, 값은 본문(body)·기본값(defaults)에서 점 경로로 찾습니다.
+ * 범위는 서버 값 그대로 적기만 하고 화면이 검사하지 않습니다(서버가 저장할 때 검사하고, 틀리면 400 문구를 그대로 보임).
+ */
+export function settingGroups(response: PaperSettingsResponse | null | undefined): SettingGroup[] {
+  const groups: SettingGroup[] = [];
+  for (const meta of response?.keys ?? []) {
+    if (!isRecord(meta)) continue;
+    const key = textOf(meta.key);
+    if (!key) continue;
+    const value = settingValueAt(response?.body, key);
+    const fallback = settingValueAt(response?.defaults, key);
+    const options = listOf(meta.options).filter((option): option is string => typeof option === "string" && option.length > 0);
+    const kind = settingKind(meta.type, options, value);
+    const choices = typeof value === "string" && kind === "choice" && value && !options.includes(value) ? [...options, value] : options;
+    const groupKey = key.includes(".") ? key.slice(0, key.indexOf(".")) : "";
+    const row: SettingRow = {
+      key,
+      group: groupKey,
+      kind,
+      value,
+      initial: settingInputText(value, kind),
+      current: settingText(value),
+      defaultText: settingText(fallback),
+      isDefault: fallback === undefined ? null : sameSettingValue(value, fallback),
+      range: settingRangeText(numberOf(meta.min), numberOf(meta.max)),
+      min: numberOf(meta.min),
+      max: numberOf(meta.max),
+      affectsRules: meta.affectsRules === true,
+      description: textOf(meta.description),
+      options: choices,
+    };
+    const group = groups.find((entry) => entry.key === groupKey);
+    if (group) group.rows.push(row);
+    else groups.push({ key: groupKey, title: SETTING_GROUP[groupKey] ?? groupKey, rows: [row] });
+  }
+  return groups;
+}
+
+/** 입력 글자를 설정 값으로 읽은 결과. */
+export type SettingParse = { ok: true; value: unknown } | { ok: false; error: string };
+
+/**
+ * 입력 글자를 그 키의 형으로 읽습니다 — 숫자는 숫자로(정수 키는 정수만), 참·거짓은 그대로, 목록은 쉼표·공백·줄바꿈으로 나눠
+ * 빈 칸을 뺍니다. 범위는 검사하지 않습니다(서버 몫 — 같은 규칙을 두 곳에 두면 갈라집니다). 형으로 읽을 수 없으면 오류 문구.
+ */
+export function parseSettingInput(row: Pick<SettingRow, "kind">, text: string): SettingParse {
+  const trimmed = text.trim();
+  switch (row.kind) {
+    case "integer":
+    case "number": {
+      if (!trimmed) return { ok: false, error: "값을 넣으세요." };
+      const value = Number(trimmed);
+      if (!Number.isFinite(value)) return { ok: false, error: "숫자가 아닙니다." };
+      if (row.kind === "integer" && !Number.isInteger(value)) return { ok: false, error: "정수를 넣으세요." };
+      return { ok: true, value };
+    }
+    case "boolean":
+      return trimmed === "true" || trimmed === "false"
+        ? { ok: true, value: trimmed === "true" }
+        : { ok: false, error: "예·아니오를 고르세요." };
+    case "list":
+      return { ok: true, value: trimmed.split(/[\s,]+/).filter(Boolean) };
+    case "choice":
+    case "text":
+      return trimmed ? { ok: true, value: trimmed } : { ok: false, error: "값을 넣으세요." };
+    default:
+      return { ok: false, error: "이 화면에서 바꾸지 않는 값입니다." };
+  }
+}
+
+/** 저장할 바뀐 값 하나. */
+export interface SettingChange {
+  key: string;
+  from: string;
+  to: string;
+  value: unknown;
+  affectsRules: boolean;
+}
+
+/** 입력 중인 값의 상태 — 바뀐 값(저장할 것)과 형으로 읽지 못한 키의 오류 문구. */
+export interface SettingsDraftView {
+  changes: SettingChange[];
+  errors: Record<string, string>;
+}
+
+/**
+ * 입력 중인 글자(draft — 손댄 키만)를 바뀐 값 목록으로. 형으로 읽은 값이 지금 값과 같으면(되돌렸거나 "SHY,TLT"처럼 표기만 다르면)
+ * 바뀐 것이 아닙니다. 순서는 설정 줄 순서(서버 keys 순서)입니다.
+ */
+export function settingsDraftView(
+  groups: readonly SettingGroup[],
+  draft: Readonly<Record<string, string>>,
+): SettingsDraftView {
+  const changes: SettingChange[] = [];
+  const errors: Record<string, string> = {};
+  for (const row of groups.flatMap((group) => group.rows)) {
+    const text = draft[row.key];
+    if (text === undefined) continue;
+    const parsed = parseSettingInput(row, text);
+    if (!parsed.ok) {
+      errors[row.key] = parsed.error;
+      continue;
+    }
+    if (sameSettingValue(parsed.value, row.value)) continue;
+    changes.push({ key: row.key, from: row.current, to: settingText(parsed.value), value: parsed.value, affectsRules: row.affectsRules });
+  }
+  return { changes, errors };
+}
+
+/** 저장 본문(patch) — 바뀐 키만, 키는 keys[].key(점 경로) 그대로: `{"trackRecord.windowYears": 5}`. */
+export function settingsPatch(changes: readonly SettingChange[]): Record<string, unknown> {
+  return Object.fromEntries(changes.map((change) => [change.key, change.value]));
+}
+
+/** 규칙 책 영향 키를 바꿀 때의 경고 — 서버 warning과 같은 문장(명세 S3). */
+export const RULES_FROZEN_WARNING = "규칙 책은 동결된 대조군입니다 — 이 변경은 실험 조건을 바꿉니다";
+
+/**
+ * 저장 전 확인 문구 — 바뀐 값에 규칙 책 영향 키(서버 keys[].affectsRules)가 있을 때만, 없으면 null(바로 저장).
+ * 규칙 책은 대조군이라 조건을 바꾸면 그 앞뒤 기록이 다른 실험이 됩니다 — 그래서 한 번 더 묻습니다(S3).
+ */
+export function settingsConfirmText(changes: readonly SettingChange[]): string | null {
+  const keys = changes.filter((change) => change.affectsRules).map((change) => change.key);
+  if (keys.length === 0) return null;
+  return `${RULES_FROZEN_WARNING}. 바꾸는 규칙 책 영향 키: ${keys.join(", ")}. 이 뒤의 규칙 책 결정은 다른 조건으로 낸 것이 됩니다`
+    + "(결정 기록마다 설정 버전이 남습니다). 그래도 저장할까요?";
+}
+
+/**
+ * 저장 결과 — 배너 색과 한 줄, 서버 경고(규칙 책 영향 키). 바뀐 키가 없으면 버전이 그대로라고 적습니다.
+ * 반영 시점은 서버 계약대로(재기동 없이 다음 작업부터 — 명세 S1) 적습니다.
+ */
+export function settingsSaveResultView(
+  result: PaperSettingsSaveResult,
+): { tone: "warn" | "info"; text: string; warning: string | null } {
+  if (result.ok === false) return { tone: "warn", text: result.message ?? "설정을 저장하지 못했습니다.", warning: null };
+  const keys = listOf(result.changedKeys).filter((key): key is string => typeof key === "string");
+  const version = isNumber(result.version) ? `v${result.version}` : EMPTY;
+  const warning = textOf(result.warning);
+  if (keys.length === 0) return { tone: "info", text: `바뀐 값이 없습니다 — 설정 ${version} 그대로입니다.`, warning };
+  return {
+    tone: "info",
+    text: `설정 ${version}(으)로 저장했습니다 — 바뀐 키 ${keys.join(", ")}. 재기동 없이 다음 작업부터 씁니다.`,
+    warning,
+  };
+}
+
+/** 설정 이력 한 줄(표시 문자열). */
+export interface SettingsHistoryRow {
+  key: string;
+  version: string;
+  createdAt: string;
+  /** 바뀐 키와 그 버전의 값("trackRecord.windowYears = 5 · slippageBp = 10"). 처음 버전은 "처음 값(초기화)". */
+  changes: string;
+  /** 규칙 책 영향 키를 바꾼 버전인가. */
+  rulesAffected: boolean;
+}
+
+/**
+ * 설정 이력(최근 순, 서버 순서 그대로)을 표 줄로. 바뀐 키의 값은 그 버전의 본문에서 찾아 붙이고(본문을 보내지 않으면 키 이름만),
+ * 규칙 책 영향 여부는 지금 키 설명(affectsRules)으로 표시합니다 — 그 버전 때의 판정이 아니라 지금 기준입니다.
+ */
+export function settingsHistoryRows(history: unknown, keys: readonly PaperSettingKey[] | null | undefined): SettingsHistoryRow[] {
+  const affects = new Set((keys ?? []).filter((meta) => meta.affectsRules === true).map((meta) => meta.key));
+  return listOf(history).filter(isRecord).flatMap((entry, index) => {
+    const version = numberOf(entry.version);
+    const changed = listOf(entry.changedKeys).filter((key): key is string => typeof key === "string" && key.length > 0);
+    const body = isRecord(entry.body) ? entry.body : null;
+    const changes = changed.length === 0
+      ? "처음 값(초기화)"
+      : changed.map((key) => {
+        const value = settingValueAt(body, key);
+        return value === undefined ? key : `${key} = ${settingText(value)}`;
+      }).join(" · ");
+    return [{
+      key: `${index}-${version ?? "unknown"}`,
+      version: version === null ? EMPTY : `v${formatNumber(version, 0)}`,
+      createdAt: formatKst(textOf(entry.createdAtKst)),
+      changes,
+      rulesAffected: changed.some((key) => affects.has(key)),
+    }];
+  });
 }

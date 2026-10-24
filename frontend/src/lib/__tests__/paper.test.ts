@@ -225,6 +225,18 @@ describe("주문 표", () => {
     expect(orderSizeText({ ...base, side: "BUY" })).toBe("—");
   });
 
+  it("크기 — 거절된 Claude 매수는 받은 값 그대로라 '목표 …% (제안)', 통과한 Claude 매수는 살 금액과 목표(근거)", () => {
+    const base = { qty: null, sellFraction: null, side: "BUY" as const };
+    // HELD 8% 보유에 목표 12% → WEIGHT_CAP 거절: 행 값 12는 목표 비중(살 금액 아님)
+    expect(orderSizeText({ ...base, status: "REJECTED", targetWeightPct: 12, reason: { targetWeightPct: 12, currentWeightPct: 8 } }))
+      .toBe("목표 12.00% (제안)");
+    // 목표 10% 통과: 행 값 2(= 10 − 8), 근거 targetWeightPct 10
+    expect(orderSizeText({ ...base, status: "PENDING", targetWeightPct: 2, reason: { targetWeightPct: 10, proposed: { targetWeightPct: 10 } } }))
+      .toBe("순자산의 2.00% 매수 (목표 10.00%)");
+    // 거절된 매도는 비율 그대로
+    expect(orderSizeText({ qty: null, targetWeightPct: null, side: "SELL", status: "REJECTED", sellFraction: 0.5 })).toBe("보유의 50%");
+  });
+
   it("크기 — 주문 값은 목표 비중이 아니라 살 금액: 근거의 목표 비중이 다르면 함께(이미 든 종목·SHY 보충)", () => {
     const base = { qty: null, sellFraction: null, side: "BUY" as const };
     // reselectionDayBuysTopsUpAndParksShy와 같은 장부 — CCC는 5%를 들고 목표 10%, SHY는 늘릴 47.4885%(목표 71.4885%)
@@ -262,12 +274,15 @@ describe("버튼", () => {
     expect(statusToggle(undefined)).toBeNull();
   });
 
-  it("시작 전 안내 — 벤치마크는 종가를 받은 뒤 초기화를 다시 누르라고, 규칙 책은 개요의 '규칙 책 시작'으로, Claude 책은 다음 단계", () => {
+  it("시작 전 안내 — 벤치마크는 종가를 받은 뒤 초기화를 다시 누르라고, 규칙 책·Claude 책은 개요의 시작 카드로", () => {
     expect(notStartedNote("BENCHMARK")).toContain("종가를 받은 뒤 초기화를 다시 누르세요");
     expect(notStartedNote("BENCHMARK")).not.toContain("초기 결정");
     expect(notStartedNote("RULES")).toContain("개요 탭의 '규칙 책 시작'");
     expect(notStartedNote("RULES")).not.toContain("다음 단계");
-    expect(notStartedNote("CLAUDE")).toContain("다음 단계의 초기 결정으로 시작합니다");
+    // 단계 3a부터 Claude 책도 개요의 시작 카드(초기 결정)로 시작합니다.
+    expect(notStartedNote("CLAUDE")).toContain("개요 탭의 'Claude 재량 책 시작'(초기 결정)");
+    expect(notStartedNote("CLAUDE")).toContain("검증(하드 규칙)을 통과한 것만");
+    expect(notStartedNote("CLAUDE")).not.toContain("다음 단계");
     expect(notStartedNote("CLAUDE")).not.toContain("종가를 받은 뒤");
   });
 

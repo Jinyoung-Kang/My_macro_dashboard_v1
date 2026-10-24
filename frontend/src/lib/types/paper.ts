@@ -12,7 +12,7 @@
 /** 책 종류 — 규칙 책 · Claude 재량 책 · 벤치마크(SPY 100%, SPY 60%·SHY 40%). */
 export type PaperBookKind = "RULES" | "CLAUDE" | "BENCHMARK";
 
-/** 책 상태. NOT_STARTED는 현금만 든 책(규칙·Claude 책은 다음 단계의 초기 결정으로 시작). */
+/** 책 상태. NOT_STARTED는 현금만 든 책(규칙·Claude 책은 개요의 '규칙 책 시작'·'Claude 재량 책 시작' — 초기 결정으로 시작). */
 export type PaperBookStatus = "NOT_STARTED" | "ACTIVE" | "PAUSED";
 
 /** 책 통계(PaperStats). 표본(일별 수익률 수)이 짧으면 cumReturnPct만 있고 나머지는 null입니다. */
@@ -111,6 +111,22 @@ export interface PaperOverviewResponse {
    * 결정 작업이 아직 한 번도 기록하지 않았으면 null — 이 필드를 아직 보내지 않는 백엔드에서도 null로 봅니다.
    */
   gate?: PaperGateIndicator | null;
+  /**
+   * Claude 책의 노출 추이(거래일 오름차순, 설계 §8) — 결정 기록의 목표 노출과 그 거래일 장부의 실제 노출. 결정이 없으면 빈 목록이고,
+   * 이 필드를 아직 보내지 않는 백엔드에서는 없습니다(화면은 "기록 없음"으로 봅니다).
+   */
+  claudeExposureSeries?: PaperClaudeExposurePoint[] | null;
+}
+
+/**
+ * Claude 노출 추이의 거래일 하나. 둘 다 % 값이고 모르면 null(선을 끊어 그림).
+ * targetExposurePct는 Claude가 결정에 적은 targetEquityExposurePct(기록·표시용 — 집행은 주문 기준, 설계 §5-3),
+ * actualExposurePct는 그 거래일 순자산 기록의 주식 노출(paper_nav_daily.exposure_pct)입니다.
+ */
+export interface PaperClaudeExposurePoint {
+  tradingDate: string;
+  targetExposurePct: number | null;
+  actualExposurePct: number | null;
 }
 
 /** 선정된 기관 하나(개요). 이름·순위를 모르면 null — 화면은 CIK를 대신 적습니다. rank는 그 그룹 안의 순위입니다. */
@@ -221,6 +237,41 @@ export interface PaperStatusResponse {
   settingsVersion?: number | null;
   /** 설정 행에서 키가 없거나 값이 틀려 기본값으로 대신 읽은 키(예: "slippageBp", "gate.brentMax"). 비어 있으면 모두 설정대로. */
   settingsFallbacks?: string[];
+  /** Claude 호출 사용량(명세 C8) — 오늘(KST)의 호출 수·상한·토큰과 이달(KST) 누적. 추정 비용은 서버가 내지 않습니다. */
+  apiUsage?: PaperApiUsage | null;
+}
+
+/** Claude 호출 사용량 — 하루(KST) 한 줄. 토큰은 응답이 알려 준 값의 합입니다. */
+export interface PaperApiUsageDay {
+  /** KST 날짜(YYYY-MM-DD). */
+  day: string;
+  /** 호출 수 — 성공·실패를 모두 셉니다(키가 없어 보내지 않은 호출은 빼고). */
+  calls: number;
+  /** 하루 호출 상한(설정 apiDailyCallCap). */
+  cap: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+/** Claude 호출 사용량 — 이달(KST) 누적. */
+export interface PaperApiUsageMonth {
+  /** KST 달(YYYY-MM). */
+  month: string;
+  /** 사용량이 남은 날 수. */
+  days: number;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export interface PaperApiUsage {
+  today: PaperApiUsageDay;
+  month: PaperApiUsageMonth;
+  note?: string;
 }
 
 /**
@@ -632,12 +683,128 @@ export interface PaperDecisionsResponse {
 export interface PaperDecisionDetail extends PaperDecisionSummary {
   packet: unknown;
   packetHash: string | null;
-  /** 규칙 책은 PaperRuleDecisionRecord 모양, Claude 책은 검증한 모델 응답(단계 3a). JSON 그대로입니다. */
+  /** 규칙 책은 PaperRuleDecisionRecord 모양, Claude 책은 PaperClaudeDecisionRecord 모양(검증한 모델 응답 + 검증 결과). JSON 그대로입니다. */
   response: unknown;
+  /** Claude 책의 토큰 사용량(PaperClaudeUsage 모양). 규칙 책은 null. */
   usage: unknown;
   noteIds: number[] | null;
   latencyMs: number | null;
   retryCount: number | null;
+  /**
+   * 목표 노출과 주문 반영 뒤 예상 주식 비중이 15%p 넘게 어긋났는가(Claude 책, 설계 §5-3). 결정 표에 열이 없어 서버가 이 필드나
+   * response.exposureMismatch 중 하나로 보냅니다 — 화면은 둘 다 읽습니다.
+   */
+  exposureMismatch?: boolean | null;
+  /** 모델이 보낸 원문(response_raw). 형식 오류일 때 무엇이 왔는지 보려고 씁니다. 보내지 않는 백엔드도 있습니다. */
+  responseRaw?: string | null;
+}
+
+// ---------------------------------------------------------------- Claude 재량 책(단계 3a)
+
+/** 판단 자세(decision.schema.json stance). */
+export type PaperClaudeStance = "RISK_ON" | "RISK_OFF" | "NEUTRAL" | "UNCERTAIN";
+
+/** 주장마다 붙이는 라벨(decision.schema.json orders[].labels). */
+export type PaperClaudeLabel = "사실" | "해석" | "가설" | "확인 필요" | "결정";
+
+/**
+ * 모델이 제안한 주문 하나(decision.schema.json orders[]). BUY는 targetWeightPct(목표 비중 %), SELL은 sellFraction(0~1, null이면 전량).
+ * 제안 그대로라 검증기가 거절한 주문도 여기 있습니다 — 통과·거절은 검증 결과(validation)에 있습니다.
+ */
+export interface PaperClaudeOrder {
+  ticker: string;
+  side: "BUY" | "SELL" | string;
+  targetWeightPct?: number | null;
+  sellFraction?: number | null;
+  timing: "NEXT_OBSERVATION" | "NEXT_CLOSE" | string;
+  thesis: string;
+  labels: (PaperClaudeLabel | string)[];
+  invalidation: string;
+}
+
+/**
+ * 검증기(OrderValidator, 설계 §5-4)의 거절 사유. 현금 비중·매크로 조건은 사유가 아닙니다(명세 D7) — 노출 0%·100%도 통과합니다.
+ */
+export type PaperRejectReason =
+  | "OUT_OF_UNIVERSE" | "DUPLICATE_TICKER" | "MALFORMED" | "NOT_HELD" | "BELOW_ONE_SHARE" | "LOCKED_OUT" | "WEIGHT_CAP"
+  | "MAX_POSITIONS" | "OVER_ALLOCATED" | "MIN_NOTIONAL" | "MONTHLY_CAP" | "MIN_HOLD" | "STALE_INPUT" | "NO_PRICE";
+
+/**
+ * 검증 결과 한 줄(OrderValidator.Verdict). 자바 record를 그대로 직렬화하면 주문이 `order` 안에 들고, 펼쳐 보내면 같은 줄에
+ * ticker·side…가 옵니다 — 화면은 두 모양을 다 읽습니다.
+ */
+export interface PaperValidationVerdict {
+  order?: {
+    ticker: string;
+    side: string;
+    targetWeightPct: number | null;
+    sellFraction: number | null;
+    timing: string | null;
+  } | null;
+  ticker?: string;
+  side?: string;
+  targetWeightPct?: number | null;
+  sellFraction?: number | null;
+  timing?: string | null;
+  accepted: boolean;
+  rejectReason: PaperRejectReason | string | null;
+  /** 거절의 구체 내용(서버 문구, 예: "목표 12% > 종목 상한 10%"). 통과면 null. */
+  detail: string | null;
+}
+
+/** Claude 호출 한 번의 토큰 사용량(AiService.StructuredResult). 모르는 값은 null. */
+export interface PaperClaudeUsage {
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheWriteTokens?: number | null;
+  latencyMs?: number | null;
+  stopReason?: string | null;
+}
+
+/** 관찰 목록 한 줄(decision.schema.json watchlist[]). */
+export interface PaperClaudeWatch {
+  ticker: string;
+  condition: string;
+}
+
+/**
+ * Claude 책 결정 기록(paper_decisions.response) — 스키마로 검사한 모델 응답(decision.schema.json) + 검증 결과.
+ * targetEquityExposurePct는 기록·표시용이고 집행은 주문 기준입니다(어긋나면 exposureMismatch, 숫자를 맞추지 않음).
+ */
+export interface PaperClaudeDecisionRecord {
+  schemaVersion?: number;
+  stance?: PaperClaudeStance | string;
+  targetEquityExposurePct?: number | null;
+  exposureRationale?: string | null;
+  summary?: string | null;
+  orders?: PaperClaudeOrder[];
+  noTradeReason?: string | null;
+  watchlist?: PaperClaudeWatch[];
+  /** 0~1 비율. */
+  confidence?: number | null;
+  validation?: PaperValidationVerdict[];
+  exposureMismatch?: boolean | null;
+}
+
+/**
+ * POST /api/paper/run/initial-decision `{book:"claude", preview:true}` — 초기 결정 미리보기. 호출·검증까지 하고 장부·결정·주문 표에
+ * 쓰지 않습니다(남기는 것: 사용량, 없을 때만 출발일 기관 선정·제안 종목의 출발일 종가 — 시작이 같은 값을 씀). 응답 형식 오류·거절·
+ * API 오류면 response가 null이고 error·status에 사유가 옵니다.
+ */
+export interface PaperClaudePreviewResult {
+  ok: boolean;
+  preview?: boolean;
+  packet?: unknown;
+  /** 모델 응답(PaperClaudeDecisionRecord 모양, JSON 그대로). */
+  response?: unknown;
+  validation?: PaperValidationVerdict[] | null;
+  usage?: PaperClaudeUsage | null;
+  model?: string | null;
+  /** 실패 종류(FORMAT_ERROR · REFUSED · API_ERROR · SKIPPED). 성공이면 없거나 null. */
+  status?: PaperDecisionStatus | string | null;
+  error?: string | null;
+  message?: string;
 }
 
 /** GET /api/paper/decisions/{id} — orders는 그 결정이 낸 주문 행(보유·체결 탭의 주문 표와 같은 모양). */
@@ -760,13 +927,71 @@ export interface PaperRunDecisionResult {
 }
 
 /**
- * POST /api/paper/run/initial-decision — 본문 `{book:"rules"}`. 규칙 책을 출발일 기준으로 선정·신호·배분해 출발일 종가로
- * 사후 체결하고 ACTIVE로 바꿉니다. fills는 사후 체결 행 배열입니다(docs/API.md, 미리보기면 빈 배열). 화면은 건수(숫자)로 와도
- * 읽습니다(방어). 트랙레코드 수집이 끝나지 않았거나 이미 시작한 책이면 400(서버 문구)입니다.
+ * POST /api/paper/run/initial-decision — 본문 `{book:"rules"}` 또는 `{book:"claude"}`. 규칙 책은 출발일 기준으로 선정·신호·배분해,
+ * Claude 책은 출발일 기준 입력 패킷으로 Claude가 고르고 검증기가 통과시킨 주문을, 출발일 종가로 사후 체결하고 ACTIVE로 바꿉니다.
+ * fills는 사후 체결 행 배열입니다(docs/API.md, 미리보기면 빈 배열). 화면은 건수(숫자)로 와도 읽습니다(방어).
+ * 트랙레코드 수집이 끝나지 않았거나 이미 시작한 책이면 400(서버 문구)입니다.
  */
 export interface PaperInitialDecisionResult {
   ok: boolean;
   decision?: PaperDecisionSummary | null;
   fills?: PaperFill[] | number | null;
   message?: string;
+}
+
+// ---------------------------------------------------------------- 설정(paper_settings, 명세 S1~S3)
+
+/**
+ * 설정 키 하나의 설명(GET /api/paper/settings keys[]). key는 설정 본문 안의 점 경로입니다(예: "trackRecord.windowYears",
+ * "blend.groupB.topN") — 바꾼 키 목록(changedKeys)과 같은 이름입니다.
+ */
+export interface PaperSettingKey {
+  key: string;
+  /** 값의 형(서버 표기 그대로 — number · integer · string · boolean · list 등). */
+  type: string;
+  /** 서버가 검사하는 범위(숫자 키). 없으면 null. */
+  min: number | null;
+  max: number | null;
+  /** 규칙 책(동결된 대조군)에 영향을 주는 키 — 바꾸면 저장 전에 한 번 더 확인합니다(명세 S3). */
+  affectsRules: boolean;
+  description: string | null;
+  /** 고를 수 있는 값(모델·effort·순위 기준 등). 서버가 보내면 선택 상자, 아니면 글자 입력(서버가 다시 검사). */
+  options?: string[] | null;
+}
+
+/** GET /api/paper/settings — 지금 설정 행. 행이 없으면(초기화 전) version이 null이고 body는 기본값입니다. */
+export interface PaperSettingsResponse {
+  available: boolean;
+  message?: string;
+  version?: number | null;
+  body?: Record<string, unknown> | null;
+  defaults?: Record<string, unknown> | null;
+  keys?: PaperSettingKey[];
+}
+
+/**
+ * POST /api/paper/settings — 본문은 바꿀 키만 담은 patch(`{"키": 값}`, 키는 keys[].key 그대로). 알려진 키·형·범위는 서버가 검사하고
+ * 틀리면 400(서버 문구)입니다. 규칙 책 영향 키를 바꾸면 warning이 옵니다.
+ */
+export interface PaperSettingsSaveResult {
+  ok?: boolean;
+  version: number | null;
+  changedKeys: string[];
+  warning: string | null;
+  message?: string;
+}
+
+/** 설정 변경 이력 한 줄(paper_settings_history). body는 그 버전의 설정 본문 전체(보내면). */
+export interface PaperSettingsHistoryEntry {
+  version: number;
+  changedKeys: string[];
+  createdAtKst: string | null;
+  body?: Record<string, unknown> | null;
+}
+
+/** GET /api/paper/settings/history — 최근 버전 순. */
+export interface PaperSettingsHistoryResponse {
+  available: boolean;
+  message?: string;
+  history?: PaperSettingsHistoryEntry[];
 }

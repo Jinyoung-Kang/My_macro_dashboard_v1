@@ -278,6 +278,7 @@ export function MultiLineSeries({
   precision = 1,
   rightPrecision = 0,
   zeroLine = false,
+  domain,
 }: {
   data: Record<string, unknown>[];
   series: MultiSeries[];
@@ -287,6 +288,11 @@ export function MultiLineSeries({
   rightUnit?: string;
   precision?: number;
   rightPrecision?: number;
+  /**
+   * 왼쪽 축 범위를 고정합니다(없으면 자료에 맞춤). 0~100%처럼 뜻이 정해진 값은 자료에 맞추면 58%와 62%의 차이가 축 전체로
+   * 부풀어 보입니다 — 주식 노출 비율 차트가 [0, 100]을 씁니다.
+   */
+  domain?: [number, number];
   /**
    * 0선을 그립니다 (순포지션처럼 부호가 곧 방향인 값).
    *
@@ -314,7 +320,7 @@ export function MultiLineSeries({
           tick={AXIS}
           tickLine={false}
           width={64}
-          domain={["auto", "auto"]}
+          domain={domain ?? ["auto", "auto"]}
           tickFormatter={(value: number) => `${formatNumber(value, precision)}${unit}`}
         />
         {/*
