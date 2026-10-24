@@ -254,6 +254,33 @@ export interface PaperStatusResponse {
    * 같은 하루 상한을 씁니다.
    */
   apiUsage?: PaperApiUsage | null;
+  /** 미국 종목 재무(SEC XBRL, D28)의 수집 범위 — Claude 책 패킷 8b_fundamentals의 자료. 이 필드를 아직 보내지 않는 백엔드에서는 없습니다. */
+  fundamentals?: PaperFundamentalsStatus | null;
+}
+
+/**
+ * 재무 수집 범위(D28) — 수집기 상태 저장본(us.fundamentals.status)의 요약. 저장본이 없으면 available:false이고 숫자는 모두
+ * null입니다(0으로 채우지 않음 — 화면 —).
+ */
+export interface PaperFundamentalsStatus {
+  available: boolean;
+  /** 모의 매매 유니버스에서 ETF를 뺀 종목 수(개수). */
+  universe: number | null;
+  /** 그중 SEC CIK가 잡힌 종목 수(개수). */
+  mapped: number | null;
+  /**
+   * 상태 줄에 최신 공시일이 있는 회사 수(개수) — companyfacts가 없거나 아직 받지 못한 회사는 빠집니다. 상태 줄 기준이라, 실패가
+   * 3일 넘게 이어져 오류만 남은 회사는 저장된 관측 행이 있어도 빠집니다.
+   */
+  covered: number | null;
+  /** 상태 저장본을 마지막으로 쓴 수집 시각("2026-10-25 12:10 KST"). */
+  latestFetchKst: string | null;
+  /**
+   * 지금 이어받은 상태(isStale)인 회사 수(개수) — 실패해 이전 값을 이어받은 뒤 아직 다시 받지 못한 회사. 그 뒤 실행에서 예산·시간
+   * 상한으로 시도하지 않은 회사도 들어가므로 이번 실행의 실패 수가 아닙니다.
+   */
+  staleCompanies: number | null;
+  note: string;
 }
 
 /**

@@ -12,6 +12,7 @@ import {
   formatCoverage,
   formatExcessPoints,
   formatSharePrice,
+  fundamentalsLine,
   heldText,
   initPrompt,
   initResultText,
@@ -233,6 +234,27 @@ describe("장부 관측치", () => {
     expect(quotesLine({ ...QUOTES, barDate: null, tickers: 0, staleTickers: [] }))
       .toBe("봉 날짜 —(미국 동부) · 티커 0개 · 지난 값 이어받음 0개");
     expect(quotesLine(null)).toContain("저장본이 아직 없습니다");
+  });
+});
+
+describe("재무 수집 범위(D28)", () => {
+  const STATUS = {
+    available: true, universe: 596, mapped: 571, covered: 560, latestFetchKst: "2026-10-25 12:10 KST", staleCompanies: 0,
+    note: "SEC XBRL Company Facts",
+  };
+
+  it("재무가 있는 회사/유니버스·마지막 수집(KST) — 이어받은 회사가 있으면 그 수를 덧붙인다", () => {
+    expect(fundamentalsLine(STATUS)).toBe("재무(SEC XBRL): 560/596곳 · 마지막 수집 2026-10-25 12:10");
+    expect(fundamentalsLine({ ...STATUS, staleCompanies: 3 }))
+      .toBe("재무(SEC XBRL): 560/596곳 · 마지막 수집 2026-10-25 12:10 · 이어받음 3곳");
+  });
+
+  it("저장본이 없으면 숫자·시각은 —(0으로 채우지 않음), 필드가 없는 백엔드면 줄을 그리지 않는다(null)", () => {
+    expect(fundamentalsLine({
+      available: false, universe: null, mapped: null, covered: null, latestFetchKst: null, staleCompanies: null, note: "없음",
+    })).toBe("재무(SEC XBRL): —/—곳 · 마지막 수집 —");
+    expect(fundamentalsLine(undefined)).toBeNull();
+    expect(fundamentalsLine(null)).toBeNull();
   });
 });
 

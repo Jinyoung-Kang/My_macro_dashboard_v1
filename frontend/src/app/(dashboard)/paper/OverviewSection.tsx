@@ -15,6 +15,7 @@ import {
   bookCard,
   claudeExposureChart,
   frameworkBoundaryView,
+  fundamentalsLine,
   initialDecisionResultView,
   initPrompt,
   initResultText,
@@ -64,13 +65,14 @@ const EXPOSURE_COLORS: Record<string, string> = { target: SERIES_COLORS.orange, 
 /**
  * 개요 탭 — 책 카드 네 개, 순자산 곡선(프레임 판 경계 세로선), Claude 노출 추이(목표 vs 실제), Claude 호출 사용량(오늘·이달·추정 비용 —
  * 상태 응답), 신호 기관(최근
- * 선정), OS 게이트 지표(참고), 장부 관측치 신선도, 작업 기록. 초기화 전이거나 벤치마크가 아직 사후 체결을 기다리면(pendingBackfill) "초기화" 버튼, 규칙 책이 시작 전이면
+ * 선정), OS 게이트 지표(참고), 장부 관측치 신선도(와 재무 수집 범위 한 줄 — 상태 응답, D28), 작업 기록. 초기화 전이거나 벤치마크가
+ * 아직 사후 체결을 기다리면(pendingBackfill) "초기화" 버튼, 규칙 책이 시작 전이면
  * "규칙 책 시작" 버튼, Claude 책이 시작 전이면 "미리보기"·"Claude 재량 책 시작" 버튼(ClaudeStartSection).
  *
  * 숫자는 개요 응답 그대로 그립니다. 버튼이 성공하면 onChanged(개요 다시 읽기)를 불러 카드·곡선을 새 장부로 바꿉니다.
  */
 export function OverviewSection({ overview, onChanged }: { overview: PaperOverviewResponse; onChanged: () => void }) {
-  // 정기 작업이 꺼져 있는지·설정 버전·Claude 호출 사용량은 개요 응답에 없어 상태 응답에서 읽습니다(실패해도 개요는 그대로).
+  // 정기 작업이 꺼져 있는지·설정 버전·Claude 호출 사용량·재무 수집 범위는 개요 응답에 없어 상태 응답에서 읽습니다(실패해도 개요는 그대로).
   const status = useApi<PaperStatusResponse>(endpoints.paper.status, 60_000);
 
   const init = useAsyncAction(() => apiPost<PaperInitResult>(endpoints.paper.init), "초기화하지 못했습니다.");
@@ -120,6 +122,8 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
   const exposure = claudeExposureChart(overview.claudeExposureSeries);
   const exposureSeries = exposure.series.map((line) => ({ ...line, color: EXPOSURE_COLORS[line.key] ?? SPARE_COLORS[0] }));
   const usage = status.data?.available ? apiUsageView(status.data.apiUsage) : null;
+  // 재무 수집 범위(D28) — 상태 응답에만 있고, 이 필드를 보내지 않는 백엔드면 줄을 그리지 않습니다.
+  const fundamentals = status.data?.available ? fundamentalsLine(status.data.fundamentals) : null;
   // 판 경계는 Claude 책에만 뜻이 있습니다(프레임은 규칙 책에 영향 없음, 명세 F5) — 그래도 네 책 곡선 위에 그려 같은 날 무엇이 바뀌었는지 봅니다.
   const boundaries = frameworkBoundaryView(overview.frameworkBoundaries, overview.navSeries?.dates ?? []);
 
@@ -313,7 +317,7 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
       <Card
         title="장부 관측치"
         subtitle="체결·스탑·평가에 쓰는 저장본입니다. 장중이면 마지막 봉이 지연 시세입니다."
-        source={PAPER_SOURCES.quotes}
+        source={fundamentals ? `${PAPER_SOURCES.quotes} · 재무: ${PAPER_SOURCES.fundamentals}` : PAPER_SOURCES.quotes}
         actions={
           quotes && (
             <Freshness collectedAt={quotes.collectedAtKst} ageSeconds={quotes.ageSeconds ?? undefined} stale={quotes.stale} />
@@ -324,6 +328,7 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
         {staleNames.length > 0 && (
           <p className="mt-1 text-xs text-warn">지난 값을 이어 쓴 티커: {staleNames.join(", ")}</p>
         )}
+        {fundamentals && <p className="mt-1 text-xs text-muted">{fundamentals}</p>}
       </Card>
 
       <Card title="작업 기록" subtitle="정기·수동 작업이 일했을 때·오류일 때만 남깁니다(최근 10건). 상세에는 처리한 관측치의 수집 시각·봉 날짜·티커 수가 있습니다." source={PAPER_SOURCES.jobs}>

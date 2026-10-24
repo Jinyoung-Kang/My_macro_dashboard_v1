@@ -20,6 +20,7 @@ import type {
   PaperFrameworkSaveResult,
   PaperFrameworkVersion,
   PaperFrameworkVersionSummary,
+  PaperFundamentalsStatus,
   PaperGateIndicator,
   PaperGateThresholds,
   PaperInitialDecisionResult,
@@ -59,6 +60,8 @@ import type {
 export const PAPER_SOURCES = {
   ledger: "대시보드 모의 장부 (PostgreSQL paper_*) — 체결가는 Yahoo Finance(yfinance) 지연 시세, 사후 체결은 그날 종가",
   quotes: "Yahoo Finance (yfinance) — 모의 매매 유니버스 일봉(장중 마지막 봉 = 지연 시세, 저장본 paper.quotes)",
+  fundamentals: "SEC EDGAR XBRL Company Facts (data.sec.gov, 수집 상태 저장본 us.fundamentals.status) — Claude 책 패킷 재무 "
+    + "8b_fundamentals의 자료",
   jobs: "대시보드 작업 기록 (PostgreSQL paper_job_runs)",
   trackRecord: "SEC EDGAR 13F-HR(후보 기관 분기 공시, 저장본 sec.13f.{cik}.q30) · 수정주가 Yahoo Finance(yfinance, equity_close) — "
     + "공시일 기준 복제 수익률은 대시보드 백엔드 계산(PostgreSQL paper_track_record)",
@@ -335,6 +338,23 @@ export function quotesLine(quotes: PaperQuotesSummary | null | undefined): strin
     `티커 ${formatWithUnit(quotes.tickers, 0, "개")}`,
     `지난 값 이어받음 ${formatNumber(quotes.staleTickers.length, 0)}개`,
   ].join(" · ");
+}
+
+/**
+ * 재무 수집 범위 한 줄(D28) — "재무(SEC XBRL): 재무가 있는 회사/유니버스(ETF 제외)곳 · 마지막 수집 …". 모르는 값은 —이고,
+ * 이어받은 회사가 있으면 그 수를 덧붙입니다. 상태 응답에 이 필드가 없으면(이전 백엔드) null — 줄을 그리지 않습니다.
+ */
+export function fundamentalsLine(fundamentals: PaperFundamentalsStatus | null | undefined): string | null {
+  if (!fundamentals) return null;
+  const count = (value: number | null | undefined) => formatNumber(value, 0);
+  const parts = [
+    `재무(SEC XBRL): ${count(fundamentals.covered)}/${count(fundamentals.universe)}곳`,
+    `마지막 수집 ${formatKst(fundamentals.latestFetchKst)}`,
+  ];
+  if ((fundamentals.staleCompanies ?? 0) > 0) {
+    parts.push(`이어받음 ${count(fundamentals.staleCompanies)}곳`);
+  }
+  return parts.join(" · ");
 }
 
 /**

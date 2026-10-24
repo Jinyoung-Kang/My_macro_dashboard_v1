@@ -390,6 +390,38 @@ describe("개요 — Claude 호출 사용량(명세 C8)", () => {
 
     expect(await screen.findByText("Claude 노출 추이")).toBeTruthy();
     expect(screen.queryByText("Claude 호출 사용량")).toBeNull();
+    expect(screen.queryByText(/재무\(SEC XBRL\)/)).toBeNull();
+  });
+});
+
+describe("개요 — 재무 수집 범위(D28)", () => {
+  it("상태 응답의 fundamentals를 장부 관측치 카드에 한 줄로 — 출처에 SEC XBRL을 함께 적는다", async () => {
+    reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_ACTIVE));
+    reads["/api/paper/status"] = () => Promise.resolve({
+      available: true, schemaReady: true, initialized: true, enabled: true, jobs: [],
+      fundamentals: {
+        available: true, universe: 596, mapped: 571, covered: 560, latestFetchKst: "2026-10-25 12:10 KST", staleCompanies: 2,
+        note: "SEC XBRL Company Facts — Claude 책 패킷(8b_fundamentals)에만 씁니다.",
+      },
+    });
+    render(<PaperPage />);
+
+    expect(await screen.findByText("재무(SEC XBRL): 560/596곳 · 마지막 수집 2026-10-25 12:10 · 이어받음 2곳")).toBeTruthy();
+    expect(screen.getByText(/SEC EDGAR XBRL Company Facts/)).toBeTruthy();
+  });
+
+  it("저장본이 아직 없으면 숫자는 —(0곳이 아님)", async () => {
+    reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_ACTIVE));
+    reads["/api/paper/status"] = () => Promise.resolve({
+      available: true, schemaReady: true, initialized: true, enabled: true, jobs: [],
+      fundamentals: {
+        available: false, universe: null, mapped: null, covered: null, latestFetchKst: null, staleCompanies: null,
+        note: "재무 상태 저장본(us.fundamentals.status)이 아직 없습니다",
+      },
+    });
+    render(<PaperPage />);
+
+    expect(await screen.findByText("재무(SEC XBRL): —/—곳 · 마지막 수집 —")).toBeTruthy();
   });
 });
 
