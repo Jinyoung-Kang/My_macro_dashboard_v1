@@ -19,7 +19,7 @@ import java.util.Map;
  * <pre>
  *  GET    /api/paper/framework                          지금 판(렌더링·토큰 어림·예산 초과)과 판 목록
  *  GET    /api/paper/framework/versions/{version}       판 하나(지금 판과 같은 모양)
- *  POST   /api/paper/framework                          {"body", "changelog"} 수동 편집 → 새 판
+ *  POST   /api/paper/framework                          {"body", "changelog", "baseVersion"} 수동 편집 → 새 판
  *  GET    /api/paper/framework/proposals                제안 목록(최근 순)
  *  POST   /api/paper/framework/proposals                {"noteId"?, "text"?} Claude에 갱신안 요청(자동 반영 없음)
  *  POST   /api/paper/framework/proposals/{id}/approve   제안 승인 → 새 판
@@ -45,8 +45,11 @@ public class PaperFrameworkController {
         this.notes = notes;
     }
 
-    /** 본문은 프레임 JSON 그대로({@code body}) — 키·형·길이는 서비스가 검사합니다. */
-    public record SaveRequest(JsonNode body, String changelog) {
+    /**
+     * 본문은 프레임 JSON 그대로({@code body}) — 키·형·길이는 서비스가 검사합니다. {@code baseVersion}은 편집을 시작한 판(지금 판과 다르면
+     * 400 — 그사이 생긴 판의 변경을 지우지 않게).
+     */
+    public record SaveRequest(JsonNode body, String changelog, Integer baseVersion) {
     }
 
     public record ProposalRequest(Long noteId, String text) {
@@ -67,7 +70,10 @@ public class PaperFrameworkController {
 
     @PostMapping("/framework")
     public Map<String, Object> save(@RequestBody(required = false) SaveRequest request) {
-        return framework.saveBody(request == null ? null : request.body(), request == null ? null : request.changelog());
+        if (request == null) {
+            return framework.saveBody(null, null, null);
+        }
+        return framework.saveBody(request.body(), request.changelog(), request.baseVersion());
     }
 
     @GetMapping("/framework/proposals")

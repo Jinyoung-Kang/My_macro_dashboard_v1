@@ -21,11 +21,13 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.text.Normalizer;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -103,8 +105,14 @@ public class FrameworkService {
     private static final Pattern ENGINE_ID = Pattern.compile("E([1-8])");
     private static final Pattern RULE_ID = Pattern.compile("E([1-8])-R([1-9][0-9]{0,2})");
     private static final Pattern PRINCIPLE_ID = Pattern.compile("P([1-9][0-9]{0,2})");
-    /** 사용자 메시지의 구분자처럼 보이는 문자열 — 글 안에 있으면 지웁니다(가짜 구분자로 자료 밖에 나온 척 못 하게). */
-    private static final Pattern FAKE_DELIMITER = Pattern.compile("<<\\s*/?\\s*글[^<>\\n]*>>");
+    /** 구분자 변형 검사의 꺾쇠 — ASCII·전각(＜＞)·작은 꺾쇠(﹤﹥). NFKC로 {@code <}·{@code >}가 되는 글자들입니다. */
+    private static final String LT = "[<\\uFF1C\\uFE64]";
+    private static final String GT = "[>\\uFF1E\\uFE65]";
+    private static final String NOT_BRACKET = "[^<>\\uFF1C\\uFF1E\\uFE64\\uFE65\\n]";
+    /** 꺾쇠·글자 사이에 끼워도 눈에 띄지 않는 것 — 공백(ASCII·유니코드 \p{Z}: NBSP·전각 공백 등)과 서식 문자(\p{Cf}: ZWSP·ZWJ·BOM 등). */
+    private static final String GAP = "[\\s\\p{Z}\\p{Cf}]*";
+    /** 사용자 메시지의 구분자처럼 보이는 문자열 — 글 안에 있으면 지웁니다(가짜 구분자로 자료 밖에 나온 척 못 하게, {@link #delimiterLike}). */
+    private static final Pattern FAKE_DELIMITER = delimiterLike("글");
     private static final Set<String> BODY_KEYS = Set.of("schemaVersion", "title", "status", "principles", "engines",
             "guidance");
     private static final Set<String> PRINCIPLE_KEYS = Set.of("id", "text");
@@ -568,7 +576,8 @@ public class FrameworkService {
     /**
      * GET /api/paper/framework — {@code {available, current:{version, status, title, body, rendered, tokensEst, overBudget,
      * changelog, createdAtKst, sourceProposalId}, versions:[{version, title, status, changelog, createdAtKst, sourceProposalId,
-     * tokensEst}], tokenBudget}}. 판이 하나도 없으면 임시 v0을 시드한 뒤 답합니다.
+     * tokensEst}], tokenBudget, maxIdNumbers:{principles, rules:{E1…E8}}}}. 판이 하나도 없으면 임시 v0을 시드한 뒤 답합니다.
+     * {@code maxIdNumbers}는 모든 판에서 쓴 가장 큰 번호({@link UsedIds}) — 화면의 수동 편집이 새 원칙·규칙 번호를 이보다 크게 매깁니다.
      */
     public Map<String, Object> view() {
         if (!store.ready()) {
@@ -593,6 +602,7 @@ public class FrameworkService {
         out.put("current", frameView(current, settingsBody));
         out.put("versions", versions);
         out.put("tokenBudget", tokenBudget(settingsBody));
+        out.put("maxIdNumbers", usedIds().view());
         return out;
     }
 
@@ -634,10 +644,15 @@ public class FrameworkService {
      * 틀리면 아무것도 바꾸지 않고 400(사유를 모두 적음). 크기 예산을 넘으면 저장하되 {@code warning}을 붙입니다(F4). 사용자 OS
      * 원문으로 만든 첫 판이 v1입니다(계약 보충 §1).
      *
+     * <p>{@code baseVersion}은 편집을 시작한 판 번호이고, 지금 판과 같아야 저장합니다(승인의 기준 판 검사와 같은 규칙, FW-1). 본문은
+     * 그 판을 복사해 고친 전체라, 그사이 다른 창에서 제안을 승인해 판이 생겼는데 그대로 저장하면 새 판이 그 판의 변경(예: 승인한 규칙)을
+     * 조용히 지웁니다 — 판 목록에도 남지 않고 다음 결정부터 빠진 프레임으로 판단합니다.
+     *
      * @return {@code {ok, version, tokensEst, overBudget, warning}} — 테이블이 없으면 {@code available:false, ok:false}
-     * @throws InvalidRequestException 본문 형식·변경 기록이 비었거나 {@value #CHANGELOG_MAX}자 초과
+     * @throws InvalidRequestException 본문 형식·변경 기록이 비었거나 {@value #CHANGELOG_MAX}자 초과·기준 판 번호가 없음·기준 판이 지금
+     *                                 판과 다름("다른 판이 먼저 생겼습니다")
      */
-    public Map<String, Object> save(JsonNode body, String changelog) {
+    public Map<String, Object> save(JsonNode body, String changelog, Integer baseVersion) {
         if (!store.ready()) {
             return notReadyPost();
         }
@@ -648,9 +663,17 @@ public class FrameworkService {
         if (codePoints(changes) > CHANGELOG_MAX) {
             throw new InvalidRequestException("변경 기록(changelog)은 " + CHANGELOG_MAX + "자 이내여야 합니다.");
         }
+        if (baseVersion == null) {
+            throw new InvalidRequestException("baseVersion(편집을 시작한 판 번호)을 보내세요 — 그사이 생긴 판의 변경을 지우지 않게 "
+                    + "지금 판과 대조합니다.");
+        }
         writing.lock();
         try {
             Frame base = current();
+            if (baseVersion != base.version()) {
+                throw new InvalidRequestException("다른 판이 먼저 생겼습니다 — 편집을 다시 시작하세요(편집 기준 v" + baseVersion
+                        + ", 지금 v" + base.version() + "). 그대로 저장하면 그 판의 변경이 사라집니다.");
+            }
             int next = base.version() + 1;
             Checked checked = check(body, next, STATUS_USER);
             if (!checked.errors().isEmpty()) {
@@ -665,9 +688,9 @@ public class FrameworkService {
         }
     }
 
-    /** {@link #save(JsonNode, String)} — 컨트롤러가 받은 본문. */
-    public Map<String, Object> saveBody(JsonNode body, String changelog) {
-        return save(body, changelog);
+    /** {@link #save(JsonNode, String, Integer)} — 컨트롤러가 받은 본문. */
+    public Map<String, Object> saveBody(JsonNode body, String changelog, Integer baseVersion) {
+        return save(body, changelog, baseVersion);
     }
 
     /** 새 판을 넣고 응답 {@code {ok, version, tokensEst, overBudget, warning}}을 만듭니다. 그 번호가 이미 있으면 예외(되돌림). */
@@ -702,8 +725,8 @@ public class FrameworkService {
      * 않으면(없는 id·본문 없음·300자 초과) 승인할 수 없으므로 같은 검사를 미리 해 FAILED로 둡니다.
      *
      * @return {@code {ok, proposal}} — 테이블이 없으면 {@code available:false, ok:false}
-     * @throws InvalidRequestException {@code noteId}·{@code text} 둘 다 있거나 둘 다 없음·없는 메모·INSIGHT가 아님·빈 글·너무 긴
-     *                                 글·하루 호출 상한
+     * @throws InvalidRequestException {@code noteId}·{@code text} 둘 다 있거나 둘 다 없음·없는 메모·INSIGHT가 아님·보관한 메모·빈 글·
+     *                                 너무 긴 글·하루 호출 상한
      * @throws TooManyRequestsException 다른 제안 요청이 진행 중
      */
     public Map<String, Object> propose(Long noteId, String text) {
@@ -720,6 +743,11 @@ public class FrameworkService {
             if (!NoteService.INSIGHT.equals(note.kind())) {
                 throw new InvalidRequestException("프레임 제안은 INSIGHT 메모(방법론 글)로만 합니다 — 메모 #" + noteId + "는 "
                         + note.kind() + "입니다.");
+            }
+            if (note.archived()) {
+                // 보관은 "더는 패킷·제안에 쓰지 않음"입니다(메모 탭의 확인 문구) — 받아 주면 그 약속을 어기고 호출 상한·비용을 씁니다(F6).
+                throw new InvalidRequestException("보관한 메모입니다(#" + noteId + ") — 보관한 메모는 제안에 쓰지 않습니다. 이 글로 "
+                        + "제안을 받으려면 새 방법론 메모로 남기세요.");
             }
             // 메모는 쓸 때 길이를 검사했습니다(INSIGHT 본문 상한) — 제목 한 줄을 붙여도 다시 막지 않습니다.
             request = "제목: " + oneLine(note.title()) + "\n" + multiLine(note.body());
@@ -780,11 +808,38 @@ public class FrameworkService {
     }
 
     static String stripDelimiters(String text) {
-        String out = text == null ? "" : text;
+        return stripDelimiterLike(text, FAKE_DELIMITER);
+    }
+
+    /**
+     * {@code <<word …>>} 모양의 구분자와 <b>눈에 그렇게 보이는 변형</b>을 찾는 패턴 — {@code <<}·{@code >>}는 ASCII·전각·작은 꺾쇠 어느
+     * 것이든, 꺾쇠와 글자 사이(글자끼리 사이도)에 공백·NBSP·전각 공백·ZWSP 같은 보이지 않는 글자가 끼어도 같은 구분자로 봅니다. ASCII
+     * {@code \s}만 보면 꺾쇠 뒤에 ZWSP(U+200B)·NBSP(U+00A0)를 끼운 것이나 전각 {@code ＜＜글 끝＞＞}가 그대로 Claude에 가서, 붙여 넣은
+     * 글이 "여기서 자료가 끝났다"고 꾸밀 수 있습니다(RV3B-COST-2). 메모 구분자도 같은 모양이라 {@link NoteService}가 쓸 수 있게 단어를
+     * 받습니다.
+     */
+    static Pattern delimiterLike(String word) {
+        StringBuilder letters = new StringBuilder();
+        word.codePoints().forEach(cp -> {
+            if (!letters.isEmpty()) {
+                letters.append(GAP);
+            }
+            letters.append(Pattern.quote(new String(Character.toChars(cp))));
+        });
+        return Pattern.compile(LT + GAP + LT + GAP + "[/\\uFF0F]?" + GAP + letters + NOT_BRACKET + "*" + GT + GAP + GT);
+    }
+
+    /**
+     * 글에서 구분자 모양({@link #delimiterLike})을 지웁니다 — 지운 뒤 새로 생긴 구분자(겹쳐 쓴 것)도 없어질 때까지. 먼저 NFC로 맞춥니다
+     * (풀어 쓴 자모 {@code 글}이 완성형과 같은 글자로 잡히게 — 정준 동치라 글의 뜻·모양은 바뀌지 않음). NFKC는 쓰지 않습니다: 호환 자모
+     * (ㅋ·ㄱ)·원문자(①) 같은 사용자 글자를 바꿉니다.
+     */
+    static String stripDelimiterLike(String text, Pattern pattern) {
+        String out = text == null ? "" : Normalizer.normalize(text, Normalizer.Form.NFC);
         String before;
         do {
             before = out;
-            out = FAKE_DELIMITER.matcher(out).replaceAll("");
+            out = pattern.matcher(out).replaceAll("");
         } while (!out.equals(before));
         return out;
     }
@@ -817,7 +872,7 @@ public class FrameworkService {
             return new Classified("FAILED", failure(parsed, usage, "FORMAT", error, r, violations), error);
         }
         // 형식을 지난 응답 — 승인할 수 있는지(연산이 지금 판에 적용되는지)를 미리 봅니다(메서드 설명).
-        Applied dryRun = apply(base, Json.array(parsed, "operations"), base.version() + 1, noteId);
+        Applied dryRun = apply(base, Json.array(parsed, "operations"), base.version() + 1, noteId, usedIds());
         ObjectNode response = (ObjectNode) parsed.deepCopy();
         response.set("usage", usage);
         if (!dryRun.errors().isEmpty()) {
@@ -862,16 +917,80 @@ public class FrameworkService {
     }
 
     /**
-     * 제안의 연산을 판 본문에 차례대로 적용합니다(계약 보충 §6). ADD_RULE은 target = 엔진 id → 새 id = 그 엔진의 다음 번호(가장 큰
-     * 번호 + 1), {@code addedIn} = 새 판, {@code sourceNoteId} = 제안의 메모. UPDATE_RULE·DELETE_RULE은 target = 규칙 id(UPDATE는 본문을
-     * 바꾸고, 제안에 메모가 있으면 근거 메모도 그 메모로 — {@code addedIn}은 처음 넣은 판 그대로). ADD_PRINCIPLE은 target을 보지 않고
-     * 다음 {@code P{n}}, UPDATE·DELETE_PRINCIPLE은 target = 원칙 id. 대상이 없음·ADD·UPDATE에 본문이 없음·300자 초과·모르는 연산이
-     * 하나라도 있으면 사유 목록을 돌려주고 본문은 null입니다(부르는 쪽이 아무것도 바꾸지 않음). 다 적용한 본문을 {@link #check}로 다시
-     * 검사합니다(새 판 상태 = 기준 판 상태).
+     * 모든 판에서 쓴 적 있는 가장 큰 번호 — 엔진별 규칙 번호({@code E{n}-R{m}}의 m, 엔진 id → 번호)와 원칙 번호({@code P{n}}의 n). 새 원칙·
+     * 규칙은 이보다 큰 번호를 받습니다(FW-2): 지금 본문만 보면 지운 E2-R3 자리에 다음 ADD_RULE이 다른 글로 다시 E2-R3을 만들어, 예전 판·
+     * 제안의 평가·결정 논거가 가리키는 "E2-R3"이 판마다 다른 규칙이 됩니다. 화면의 수동 편집도 이 값으로 새 번호를 매깁니다
+     * ({@code GET /api/paper/framework}의 {@code maxIdNumbers}).
      */
-    static Applied apply(Frame base, List<JsonNode> operations, int newVersion, Long noteId) {
+    record UsedIds(Map<String, Integer> rules, int principles) {
+
+        UsedIds {
+            rules = Map.copyOf(rules);
+        }
+
+        /** 판 본문들에서 번호를 모읍니다(모양이 다른 id는 건너뜀 — 번호가 아님). */
+        static UsedIds of(Iterable<JsonNode> bodies) {
+            Map<String, Integer> rules = new HashMap<>();
+            int principles = 0;
+            for (JsonNode body : bodies) {
+                for (JsonNode p : Json.array(body, "principles")) {
+                    Matcher m = PRINCIPLE_ID.matcher(nullToEmpty(Json.asText(p, "id")).strip());
+                    if (m.matches()) {
+                        principles = Math.max(principles, Integer.parseInt(m.group(1)));
+                    }
+                }
+                for (JsonNode engine : Json.array(body, "engines")) {
+                    for (JsonNode rule : Json.array(engine, "rules")) {
+                        Matcher m = RULE_ID.matcher(nullToEmpty(Json.asText(rule, "id")).strip());
+                        if (m.matches()) {
+                            rules.merge("E" + m.group(1), Integer.parseInt(m.group(2)), Math::max);
+                        }
+                    }
+                }
+            }
+            return new UsedIds(rules, principles);
+        }
+
+        int rule(String engineId) {
+            return rules.getOrDefault(engineId, 0);
+        }
+
+        /** 응답 {@code {principles, rules:{E1…E8}}} — 쓴 적 없는 엔진은 0. */
+        Map<String, Object> view() {
+            Map<String, Object> engines = new LinkedHashMap<>();
+            for (int i = 1; i <= ENGINE_COUNT; i++) {
+                engines.put("E" + i, rule("E" + i));
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("principles", principles);
+            out.put("rules", engines);
+            return out;
+        }
+    }
+
+    /** 모든 판 본문에서 모은 번호({@link UsedIds}) — 승인·제안 사전 검사·화면이 같은 값을 씁니다. */
+    UsedIds usedIds() {
+        return UsedIds.of(store.frameworkBodies());
+    }
+
+    private static String nullToEmpty(String text) {
+        return text == null ? "" : text;
+    }
+
+    /**
+     * 제안의 연산을 판 본문에 차례대로 적용합니다(계약 보충 §6). ADD_RULE은 target = 엔진 id → 새 id = 그 엔진의 다음 번호, {@code addedIn}
+     * = 새 판, {@code sourceNoteId} = 제안의 메모. UPDATE_RULE·DELETE_RULE은 target = 규칙 id(UPDATE는 본문을 바꾸고, 제안에 메모가 있으면
+     * 근거 메모도 그 메모로 — {@code addedIn}은 처음 넣은 판 그대로). ADD_PRINCIPLE은 target을 보지 않고 다음 {@code P{n}}, UPDATE·
+     * DELETE_PRINCIPLE은 target = 원칙 id. "다음 번호"는 지금 본문·{@code used}(모든 판에서 쓴 번호)·이 제안에서 앞서 매긴 번호 가운데 가장
+     * 큰 것 + 1입니다 — 지운 id를 다시 쓰지 않습니다(같은 제안 안의 [삭제, 추가]도 삭제한 번호를 잇지 않음, {@link UsedIds}). 대상이 없음·
+     * ADD·UPDATE에 본문이 없음·300자 초과·모르는 연산이 하나라도 있으면 사유 목록을 돌려주고 본문은 null입니다(부르는 쪽이 아무것도 바꾸지
+     * 않음). 다 적용한 본문을 {@link #check}로 다시 검사합니다(새 판 상태 = 기준 판 상태).
+     */
+    static Applied apply(Frame base, List<JsonNode> operations, int newVersion, Long noteId, UsedIds used) {
         ObjectNode body = base.body() instanceof ObjectNode object ? object.deepCopy()
                 : JsonNodeFactory.instance.objectNode();
+        Map<String, Integer> ruleMax = new HashMap<>(used.rules());
+        int principleMax = used.principles();
         List<String> errors = new ArrayList<>();
         for (int i = 0; i < operations.size(); i++) {
             JsonNode op = operations.get(i);
@@ -897,13 +1016,14 @@ public class FrameworkService {
                         errors.add(where + ": 없는 엔진입니다(E1~E8)");
                         continue;
                     }
-                    int next = 0;
+                    int next = ruleMax.getOrDefault(target, 0);
                     for (JsonNode rule : rules) {
-                        Matcher m = RULE_ID.matcher(Json.asText(rule, "id") == null ? "" : Json.asText(rule, "id"));
+                        Matcher m = RULE_ID.matcher(nullToEmpty(Json.asText(rule, "id")));
                         if (m.matches()) {
                             next = Math.max(next, Integer.parseInt(m.group(2)));
                         }
                     }
+                    ruleMax.put(target, next + 1);
                     ObjectNode rule = rules.addObject();
                     rule.put("id", target + "-R" + (next + 1));
                     rule.put("text", text);
@@ -932,13 +1052,14 @@ public class FrameworkService {
                 }
                 case OP_ADD_PRINCIPLE -> {
                     ArrayNode principles = principlesOf(body);
-                    int next = 0;
+                    int next = principleMax;
                     for (JsonNode p : principles) {
-                        Matcher m = PRINCIPLE_ID.matcher(Json.asText(p, "id") == null ? "" : Json.asText(p, "id"));
+                        Matcher m = PRINCIPLE_ID.matcher(nullToEmpty(Json.asText(p, "id")));
                         if (m.matches()) {
                             next = Math.max(next, Integer.parseInt(m.group(1)));
                         }
                     }
+                    principleMax = next + 1;
                     ObjectNode p = principles.addObject();
                     p.put("id", "P" + (next + 1));
                     p.put("text", text);
@@ -1038,7 +1159,7 @@ public class FrameworkService {
                 throw new InvalidRequestException("연산이 없는 제안이라 새 판을 만들지 않습니다(평가만 있음) — 거절로 닫으세요.");
             }
             int next = base.version() + 1;
-            Applied applied = apply(base, operations, next, proposal.noteId());
+            Applied applied = apply(base, operations, next, proposal.noteId(), usedIds());
             if (!applied.errors().isEmpty()) {
                 throw new InvalidRequestException("제안을 적용하지 않았습니다 — " + String.join(" · ", applied.errors()));
             }

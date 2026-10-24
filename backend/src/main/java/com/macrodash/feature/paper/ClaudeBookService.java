@@ -623,13 +623,15 @@ public class ClaudeBookService {
      *
      * <p>시스템 프롬프트는 그 판의 본문을 <b>이 결정이 읽은 설정 행</b>({@code row} — 결정 기록의 settings_version)으로 다시
      * 렌더링합니다. 판 행의 {@code rendered}(판을 만들 때의 설정)를 쓰면 그 뒤 바뀐 하드 규칙 수치가 프롬프트에 남아 검증기와
-     * 어긋나고, 기록의 framework_version·settings_version으로 같은 문자열을 다시 만들 수 없습니다(계약 보충 §2).
+     * 어긋나고, 기록의 framework_version·settings_version으로 같은 문자열을 다시 만들 수 없습니다(계약 보충 §2). 패킷도 같은 행으로
+     * 만듭니다 — 패킷이 설정을 따로 읽으면 그사이 설정 탭에서 저장한 판이 끼어, 한 호출 안에서 프롬프트의 하드 규칙과 패킷 12_hardRules·
+     * 1_basis.settingsVersion이 서로 다른 판을 말합니다(FW-5).
      */
     private Attempt attempt(LocalDate asOf, String kind, boolean initial, SettingsRow row, ClaudeSettings claude,
                             LocalDate today) {
         FrameworkService.Frame frame = framework.current();
         String system = FrameworkService.render(frame.body(), frame.version(), row.body());
-        Packet packet = packets.build(asOf, kind, initial, frame.version());
+        Packet packet = packets.build(asOf, kind, initial, frame.version(), row);
         if (calls.reserve(today, claude.dailyCallCap()).isEmpty()) {
             return null;
         }

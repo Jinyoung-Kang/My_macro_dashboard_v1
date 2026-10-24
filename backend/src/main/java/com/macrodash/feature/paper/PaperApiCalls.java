@@ -68,7 +68,10 @@ public class PaperApiCalls {
      */
     record Pricing(Rates sonnet, Rates haiku, List<String> fallbacks) {
 
-        /** Sonnet 기본 단가(PRICE_NOTE의 날짜에 확인한 값 — 설정에서 고침). */
+        /**
+         * Sonnet 기본 단가(PRICE_NOTE의 날짜에 확인한 값 — 설정에서 고침). 캐시 읽기 0.10은 공식 가격표의 Sonnet 5.5 값입니다
+         * (Opus 5.5·Sonnet 5.5의 캐시 읽기는 입력 단가의 0.05배 — 다른 모델의 0.1배와 다름). 캐시 쓰기(5분)는 1.25배.
+         */
         static final Rates DEFAULT_SONNET = new Rates(2, 10, 0.10, 2.50);
         /** Haiku 기본 단가(프롬프트 100K 토큰 이하 단가). */
         static final Rates DEFAULT_HAIKU = new Rates(0.10, 0.50, 0.01, 0.125);

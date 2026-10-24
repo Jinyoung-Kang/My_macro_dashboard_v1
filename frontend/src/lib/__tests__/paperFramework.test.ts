@@ -16,17 +16,21 @@ import {
   frameworkInfoOf,
   frameworkSavePayload,
   frameworkSaveResultView,
+  frameworkSourceCardView,
   frameworkStatusBadge,
   frameworkVersionLabel,
   frameworkVersionRows,
+  insightNoteOptions,
   insightNotePayload,
   noteArchiveConfirm,
+  noteAsOfHint,
   noteCreateResultView,
   noteDraftCheck,
   noteExpiryHint,
   notePayload,
   noteRows,
   PAPER_TABS,
+  proposalBaseToFetch,
   proposalView,
   proposeResultView,
   rejectResultView,
@@ -212,9 +216,39 @@ describe("수동 편집(F3)", () => {
     expect(check).toEqual({ errors: [], changed: true, canSave: true });
     const payload = frameworkSavePayload(ready);
     expect(payload.changelog).toBe("사용자 판으로 확정");
+    expect(payload.baseVersion).toBe(0);
     expect(payload.body).toMatchObject({ schemaVersion: 1, status: "USER", title: "임시 v0 — OS 원문 반영 전", guidance: "이 판은 임시다." });
     expect((payload.body.principles as { text: string }[])[0].text).toBe("패킷의 숫자에서 출발한다.");
     expect((payload.body.engines as unknown[]).length).toBe(8);
+  });
+
+  it("FW-1 저장 본문에 편집을 시작한 판(baseVersion)을 싣는다 — 다른 창에서 생긴 판은 서버만 알아 서버가 대조한다", () => {
+    const draft = frameworkDraftFrom(version({ version: 3, status: "USER", body: body({ status: "USER" }) }));
+    if (!draft) throw new Error("draft");
+    const payload = frameworkSavePayload(editFrameworkDraft(draft, { type: "changelog", value: "x" }));
+    expect(payload).toMatchObject({ baseVersion: 3, changelog: "x" });
+    expect(Object.keys(payload)).toEqual(["body", "changelog", "baseVersion"]);
+  });
+
+  it("FW-2 새 번호는 서버가 알려 준 모든 판의 가장 큰 번호(maxIdNumbers)보다 크게 — 앞선 판에서 지운 id를 다시 쓰지 않는다", () => {
+    // v2 본문: E2에는 R1만 남았고(R2·R3은 앞선 판에서 지움), 원칙은 P1·P2만(P3~P5는 지움).
+    const thin = body({ status: "USER" });
+    thin.engines[1] = { ...thin.engines[1], rules: [{ id: "E2-R1", text: "남은 규칙", addedIn: 0, sourceNoteId: null }] };
+    const current = version({ version: 2, status: "USER", body: thin });
+    const maxIds = { principles: 5, rules: { E1: 1, E2: 3, E3: 1, E4: 1, E5: 1, E6: 1, E7: 1, E8: 1 } };
+    const draft = frameworkDraftFrom(current, maxIds);
+    if (!draft) throw new Error("draft");
+    expect(editFrameworkDraft(draft, { type: "addRule", engine: 1 }).engines[1].rules.at(-1)?.id).toBe("E2-R4");
+    expect(editFrameworkDraft(draft, { type: "addPrinciple" }).principles.at(-1)?.id).toBe("P6");
+    expect(editFrameworkDraft(draft, { type: "addRule", engine: 0 }).engines[0].rules.at(-1)?.id).toBe("E1-R2");
+    // 서버가 값을 보내지 않으면(옛 백엔드) 기준 판의 id만 — 그때는 R2·P3.
+    const plain = frameworkDraftFrom(current);
+    if (!plain) throw new Error("draft");
+    expect(editFrameworkDraft(plain, { type: "addRule", engine: 1 }).engines[1].rules.at(-1)?.id).toBe("E2-R2");
+    expect(editFrameworkDraft(plain, { type: "addPrinciple" }).principles.at(-1)?.id).toBe("P3");
+    // 모양이 다른 값은 무시(0·소수·엔진 id가 아님)
+    const odd = frameworkDraftFrom(current, { principles: 2.5, rules: { E2: 0, X1: 9 } });
+    expect(odd?.usedIds.filter((id) => id === "X1-R9" || id.startsWith("P2.5"))).toEqual([]);
   });
 
   it("본문이 없는 판은 편집할 수 없다(null), 저장 결과는 새 판 번호", () => {
@@ -286,6 +320,58 @@ describe("제안(F2) — 평가·변경·승인", () => {
     expect(approved.staleBase).toBeNull();
   });
 
+  it("FW-3·F2 변경 0건인 대기 제안은 승인할 수 없다 — 서버가 400(거절로 닫음)이라 버튼을 막고 문구도 서버와 같게", () => {
+    const empty = proposalView(proposal({ operations: [] }), version());
+    expect(empty.pending).toBe(true);
+    expect(empty.staleBase).toBeNull();
+    expect(empty.approvable).toBe(false);
+    expect(empty.emptyMessage).toBe("평가만 있는 제안입니다 — 바꿀 것이 없어 승인할 수 없습니다(서버가 새 판을 만들지 않음). 거절로 닫으세요.");
+    expect(empty.emptyMessage).not.toContain("새 판이 생깁니다");
+    expect(proposalView(proposal(), version()).approvable).toBe(true);
+    expect(proposalView(proposal({ baseVersion: 0 }), version({ version: 1, status: "USER" })).approvable, "기준 판이 다름").toBe(false);
+    expect(proposalView(proposal({ status: "APPROVED" }), version()).approvable).toBe(false);
+  });
+
+  it("FW-4 결정된 제안은 기준 판과 대조하고 '승인하면 서버가 거절' 경고·'승인하면 …' 안내를 붙이지 않는다", () => {
+    // 제안 #3(기준 v0)을 승인해 v1이 됨 — v1에는 지운 P2가 없고 E2-R1은 고친 글.
+    const v1Body = body({ status: "INTERIM", principles: [{ id: "P1", text: "패킷의 숫자에서 출발한다." }] });
+    v1Body.engines[1] = { ...v1Body.engines[1], rules: [{ id: "E2-R1", text: "세 곳 이상 겹치면 우선한다.", addedIn: 0, sourceNoteId: 12 }] };
+    const v1 = version({ version: 1, title: "임시 v1", body: v1Body });
+    const approved = proposal({ status: "APPROVED", resultVersion: 1, decidedAtKst: "2026-10-25 12:00" });
+    expect(proposalBaseToFetch(approved, v1)).toBe(0);
+    expect(proposalBaseToFetch(approved, version()), "기준 판이 지금 판이면 따로 읽지 않음").toBeNull();
+    expect(proposalBaseToFetch(proposal(), v1), "대기 중은 지금 판과 대조").toBeNull();
+    expect(proposalBaseToFetch(proposal({ status: "REJECTED", baseVersion: null as never }), v1)).toBeNull();
+
+    // 기준 판을 아직 못 읽음 — 경고 없이 '—'
+    const loading = proposalView(approved, v1);
+    expect(loading.operations.map((row) => row.warning)).toEqual([null, null, null]);
+    expect(loading.operations.map((row) => row.before)).toEqual(["—", "—", "—"]);
+    expect(loading.beforeHeader).toBe("기준 판 글(v0)");
+    expect(loading.operationsNote).toContain("승인한 제안입니다 — 이 변경을 기준 판(v0)에 적용해 v1을 만들었습니다.");
+    expect(loading.operationsNote).not.toContain("승인하면");
+
+    // 기준 판(v0)을 읽었으면 그때 글
+    const read = proposalView(approved, v1, version());
+    expect(read.operations.map((row) => [row.target, row.before, row.after, row.warning])).toEqual([
+      ["E1", "E1. 엔진 1 — 새 규칙", "VIX 30 이상이면 노출을 줄인다.", null],
+      ["E2-R1", "두 그룹이 겹치는 종목을 우선한다.", "세 곳 이상 겹치면 우선한다.", null],
+      ["P2", "과매매하지 않는다.", "(삭제)", null],
+    ]);
+    expect(read.operationsNote).toBe("승인한 제안입니다 — 이 변경을 기준 판(v0)에 적용해 v1을 만들었습니다. 왼쪽 글은 기준 판(v0)의 글입니다.");
+    // 다른 판을 넘기면 쓰지 않음(번호가 다름)
+    expect(proposalView(approved, v1, v1).operations[2].before).toBe("—");
+
+    const rejected = proposalView(proposal({ status: "REJECTED", decidedAtKst: "2026-10-25 12:00" }), v1, version());
+    expect(rejected.operationsNote).toContain("거절한 제안입니다 — 판에 적용하지 않았습니다.");
+    expect(rejected.operations.every((row) => row.warning === null)).toBe(true);
+    // 대기 중이면 예전처럼 지금 판과 대조하고 경고
+    const pending = proposalView(proposal({ baseVersion: 1 }), v1);
+    expect(pending.beforeHeader).toBe("지금 글");
+    expect(pending.operations[2].warning).toBe("지금 판에 대상이 없습니다 — 승인하면 서버가 거절합니다(아무것도 바꾸지 않음).");
+    expect(pending.operationsNote).toBe("승인하면 서버가 이 변경을 지금 판에 적용해 새 판을 만듭니다. 지금 글은 지금 판에서 찾은 것입니다.");
+  });
+
   it("요청·승인·거절 결과 문구 — 실패(FAILED 행)는 경고와 서버 사유, 자동 반영 없음", () => {
     expect(proposeResultView({ ok: true, proposal: proposal() })).toEqual({
       tone: "info", text: "제안(#3)을 받았습니다 — 평가와 변경을 보고 승인하거나 거절하세요. 자동 반영은 없습니다(승인해야 새 판).",
@@ -300,6 +386,35 @@ describe("제안(F2) — 평가·변경·승인", () => {
       .toBe("렌더링이 약 9,000토큰으로 예산을 넘습니다");
     expect(rejectResultView({ ok: true }).text).toBe("거절했습니다 — 판은 그대로입니다.");
     expect(insightNotePayload(" ", " 원문 ")).toEqual({ kind: "INSIGHT", title: "투자 OS 원문", body: "원문" });
+    expect(insightNotePayload("", "글", "방법론 글")).toEqual({ kind: "INSIGHT", title: "방법론 글", body: "글" });
+  });
+});
+
+describe("제안 요청 카드(F1)", () => {
+  it("임시 판이면 'OS 원문으로 새 판 만들기', 사용자 판이면 '방법론 글로 갱신 제안 받기'(기본 제목 '방법론 글') — 둘 다 있는 메모를 고를 수 있다", () => {
+    const interim = frameworkSourceCardView("INTERIM");
+    expect([interim.title, interim.defaultTitle, interim.bodyLabel]).toEqual(["OS 원문으로 새 판 만들기", "투자 OS 원문", "OS 원문"]);
+    expect(interim.intro).toContain("사용자 판(v1)은 아래 '직접 고치기'로");
+    expect(frameworkSourceCardView(null).title).toBe("OS 원문으로 새 판 만들기");
+    const user = frameworkSourceCardView("USER");
+    expect([user.title, user.defaultTitle, user.bodyLabel]).toEqual(["방법론 글로 갱신 제안 받기", "방법론 글", "방법론 글"]);
+    expect(user.subtitle).toContain("있는 메모 고르기");
+    expect(user.intro).toContain("OS 원문은 이미 판에 옮겼으니 다시 붙일 필요가 없습니다");
+    expect(user.intro).toContain("이미 있는 방법론 메모");
+  });
+
+  it("고를 수 있는 메모 — 보관하지 않은 방법론 메모만, 서버 순서 그대로", () => {
+    const notes = [
+      { id: 12, kind: "MARKET", asOfDate: "2026-10-23", expiresOn: "2026-10-28", title: "유가", body: "브렌트", archived: false, active: true, createdAtKst: null },
+      { id: 10, kind: "INSIGHT", asOfDate: "2026-10-20", expiresOn: null, title: "투자 OS 원문", body: "원문 전체", archived: false, active: true, createdAtKst: null },
+      { id: 9, kind: "INSIGHT", asOfDate: "2026-10-20", expiresOn: null, title: "보관한 글", body: "x", archived: true, active: false, createdAtKst: null },
+      { id: 8, kind: "INSIGHT", asOfDate: "2026-10-19", expiresOn: null, title: "방법론", body: "가".repeat(1200), archived: false, active: true, createdAtKst: null },
+    ];
+    expect(insightNoteOptions(notes)).toEqual([
+      { value: "10", label: "#10 투자 OS 원문 (5자)" },
+      { value: "8", label: "#8 방법론 (1,200자)" },
+    ]);
+    expect(insightNoteOptions(null)).toEqual([]);
   });
 });
 
@@ -350,7 +465,28 @@ describe("메모(F6)", () => {
     expect(noteCreateResultView({ ok: true, note: { ...NOTES[0], id: 12 } as never }).text)
       .toBe("시황 메모(#12)를 저장했습니다 — 기준일 2026-10-23 · 만료 2026-10-28. 유효한 동안 Claude 결정 패킷에 자료로 실립니다.");
     expect(noteCreateResultView({ ok: true, note: NOTES[2] as never }).text).toContain("결정 패킷에는 싣지 않고 프레임 제안에만");
+    expect(noteCreateResultView({ ok: true, note: NOTES[2] as never }).text).toContain("프레임 탭의 제안 카드에서 이 메모를 골라");
     expect(noteArchiveConfirm({ id: 12, title: "유가" })).toContain("이 메모(#12 유가)를 보관할까요? 지우지 않고");
+  });
+});
+
+describe("메모 기준일(F4)", () => {
+  it("기준일 칸 안내 — 비우면 referenceDate(마지막으로 끝난 미국 세션), 그보다 뒤 날짜는 결정 전 아침 메모가 그날 결정에서 빠진다", () => {
+    expect(noteAsOfHint("2026-10-26")).toBe(
+      "비우면 2026-10-26(마지막으로 끝난 미국 세션 — Claude 결정이 보는 거래일). 그보다 뒤 날짜(예: 오늘 KST)를 고르면 그 거래일의 결정부터 실려, "
+        + "결정 전 아침에 쓴 메모가 그날 결정에서 빠집니다.",
+    );
+    expect(noteAsOfHint(null)).toContain("비우면 마지막으로 끝난 미국 세션(Claude 결정이 보는 거래일)");
+  });
+
+  it("저장 결과 — 서버가 실리지 않는다고 판정하면(active:false) 경고로 바로 알린다(목록 배지가 바뀌어서야 알지 않게)", () => {
+    const note = { id: 14, kind: "MARKET", asOfDate: "2026-10-27", expiresOn: "2026-10-30", title: "아침 시황", body: "b", archived: false, active: false, createdAtKst: null };
+    expect(noteCreateResultView({ ok: true, note }, "2026-10-26")).toEqual({
+      tone: "warn",
+      text: "시황 메모(#14)를 저장했습니다 — 기준일 2026-10-27 · 만료 2026-10-30. 2026-10-26 거래일의 Claude 결정 패킷에는 실리지 않습니다"
+        + "(서버 판정 — 기준일이 그보다 뒤이거나 이미 만료). 기준일~만료일 사이 거래일의 결정부터 실립니다.",
+    });
+    expect(noteCreateResultView({ ok: true, note: { ...note, active: true } }, "2026-10-26").tone).toBe("info");
   });
 });
 

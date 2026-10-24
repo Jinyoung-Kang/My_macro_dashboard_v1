@@ -124,7 +124,7 @@ class PaperApiCallsTest {
         assertThat(usage.inputTokens()).isEqualTo(22_000);
         assertThat(usage.outputTokens()).isEqualTo(3_200);
         assertThat(usage.estCostCalls()).as("추정한 호출은 하나").isEqualTo(1);
-        assertThat(usage.estCostUsd()).isCloseTo(0.07378, within(1e-9));
+        assertThat(usage.estCostUsd()).as("21,000×2 + 3,100×10 + 7,800×0.10 = 73,780 ÷ 100만").isCloseTo(0.07378, within(1e-9));
         assertThat(calls.estimateCostUsd("claude-sonnet-5-5", result(null, 1_000_000L, 0L, 0L, 0L)))
                 .isCloseTo(2.0, within(1e-12));
         assertThat(calls.estimateCostUsd("claude-sonnet-5-5", null)).isNull();
@@ -162,6 +162,7 @@ class PaperApiCallsTest {
         JsonNode pricing = settings.defaultsJson().path("pricing");
         assertThat(pricing.path("sonnet").path("inputUsdPerMTok").asDouble()).isEqualTo(2);
         assertThat(pricing.path("sonnet").path("outputUsdPerMTok").asDouble()).isEqualTo(10);
+        // 공식 가격표: Sonnet 5.5 캐시 읽기는 입력 2달러의 0.05배(0.10) — 다른 모델의 0.1배가 아님
         assertThat(pricing.path("sonnet").path("cacheReadUsdPerMTok").asDouble()).isEqualTo(0.10);
         assertThat(pricing.path("sonnet").path("cacheWriteUsdPerMTok").asDouble()).isEqualTo(2.50);
         assertThat(pricing.path("haiku").path("inputUsdPerMTok").asDouble()).isEqualTo(0.10);

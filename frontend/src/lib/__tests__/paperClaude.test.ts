@@ -261,6 +261,23 @@ describe("Claude 결정 상세", () => {
     expect(decisionMeta({ ...old, book: "rules", model: null, response: {} }).find((cell) => cell.key === "frameworkVersion"))
       .toBeUndefined();
   });
+
+  it("F3 상세 머리 — Claude를 부르지 않은 SKIPPED(response에 framework 없음)는 '단계 3b 전 기록'이 아니라 'Claude를 부르지 않음'", () => {
+    const skipped: PaperDecisionDetail = {
+      id: 9, book: "claude", asOfTradingDate: "2026-11-05", kind: "SCHEDULED", status: "SKIPPED", decidedAtKst: "2026-11-06 07:30",
+      model: null, frameworkVersion: null, settingsVersion: 3, selectionAsOf: null, targetExposurePct: null,
+      summary: "일일 호출 상한(6회)에 닿아 Claude를 부르지 않았습니다", orderCount: 0, rejectedCount: 0, pricesFinal: true, error: null,
+      packet: null, packetHash: null,
+      response: { summary: "일일 호출 상한", book: "claude", kind: "SCHEDULED", asOfTradingDate: "2026-11-05", skipped: "일일 호출 상한", settings: {} },
+      usage: null, noteIds: null, latencyMs: null, retryCount: 0,
+    };
+    const cell = decisionMeta(skipped).find((entry) => entry.key === "frameworkVersion");
+    expect(cell?.value).toBe("— (Claude를 부르지 않음)");
+    expect(cell?.value).not.toContain("3b 전");
+    // framework도 SKIPPED도 아닌 모양을 모르는 기록은 단정하지 않습니다.
+    expect(decisionMeta({ ...skipped, status: "API_ERROR", response: {} }).find((entry) => entry.key === "frameworkVersion")?.value)
+      .toBe("— (판 기록 없음)");
+  });
 });
 
 describe("Claude 책 시작 카드", () => {

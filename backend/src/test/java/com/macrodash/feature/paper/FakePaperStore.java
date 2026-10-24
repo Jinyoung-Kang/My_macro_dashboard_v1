@@ -629,6 +629,11 @@ class FakePaperStore extends PaperStore {
     }
 
     @Override
+    public List<JsonNode> frameworkBodies() {
+        return frameworks.values().stream().map(FrameworkVersion::body).toList();
+    }
+
+    @Override
     public List<FrameworkVersionSummary> frameworkVersions() {
         List<FrameworkVersionSummary> out = new ArrayList<>();
         frameworks.descendingMap().values().forEach(v -> out.add(new FrameworkVersionSummary(v.version(),

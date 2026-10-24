@@ -14,6 +14,7 @@ import type {
   PaperDecisionDetail,
   PaperDecisionSummary,
   PaperFrameworkEngine,
+  PaperFrameworkMaxIds,
   PaperFrameworkPrinciple,
   PaperFrameworkProposal,
   PaperFrameworkSaveResult,
@@ -23,6 +24,7 @@ import type {
   PaperGateThresholds,
   PaperInitialDecisionResult,
   PaperInitResult,
+  PaperNote,
   PaperNoteCreateResult,
   PaperNoteKind,
   PaperOkResult,
@@ -1183,8 +1185,10 @@ export interface DecisionMetaCell {
 
 /**
  * 결정 상세의 프레임 칸 — 그 결정에 쓴 판(response.framework `{version, status, title}`, 없으면 목록의 frameworkVersion). 임시 판이면
- * "임시 v0"처럼 상태를 붙이고(보충 계약 §7) 제목은 마우스를 올려 봅니다. 단계 3a 기록(판 번호를 두기 전의 임시 시스템 프롬프트)은 번호가
- * 없어 그렇다고 적습니다 — 빈 칸이면 "프레임 없이"로 읽힙니다. 규칙 책은 프레임을 쓰지 않아(명세 F5) 칸이 없습니다.
+ * "임시 v0"처럼 상태를 붙이고(보충 계약 §7) 제목은 마우스를 올려 봅니다. 단계 3a 기록(판 번호를 두기 전의 임시 시스템 프롬프트 —
+ * response.framework가 `{version:null, interim:true}`)은 번호가 없어 그렇다고 적습니다 — 빈 칸이면 "프레임 없이"로 읽힙니다. Claude를
+ * 부르지 않은 SKIPPED(일시정지·호출 상한)는 판을 쓰지 않았으니 그렇게 적습니다 — "단계 3b 전 기록"으로 적으면 3b 뒤의 기록을 옛 기록으로
+ * 읽습니다(F3, docs/API.md도 두 경우를 나눔). 규칙 책은 프레임을 쓰지 않아(명세 F5) 칸이 없습니다.
  */
 function decisionFrameworkCell(decision: PaperDecisionDetail): DecisionMetaCell | null {
   const recorded = isRecord(decision.response) ? frameworkInfoOf(decision.response.framework) : null;
@@ -1198,7 +1202,13 @@ function decisionFrameworkCell(decision: PaperDecisionDetail): DecisionMetaCell 
     };
   }
   if (decision.book !== "claude") return null;
-  return { key: "frameworkVersion", label: "프레임 버전", value: "임시 — 판 번호 없음(단계 3b 전 기록)" };
+  if (recorded?.status === "INTERIM") {
+    return { key: "frameworkVersion", label: "프레임 버전", value: "임시 — 판 번호 없음(단계 3b 전 기록)", title: recorded.title ?? undefined };
+  }
+  if (decision.status === "SKIPPED") {
+    return { key: "frameworkVersion", label: "프레임 버전", value: "— (Claude를 부르지 않음)" };
+  }
+  return { key: "frameworkVersion", label: "프레임 버전", value: "— (판 기록 없음)" };
 }
 
 /**
@@ -2159,8 +2169,10 @@ function startFrameworkNote(framework: FrameworkInfo | null): ClaudeStartPrompt[
         + "임시 판이면 OS 원문으로 사용자 판을 만든 뒤 시작하기를 권합니다.",
     };
   }
-  const tail = " 시작은 한 번뿐입니다(되돌리려면 책 초기화). 프레임 탭의 'OS 원문으로 새 판 만들기'(Claude 제안 → 승인)나 '직접 고치기'"
-    + "(수동 편집 — 사용자 판)로 판을 만들 수 있고, 미리보기로 지금 판의 판단을 먼저 볼 수 있습니다.";
+  // 사용자 판을 만드는 길은 '직접 고치기'의 저장 — 'OS 원문으로 새 판 만들기'의 제안 승인은 임시 상태를 이어받습니다(F1).
+  const tail = " 시작은 한 번뿐입니다(되돌리려면 책 초기화). 프레임 탭의 '직접 고치기'(수동 편집 — 저장하면 사용자 판)로 OS 원문의 원칙·"
+    + "규칙을 옮길 수 있습니다('OS 원문으로 새 판 만들기'의 Claude 제안을 승인한 판은 임시 상태를 이어받음). 미리보기로 지금 판의 판단을 먼저 "
+    + "볼 수 있습니다.";
   if (framework?.status === "INTERIM") {
     const head = version === 0
       ? "지금 프레임은 임시 v0입니다 — OS 원문으로 v1을 만든 뒤 시작을 권합니다."
@@ -2770,10 +2782,12 @@ export function frameworkCurrentView(
     version,
     title: textOf(current.title) ?? textOf(body?.title) ?? EMPTY,
     badge: frameworkStatusBadge(status, version),
+    // 사용자 판(v1)을 만드는 길은 '직접 고치기'의 저장뿐이라 그것을 먼저 적습니다 — 제안 승인은 기준 판의 상태(임시)를 이어받습니다(F1).
     interimNote: status === "INTERIM"
-      ? `지금 판은 ${frameworkVersionLabel(version, status)}입니다 — 사용자 OS 원문을 받기 전, 명세·설계의 지침으로 만든 판입니다. 'OS 원문으로 `
-        + "새 판 만들기'(원문 → 방법론 메모 → Claude 제안 → 승인)나 '직접 고치기'(수동 편집 — 사용자 판)로 새 판을 만든 뒤 Claude 책을 시작하기를 "
-        + "권합니다. 제안을 승인한 판은 기준 판의 상태를 이어받아 임시로 남습니다 — 사용자 판으로 확정하는 것은 '직접 고치기'의 저장입니다."
+      ? `지금 판은 ${frameworkVersionLabel(version, status)}입니다 — 사용자 OS 원문을 받기 전, 명세·설계의 지침으로 만든 판입니다. 아래 '직접 `
+        + "고치기'로 OS 원문의 원칙·규칙을 옮겨 저장하면 사용자 판(v1)이 됩니다 — 그 뒤 Claude 책을 시작하기를 권합니다. 'OS 원문으로 새 판 "
+        + "만들기'(원문 → 방법론 메모 → Claude 제안 → 승인)는 원문과 지금 판을 대조한 제안을 받는 길이고, 제안을 승인한 판은 기준 판의 상태를 "
+        + "이어받아 임시로 남습니다."
       : null,
     createdAt: formatKst(textOf(current.createdAtKst)),
     changelog: textOf(current.changelog) ?? EMPTY,
@@ -2878,8 +2892,10 @@ export function renderedCompare(left: string | null | undefined, right: string |
 // ---- 수동 편집(F3)
 
 /**
- * 편집 중인 판. 기준 판 본문을 복사해 시작하고, 저장하면 새 판(사용자 판)이 됩니다. usedIds는 기준 판에 있던 원칙·규칙 id —
- * 새 원칙·규칙의 번호가 지운 id를 다시 쓰지 않게 합니다(같은 id가 판마다 다른 글이면 addedIn·근거 메모 이력을 읽기 어려움).
+ * 편집 중인 판. 기준 판 본문을 복사해 시작하고, 저장하면 새 판(사용자 판)이 됩니다. usedIds는 새 번호가 넘어야 할 id — 기준 판에 있던
+ * 원칙·규칙 id와, 서버가 알려 준 모든 판의 가장 큰 번호(maxIdNumbers를 "P7"·"E2-R5" 꼴로)입니다. 새 원칙·규칙의 번호가 지운 id를 다시
+ * 쓰지 않게 합니다(같은 id가 판마다 다른 글이면 addedIn·근거 메모 이력을 읽기 어려움). 기준 판만 보면 그 전 판에서 지운 id를 다시
+ * 씁니다(FW-2).
  */
 export interface FrameworkDraft {
   baseVersion: number | null;
@@ -2924,8 +2940,28 @@ function bodyParts(body: Record<string, unknown> | null) {
   return { principles, engines, guidance: stringOf(body?.guidance) };
 }
 
-/** 지금 판에서 편집을 시작합니다. 본문이 없으면(모양이 다름) null — 화면은 편집 버튼을 막습니다. */
-export function frameworkDraftFrom(current: PaperFrameworkVersion | null | undefined): FrameworkDraft | null {
+/** 서버의 maxIdNumbers를 id 꼴로 — {principles:7, rules:{E2:5}} → ["P7", "E2-R5"]. 모르는 값·0은 뺍니다. */
+function maxIdsAsIds(maxIds: PaperFrameworkMaxIds | null | undefined): string[] {
+  if (!isRecord(maxIds)) return [];
+  const out: string[] = [];
+  const principles = numberOf(maxIds.principles);
+  if (principles !== null && principles > 0 && Number.isInteger(principles)) out.push(`P${principles}`);
+  const rules = isRecord(maxIds.rules) ? maxIds.rules : {};
+  for (const [engine, value] of Object.entries(rules)) {
+    const number = numberOf(value);
+    if (number !== null && number > 0 && Number.isInteger(number) && /^E\d+$/.test(engine)) out.push(`${engine}-R${number}`);
+  }
+  return out;
+}
+
+/**
+ * 지금 판에서 편집을 시작합니다. 본문이 없으면(모양이 다름) null — 화면은 편집 버튼을 막습니다. maxIds는 판 응답의 maxIdNumbers(모든
+ * 판에서 쓴 가장 큰 번호) — 새 번호를 그보다 크게 매깁니다.
+ */
+export function frameworkDraftFrom(
+  current: PaperFrameworkVersion | null | undefined,
+  maxIds: PaperFrameworkMaxIds | null = null,
+): FrameworkDraft | null {
   if (!current || !isRecord(current.body)) return null;
   const body = current.body as unknown as Record<string, unknown>;
   const parts = bodyParts(body);
@@ -2936,7 +2972,11 @@ export function frameworkDraftFrom(current: PaperFrameworkVersion | null | undef
     title: textOf(body.title) ?? textOf(current.title) ?? "",
     ...parts,
     changelog: "",
-    usedIds: [...parts.principles.map((entry) => entry.id), ...parts.engines.flatMap((engine) => engine.rules.map((rule) => rule.id))],
+    usedIds: [
+      ...parts.principles.map((entry) => entry.id),
+      ...parts.engines.flatMap((engine) => engine.rules.map((rule) => rule.id)),
+      ...maxIdsAsIds(maxIds),
+    ],
   };
 }
 
@@ -3074,10 +3114,14 @@ export function frameworkDraftCheck(draft: FrameworkDraft, current: PaperFramewo
 }
 
 /**
- * 저장 본문 `{body, changelog}` — 수동 편집으로 저장한 판은 사용자 판(status USER, 보충 계약 §1 — OS 원문을 옮긴 판이 v1)입니다.
- * 글은 앞뒤 공백을 뗍니다(렌더링이 끝 공백을 남기지 않음 — 같은 글이 공백 하나로 다른 판이 되지 않게).
+ * 저장 본문 `{body, changelog, baseVersion}` — 수동 편집으로 저장한 판은 사용자 판(status USER, 보충 계약 §1 — OS 원문을 옮긴 판이
+ * v1)입니다. 글은 앞뒤 공백을 뗍니다(렌더링이 끝 공백을 남기지 않음 — 같은 글이 공백 하나로 다른 판이 되지 않게). baseVersion은 편집을
+ * 시작한 판 — 서버가 지금 판과 대조해 다르면 400으로 막습니다(FW-1). 화면의 "판이 바뀌었습니다" 검사는 이 화면이 읽은 판만 보므로, 다른
+ * 창·탭에서 승인해 생긴 판은 서버만 압니다.
  */
-export function frameworkSavePayload(draft: FrameworkDraft): { body: Record<string, unknown>; changelog: string } {
+export function frameworkSavePayload(
+  draft: FrameworkDraft,
+): { body: Record<string, unknown>; changelog: string; baseVersion: number | null } {
   const content = draftContent(draft);
   return {
     body: {
@@ -3089,6 +3133,7 @@ export function frameworkSavePayload(draft: FrameworkDraft): { body: Record<stri
       guidance: content.guidance,
     },
     changelog: draft.changelog.trim(),
+    baseVersion: draft.baseVersion,
   };
 }
 
@@ -3176,16 +3221,40 @@ export interface ProposalView {
   status: Badge;
   /** 승인·거절할 수 있는가(대기 중). */
   pending: boolean;
+  /**
+   * 승인 버튼을 열어도 되는가 — 대기 중이고, 변경이 하나 이상이고, 기준 판이 지금 판과 같을 때만. 변경 0건(평가만 있는 제안)은 서버가 늘
+   * 400으로 거절하므로("거절로 닫으세요") 버튼을 막습니다(FW-3·F2).
+   */
+  approvable: boolean;
   meta: DecisionMetaCell[];
   summary: string | null;
   assessment: ProposalAssessmentRow[];
   operations: ProposalOperationRow[];
+  /** 변경 표의 설명 — 대기 중이면 "승인하면 …", 결정된 제안이면 그 결과(승인·거절·실패). */
+  operationsNote: string;
+  /** 변경 표의 '글' 칸 머리 — 대기 중이면 "지금 글", 결정된 제안이면 기준 판의 글("기준 판 글(v0)"). */
+  beforeHeader: string;
+  /** 변경이 없을 때 표의 문구. */
+  emptyMessage: string;
   beforeAfter: string | null;
   error: string | null;
   /** 기준 판이 지금 판과 다르면 그 안내(승인하면 서버가 거절 — 다시 제안). 같거나 모르면 null. */
   staleBase: string | null;
   confirmApprove: string;
   confirmReject: string;
+}
+
+/**
+ * 결정된(승인·거절·실패) 제안의 변경 표를 대조할 기준 판 번호 — 지금 판이 아니면 그 판을 따로 읽어야 합니다(GET …/versions/{v}). 대기 중인
+ * 제안·기준 판이 지금 판·기준 판을 모르면 null(읽지 않음).
+ */
+export function proposalBaseToFetch(
+  proposal: Pick<PaperFrameworkProposal, "status" | "baseVersion">,
+  current: PaperFrameworkVersion | null | undefined,
+): number | null {
+  const base = numberOf(proposal.baseVersion);
+  if (textOf(proposal.status) === "PENDING" || base === null) return null;
+  return isNumber(current?.version) && current.version === base ? null : base;
 }
 
 /** 지금 판 본문에서 원칙·규칙·엔진 찾기(제안 변경의 '지금 글' 칸). */
@@ -3199,17 +3268,35 @@ function frameworkLookup(body: unknown) {
 }
 
 /**
- * 제안 한 건 — 평가(OS 절차 B)·변경·전후 비교는 Claude 응답 그대로, 변경마다 지금 판의 글을 옆에 붙입니다(대상 id로 찾기만 하고 적용하지
- * 않음 — 적용은 승인할 때 서버가 함). 대상이 지금 판에 없거나 새 본문이 없거나 300자를 넘으면 그 줄에 경고를 붙입니다(승인하면 서버가
- * 400으로 거절하고 아무것도 바꾸지 않음). 기준 판이 지금 판과 다르면 승인할 수 없다고 적습니다(다른 판이 먼저 승인됨).
+ * 제안 한 건 — 평가(OS 절차 B)·변경·전후 비교는 Claude 응답 그대로, 변경마다 대조할 판의 글을 옆에 붙입니다(대상 id로 찾기만 하고
+ * 적용하지 않음 — 적용은 승인할 때 서버가 함).
+ *
+ * 대기 중인 제안은 지금 판과 대조합니다. 대상이 지금 판에 없거나 새 본문이 없거나 300자를 넘으면 그 줄에 경고를 붙이고(승인하면 서버가
+ * 400으로 거절하고 아무것도 바꾸지 않음), 기준 판이 지금 판과 다르면 승인할 수 없다고 적습니다(다른 판이 먼저 승인됨). 변경이 0건이면
+ * 승인할 수 없다고 적습니다(서버가 거절 — 거절로 닫음).
+ *
+ * 결정된 제안(승인·거절·실패)은 <b>기준 판</b>(baseFrame — 화면이 GET …/versions/{기준 판}으로 읽은 것, 기준 판이 지금 판이면 지금 판)과
+ * 대조하고 경고·"승인하면 …" 문구를 붙이지 않습니다. 지금 판과 대조하면 승인해 지운 대상에 "승인하면 서버가 거절합니다"가 붙고, 고친 글은
+ * '지금 글'과 '바꿀 글'이 같아 보입니다(FW-4). 기준 판을 아직 못 읽었으면 그 칸은 "—"입니다.
  */
-export function proposalView(proposal: PaperFrameworkProposal, current: PaperFrameworkVersion | null | undefined): ProposalView {
+export function proposalView(
+  proposal: PaperFrameworkProposal,
+  current: PaperFrameworkVersion | null | undefined,
+  baseFrame: PaperFrameworkVersion | null = null,
+): ProposalView {
   const status = textOf(proposal.status);
   const pending = status === "PENDING";
   const currentVersion = isNumber(current?.version) ? current.version : null;
   const currentStatus = textOf(current?.status);
   const base = numberOf(proposal.baseVersion);
-  const lookup = frameworkLookup(current?.body);
+  const reference = pending
+    ? current
+    : base !== null && isNumber(baseFrame?.version) && baseFrame.version === base
+      ? baseFrame
+      : base !== null && currentVersion === base
+        ? current
+        : null;
+  const lookup = frameworkLookup(reference?.body);
 
   const meta: DecisionMetaCell[] = [
     { key: "createdAt", label: "요청 시각", value: formatKst(textOf(proposal.createdAtKst)) },
@@ -3249,7 +3336,8 @@ export function proposalView(proposal: PaperFrameworkProposal, current: PaperFra
     } else if (op === "ADD_PRINCIPLE") {
       before = "(새 원칙)";
     }
-    const warnings = [
+    // 경고는 승인 전 안내라 대기 중인 제안에만 — 결정된 제안에 "승인하면 서버가 거절합니다"는 사실이 아닙니다.
+    const warnings = !pending ? [] : [
       // 지금 판 본문을 모르면(읽기 실패) 대상이 없다고 단정하지 않습니다.
       missing && current?.body ? "지금 판에 대상이 없습니다" : null,
       !deleting && !text ? "새 본문이 없습니다" : null,
@@ -3274,15 +3362,31 @@ export function proposalView(proposal: PaperFrameworkProposal, current: PaperFra
   const inherit = currentStatus === "INTERIM"
     ? " 새 판은 기준 판의 상태(임시)를 이어받습니다 — 사용자 판으로 확정하려면 승인 뒤 '직접 고치기'에서 저장하세요."
     : "";
+  const baseName = base === null ? "기준 판" : `기준 판(v${base})`;
+  const result = numberOf(proposal.resultVersion);
+  const operationsNote = pending
+    ? "승인하면 서버가 이 변경을 지금 판에 적용해 새 판을 만듭니다. 지금 글은 지금 판에서 찾은 것입니다."
+    : `${status === "APPROVED"
+      ? `승인한 제안입니다 — 이 변경을 ${baseName}에 적용해 ${result === null ? "새 판" : `v${result}`}을 만들었습니다.`
+      : status === "REJECTED"
+        ? "거절한 제안입니다 — 판에 적용하지 않았습니다."
+        : "실패한 제안입니다 — 판에 적용하지 않았고 승인할 수 없습니다."} 왼쪽 글은 ${baseName}의 글입니다`
+      + (reference ? "." : " — 그 판을 아직 읽지 못해 비어 있습니다(—).");
   return {
     id: proposal.id,
     title: `제안 #${proposal.id}`,
     status: proposalStatusBadge(status),
     pending,
+    approvable: pending && operations.length > 0 && staleBase === null,
     meta,
     summary: textOf(proposal.summary),
     assessment,
     operations,
+    operationsNote,
+    beforeHeader: pending ? "지금 글" : base === null ? "기준 판 글" : `기준 판 글(v${base})`,
+    emptyMessage: pending
+      ? "평가만 있는 제안입니다 — 바꿀 것이 없어 승인할 수 없습니다(서버가 새 판을 만들지 않음). 거절로 닫으세요."
+      : "변경이 없는 제안입니다.",
     beforeAfter: textOf(proposal.beforeAfter),
     error: textOf(proposal.error),
     staleBase,
@@ -3331,9 +3435,67 @@ export function rejectResultView(result: PaperOkResult): { tone: "warn" | "info"
   return { tone: "info", text: "거절했습니다 — 판은 그대로입니다." };
 }
 
-/** OS 원문을 방법론 메모로 저장할 본문 — 제목을 비우면 "투자 OS 원문". */
-export function insightNotePayload(title: string, body: string): { kind: "INSIGHT"; title: string; body: string } {
-  return { kind: "INSIGHT", title: title.trim() || "투자 OS 원문", body: body.trim() };
+/**
+ * 글을 방법론 메모로 저장할 본문 — 제목을 비우면 defaultTitle(카드가 정함: 임시 판이면 "투자 OS 원문", 사용자 판이면 "방법론 글").
+ * 사용자 판 뒤에 붙이는 글을 "투자 OS 원문"으로 채우면 진짜 원문 메모와 목록에서 구분되지 않습니다(F1).
+ */
+export function insightNotePayload(
+  title: string,
+  body: string,
+  defaultTitle = "투자 OS 원문",
+): { kind: "INSIGHT"; title: string; body: string } {
+  return { kind: "INSIGHT", title: title.trim() || defaultTitle, body: body.trim() };
+}
+
+/** 제안 요청 카드의 문구 — 지금 판이 임시인가(OS 원문을 옮길 차례) 사용자 판인가(방법론 글로 갱신)에 따라. */
+export interface FrameworkSourceCardView {
+  title: string;
+  subtitle: string;
+  /** 제목을 비웠을 때 메모 제목. */
+  defaultTitle: string;
+  /** 글 칸 이름. */
+  bodyLabel: string;
+  intro: string;
+}
+
+/**
+ * 제안 요청 카드(F1·F2). 임시 판(또는 판을 모름)이면 "OS 원문으로 새 판 만들기" — 원문을 붙여 메모로 저장해 제안을 받습니다. 사용자 판
+ * (OS 원문을 옮긴 v1 뒤)이면 "방법론 글로 갱신 제안 받기" — 같은 OS 원문을 다시 붙이면 그 원문을 옮긴 판과 대조하게 되어 바꿀 것이 없다는
+ * 답이 나오기 쉽습니다. 두 경우 모두 이미 있는 방법론 메모(OS 원문 메모 포함)를 골라 제안을 받을 수 있습니다(글을 다시 붙이지 않게).
+ */
+export function frameworkSourceCardView(status: string | null | undefined): FrameworkSourceCardView {
+  const pick = "이미 있는 방법론 메모(메모 탭에서 쓴 글·OS 원문 메모)를 골라 바로 제안을 받을 수도 있습니다 — 같은 글의 메모를 또 만들지 않습니다.";
+  if (status === "USER") {
+    return {
+      title: "방법론 글로 갱신 제안 받기",
+      subtitle: "① 방법론 글 붙여넣기(또는 있는 메모 고르기) → ② 방법론 메모(INSIGHT)로 저장 → ③ Claude 제안 요청 → ④ 제안을 보고 승인(새 판)",
+      defaultTitle: "방법론 글",
+      bodyLabel: "방법론 글",
+      intro: "지금 판은 사용자 판입니다 — 남의 방법론 글·새로 정리한 원칙을 붙이면 Claude가 글의 주장을 하나씩 지금 판과 대조해 [일치·보완·"
+        + "수정 필요·모순]으로 평가하고, 필요한 원칙·규칙 추가·수정·삭제와 전후 비교만 냅니다. 자동 반영은 없습니다. OS 원문은 이미 판에 옮겼으니 "
+        + `다시 붙일 필요가 없습니다. ${pick}`,
+    };
+  }
+  return {
+    title: "OS 원문으로 새 판 만들기",
+    subtitle: "① 원문 붙여넣기(또는 있는 메모 고르기) → ② 방법론 메모(INSIGHT)로 저장 → ③ Claude 제안 요청 → ④ 제안을 보고 승인(새 판)",
+    defaultTitle: "투자 OS 원문",
+    bodyLabel: "OS 원문",
+    intro: "원문은 메모에만 둡니다 — 프레임에는 승인한 원칙·규칙만 들어갑니다(규칙 300자, 렌더링 약 8,000토큰 예산). Claude는 원문의 주장을 하나씩 "
+      + "지금 판과 대조해 [일치·보완·수정 필요·모순]으로 평가하고, 필요한 원칙·규칙 추가·수정·삭제와 전후 비교만 냅니다. 자동 반영은 없습니다. "
+      + "제안을 승인한 판은 기준 판의 상태를 이어받아 임시로 남습니다 — 사용자 판(v1)은 아래 '직접 고치기'로 원칙·규칙을 옮겨 저장하면 됩니다. "
+      + pick,
+  };
+}
+
+/** 제안에 쓸 수 있는 방법론 메모(보관 안 한 INSIGHT, 서버 순서 그대로)를 고르기 목록으로. 서버가 보관 메모를 거절하므로 빼고 보입니다. */
+export function insightNoteOptions(notes: readonly PaperNote[] | null | undefined): { value: string; label: string }[] {
+  return listOf(notes).filter(isRecord).flatMap((note) => {
+    const id = numberOf(note.id);
+    if (id === null || note.kind !== "INSIGHT" || note.archived === true) return [];
+    const body = stringOf(note.body);
+    return [{ value: String(id), label: `#${id} ${textOf(note.title) ?? EMPTY} (${formatNumber(textLength(body), 0)}자)` }];
+  });
 }
 
 // ---- 시황·방법론 메모(F6·D14)
@@ -3476,19 +3638,46 @@ export function notesIntro(startDate: string | null | undefined): string {
     + `Claude 책 시작(초기 결정) 패킷에는 기준일이 출발일(${startDate ?? EMPTY}) 이하인 메모만 실립니다. 규칙 책은 메모를 읽지 않습니다.`;
 }
 
-/** 메모 저장 결과 — 서버가 채운 기준일·만료일을 그대로 적습니다. */
-export function noteCreateResultView(result: PaperNoteCreateResult): { tone: "warn" | "info"; text: string } {
+/**
+ * 기준일 칸의 안내(F4) — 비우면 서버가 채우는 날(GET 응답의 referenceDate = 마지막으로 끝난 미국 세션). 아침 결정은 그 거래일을 보므로,
+ * 결정 전 아침에 오늘(KST) 날짜를 고르면 그날 결정에서 빠지고 하루 늦게 실립니다. 화면은 날짜를 다시 비교하지 않고 기본값의 뜻만 적습니다
+ * (실리는지는 저장 결과의 서버 판정 active).
+ */
+export function noteAsOfHint(referenceDate: string | null | undefined): string {
+  const day = textOf(referenceDate);
+  const where = day ? `${day}(마지막으로 끝난 미국 세션 — Claude 결정이 보는 거래일)` : "마지막으로 끝난 미국 세션(Claude 결정이 보는 거래일)";
+  return `비우면 ${where}. 그보다 뒤 날짜(예: 오늘 KST)를 고르면 그 거래일의 결정부터 실려, 결정 전 아침에 쓴 메모가 그날 결정에서 빠집니다.`;
+}
+
+/**
+ * 메모 저장 결과 — 서버가 채운 기준일·만료일을 그대로 적고, 시황 메모가 실리는지는 서버 판정(active — referenceDate 기준)을 씁니다(화면이
+ * 날짜를 다시 비교하지 않음). active:false면 "지금 기준 거래일의 결정 패킷에는 실리지 않습니다"로 알립니다 — 목록의 배지가 바뀌어서야 알게
+ * 되지 않게(F4).
+ */
+export function noteCreateResultView(
+  result: PaperNoteCreateResult,
+  referenceDate: string | null = null,
+): { tone: "warn" | "info"; text: string } {
   if (result.ok === false) return { tone: "warn", text: result.message ?? "메모를 저장하지 못했습니다." };
   const note = result.note ?? null;
   if (!note) return { tone: "warn", text: result.message ?? "저장한 메모를 받지 못했습니다." };
   if (note.kind === "INSIGHT") {
-    return { tone: "info", text: `방법론 메모(#${note.id})를 저장했습니다 — 결정 패킷에는 싣지 않고 프레임 제안에만 씁니다.` };
+    return {
+      tone: "info",
+      text: `방법론 메모(#${note.id})를 저장했습니다 — 결정 패킷에는 싣지 않고 프레임 제안에만 씁니다. 프레임 탭의 제안 카드에서 이 메모를 `
+        + "골라 제안을 요청하세요.",
+    };
   }
-  return {
-    tone: "info",
-    text: `시황 메모(#${note.id})를 저장했습니다 — 기준일 ${note.asOfDate ?? EMPTY} · 만료 ${note.expiresOn ?? EMPTY}. `
-      + "유효한 동안 Claude 결정 패킷에 자료로 실립니다.",
-  };
+  const head = `시황 메모(#${note.id})를 저장했습니다 — 기준일 ${note.asOfDate ?? EMPTY} · 만료 ${note.expiresOn ?? EMPTY}. `;
+  if (note.active === false) {
+    const reference = textOf(referenceDate);
+    return {
+      tone: "warn",
+      text: `${head}${reference ? `${reference} 거래일` : "지금 기준 거래일"}의 Claude 결정 패킷에는 실리지 않습니다(서버 판정 — 기준일이 `
+        + "그보다 뒤이거나 이미 만료). 기준일~만료일 사이 거래일의 결정부터 실립니다.",
+    };
+  }
+  return { tone: "info", text: `${head}유효한 동안 Claude 결정 패킷에 자료로 실립니다.` };
 }
 
 /** 메모 보관 확인 문구. */

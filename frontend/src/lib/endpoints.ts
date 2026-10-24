@@ -205,7 +205,7 @@ export const endpoints = {
     framework: "/api/paper/framework",
     /** 판 하나(전후 비교용 렌더링 포함). */
     frameworkVersion: (version: number) => `/api/paper/framework/versions/${segment(String(version))}`,
-    /** 수동 편집 — POST `{body, changelog}`, 새 판. 읽기와 같은 경로입니다. */
+    /** 수동 편집 — POST `{body, changelog, baseVersion}`, 새 판(기준 판이 지금 판이 아니면 400). 읽기와 같은 경로입니다. */
     saveFramework: "/api/paper/framework",
     /** 프레임 제안 목록(최근 순). */
     proposals: "/api/paper/framework/proposals",

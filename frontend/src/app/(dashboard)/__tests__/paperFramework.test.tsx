@@ -355,6 +355,7 @@ describe("프레임 탭 — 직접 고치기", () => {
     const [path, payload] = api.apiPost.mock.calls[0] as [string, { body: Record<string, unknown>; changelog: string }];
     expect(path).toBe("/api/paper/framework");
     expect(payload.changelog).toBe("OS 원문 옮김");
+    expect((payload as { baseVersion?: unknown }).baseVersion).toBe(0);
     expect(payload.body).toMatchObject({ schemaVersion: 1, status: "USER", title: "임시 v0 — OS 원문 반영 전", guidance: "이 판은 임시다." });
     expect(payload.body.principles).toEqual([{ id: "P1", text: "패킷의 숫자에서 출발한다." }]);
     const sent = payload.body.engines as { id: string; rules: { id: string; text: string; addedIn: number | null }[] }[];
@@ -365,6 +366,105 @@ describe("프레임 탭 — 직접 고치기", () => {
 
     expect(await screen.findByText(/새 판 v1\(사용자 판\)을 저장했습니다/)).toBeTruthy();
     expect(screen.queryByRole("form", { name: "프레임 편집" })).toBeNull();
+  });
+});
+
+describe("프레임 탭 — 3b 리뷰 결함", () => {
+  it("FW-1 다른 창에서 판이 생겨 서버가 저장을 거절하면(400) 판을 다시 읽어 '판이 바뀌었습니다' 안내 — 편집본은 그대로", async () => {
+    let current: unknown = V0;
+    serve("/api/paper/framework/proposals", () => ({ available: true, proposals: [] }));
+    serve("/api/paper/framework", () => ({ available: true, current, versions: [SUMMARY_V0] }));
+    api.apiPost.mockImplementation(() => {
+      current = V1;   // 그사이 다른 창에서 제안을 승인해 v1이 생김
+      return Promise.reject(new Error("다른 판이 먼저 생겼습니다 — 편집을 다시 시작하세요(편집 기준 v0, 지금 v1)."));
+    });
+    await openTab("프레임");
+
+    fireEvent.click(await screen.findByRole("button", { name: "지금 판으로 편집 시작" }));
+    const form = screen.getByRole("form", { name: "프레임 편집" });
+    fireEvent.change(within(form).getByLabelText("원칙 P1"), { target: { value: "탭 A에서 고친 원칙" } });
+    fireEvent.change(within(form).getByLabelText(/바꾼 내용/), { target: { value: "탭 A" } });
+    fireEvent.click(within(form).getByRole("button", { name: "새 판 저장" }));
+    fireEvent.click(within(form).getByRole("button", { name: "저장 확인" }));
+
+    expect(api.apiPost).toHaveBeenCalledWith("/api/paper/framework", expect.objectContaining({ baseVersion: 0 }));
+    expect(await within(form).findByText(/다른 판이 먼저 생겼습니다/)).toBeTruthy();
+    expect(await within(form).findByText(/편집을 시작한 뒤 판이 바뀌었습니다\(기준 임시 v0 → 지금 v1\)/)).toBeTruthy();
+    expect((within(form).getByLabelText("원칙 P1") as HTMLTextAreaElement).value).toBe("탭 A에서 고친 원칙");
+    expect((within(form).getByRole("button", { name: "새 판 저장" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("F1 사용자 판이면 '방법론 글로 갱신 제안 받기' — 이미 있는 방법론 메모를 골라 POST {noteId}(새 메모를 만들지 않음)", async () => {
+    serve("/api/paper/framework/proposals", () => ({ available: true, proposals: [] }));
+    serve("/api/paper/framework", () => ({ available: true, current: V1, versions: [SUMMARY_V1, SUMMARY_V0] }));
+    serve("/api/paper/notes?includeExpired=false", () => ({
+      available: true,
+      referenceDate: "2026-10-26",
+      notes: [
+        { id: 12, kind: "MARKET", asOfDate: "2026-10-23", expiresOn: "2026-10-28", title: "유가", body: "브렌트", archived: false, active: true, createdAtKst: null },
+        { id: 10, kind: "INSIGHT", asOfDate: "2026-10-20", expiresOn: null, title: "투자 OS 원문", body: "원문", archived: false, active: true, createdAtKst: null },
+      ],
+    }));
+    api.apiPost.mockResolvedValue({ ok: true, proposal: { ...PROPOSAL, id: 5, noteId: 10, baseVersion: 1 } });
+    await openTab("프레임");
+
+    expect(screen.queryByText("OS 원문으로 새 판 만들기")).toBeNull();
+    const card = (await screen.findByText("방법론 글로 갱신 제안 받기")).closest("section") as HTMLElement;
+    expect(within(card).getByLabelText("방법론 글")).toBeTruthy();
+    expect(within(card).getByText(/메모 제목\(비우면 "방법론 글"\)/)).toBeTruthy();
+    const select = (await within(card).findByLabelText("이미 있는 방법론 메모로 요청")) as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
+      "고르지 않음 — 아래에 글을 붙여 새 메모로", "#10 투자 OS 원문 (2자)",
+    ]);
+    fireEvent.change(select, { target: { value: "10" } });
+    expect(within(card).getByText("메모 #10의 글로 요청합니다 — 새 메모를 만들지 않습니다.")).toBeTruthy();
+    expect((within(card).getByRole("button", { name: "① 메모로 저장" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(card).getByRole("button", { name: "② 제안 요청" }));
+    expect(within(card).getByText(/메모\(#10\)로 제안을 요청할까요\? Sonnet 5\.5 호출 1회/)).toBeTruthy();
+    fireEvent.click(within(card).getByRole("button", { name: "제안 요청 확인" }));
+
+    expect(api.apiPost).toHaveBeenCalledTimes(1);
+    expect(api.apiPost).toHaveBeenCalledWith("/api/paper/framework/proposals", { noteId: 10 });
+    expect(await within(card).findByText(/제안\(#5\)을 받았습니다/)).toBeTruthy();
+    // 다시 고르려면 '다른 글로 다시 쓰기'로 풉니다.
+    fireEvent.click(within(card).getByRole("button", { name: "다른 글로 다시 쓰기" }));
+    expect(select.value).toBe("");
+  });
+
+  it("FW-3·F2 변경 0건인 대기 제안은 승인 버튼을 막고 '거절로 닫으세요' — 거절은 그대로 할 수 있다", async () => {
+    serve("/api/paper/framework/proposals", () => ({ available: true, proposals: [{ ...PROPOSAL, id: 6, operations: [], baseVersion: 1 }] }));
+    serve("/api/paper/framework", () => ({ available: true, current: V1, versions: [SUMMARY_V1, SUMMARY_V0] }));
+    await openTab("프레임");
+
+    const item = await screen.findByRole("article", { name: "제안 #6" });
+    expect(within(item).getByText("평가만 있는 제안입니다 — 바꿀 것이 없어 승인할 수 없습니다(서버가 새 판을 만들지 않음). 거절로 닫으세요."))
+      .toBeTruthy();
+    expect(within(item).queryByText(/같은 내용의 새 판이 생깁니다/)).toBeNull();
+    expect((within(item).getByRole("button", { name: "제안 #6 승인" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(item).getByRole("button", { name: "제안 #6 거절" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("FW-4 승인된 제안의 변경 표는 기준 판(v0)을 읽어 대조 — '승인하면 서버가 거절합니다' 경고가 없다", async () => {
+    serve("/api/paper/framework/proposals", () => ({
+      available: true,
+      proposals: [{ ...PROPOSAL, status: "APPROVED", resultVersion: 1, decidedAtKst: "2026-10-25 11:30" }],
+    }));
+    // 지금 판 v1에는 P2가 없음(승인으로 지움)
+    const v1 = { ...V1, body: { ...V1.body, principles: [{ id: "P1", text: "패킷의 숫자에서 출발한다." }] } };
+    serve("/api/paper/framework", () => ({ available: true, current: v1, versions: [SUMMARY_V1, SUMMARY_V0] }));
+    serve("/api/paper/framework/versions/0", () => ({ available: true, version: V0 }));
+    await openTab("프레임");
+
+    const item = await screen.findByRole("article", { name: "제안 #3" });
+    const changes = within(item).getByRole("region", { name: "변경" });
+    expect(within(changes).getByText(/승인한 제안입니다 — 이 변경을 기준 판\(v0\)에 적용해 v1을 만들었습니다/)).toBeTruthy();
+    await waitFor(() => expect(rowsOf(changes)).toEqual([
+      ["규칙 추가", "E1", "E1. 매크로 축 — 현금 비중 — 새 규칙", "VIX 30 이상이면 노출을 줄인다.", "원문 3절"],
+      ["원칙 삭제", "P2", "과매매하지 않는다.", "(삭제)", "원문과 모순"],
+    ]));
+    expect(within(changes).getByRole("columnheader", { name: "기준 판 글(v0)" })).toBeTruthy();
+    expect(within(item).queryByText(/승인하면 서버가 거절합니다/)).toBeNull();
+    expect(within(item).queryByRole("button", { name: "제안 #3 승인" })).toBeNull();
   });
 });
 
@@ -428,6 +528,27 @@ describe("메모 탭", () => {
     fireEvent.change(within(form).getByLabelText("종류"), { target: { value: "INSIGHT" } });
     expect(within(form).queryByLabelText(/만료일/)).toBeNull();
     expect(within(form).getByText("방법론 메모는 만료가 없습니다.")).toBeTruthy();
+  });
+
+  it("F4 기준일 칸에 비우면 채워지는 날(referenceDate)을 적고, 서버가 그 거래일 패킷에 싣지 않는다고 하면(active:false) 저장 결과가 경고", async () => {
+    serve("/api/paper/notes?includeExpired=false", () => ({ available: true, referenceDate: "2026-10-26", notes: NOTES }));
+    api.apiPost.mockResolvedValue({
+      ok: true,
+      note: { id: 14, kind: "MARKET", asOfDate: "2026-10-27", expiresOn: "2026-10-30", title: "아침 시황", body: "b", archived: false, active: false, createdAtKst: null },
+    });
+    await openTab("메모");
+
+    const form = await screen.findByRole("form", { name: "메모 쓰기" });
+    const asOf = within(form).getByLabelText("기준일(선택)");
+    const hint = await within(form).findByText(/^비우면 2026-10-26\(마지막으로 끝난 미국 세션 — Claude 결정이 보는 거래일\)/);
+    expect(asOf.getAttribute("aria-describedby")).toBe(hint.id);
+    fireEvent.change(asOf, { target: { value: "2026-10-27" } });
+    fireEvent.change(within(form).getByLabelText("제목"), { target: { value: "아침 시황" } });
+    fireEvent.change(within(form).getByLabelText("본문"), { target: { value: "b" } });
+    fireEvent.click(within(form).getByRole("button", { name: "메모 저장" }));
+
+    const banner = await within(form).findByText(/2026-10-26 거래일의 Claude 결정 패킷에는 실리지 않습니다/);
+    expect(banner.closest("div")?.className).toContain("text-warn");
   });
 
   it("보관 — 확인 뒤 DELETE /api/paper/notes/{id}, 목록 다시 읽기", async () => {

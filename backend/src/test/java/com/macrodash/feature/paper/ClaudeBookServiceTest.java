@@ -107,7 +107,7 @@ class ClaudeBookServiceTest {
         when(selection.selectionOn(any())).thenReturn(Optional.of(new Selection(FRI, List.of("0000000001"), null, 1,
                 FRI_CLOSE)));
         packets = mock(PacketBuilder.class);
-        when(packets.build(any(), anyString(), anyBoolean(), any())).thenReturn(new PacketBuilder.Packet(
+        when(packets.build(any(), anyString(), anyBoolean(), any(), any())).thenReturn(new PacketBuilder.Packet(
                 MAPPER.readTree("{\"1_basis\":{\"selectionAsOf\":\"2026-10-23\"}}"), PACKET_TEXT, "hash-abc", List.of()));
         settings = PaperFixtures.settings(store);
         store.initSettingsIfAbsent(settings.defaultsJson());
@@ -325,7 +325,7 @@ class ClaudeBookServiceTest {
         assertThat(request.path("output_config").toString()).doesNotContain("\"maximum\"", "\"maxLength\"");
         assertThat(request.has("temperature")).isFalse();
         assertThat(request.has("thinking")).isFalse();
-        verify(packets).build(eq(MON), eq("SCHEDULED"), eq(false), eq(0));
+        verify(packets).build(eq(MON), eq("SCHEDULED"), eq(false), eq(0), any());
 
         // 같은 거래일·같은 종류는 한 번 — 다시 불러도 Claude를 부르지 않음
         assertThat(service().decide(MON, RuleBookService.SCHEDULED, true).id()).isEqualTo(d.id());
@@ -341,7 +341,7 @@ class ClaudeBookServiceTest {
         ObjectNode body = (ObjectNode) FrameworkService.interimBody(MAPPER).deepCopy();
         body.put("title", "사용자 OS v1");
         body.put("status", "USER");
-        assertThat(frameworks.save(body, "사용자 OS 원문을 옮김").get("version")).isEqualTo(1);
+        assertThat(frameworks.save(body, "사용자 OS 원문을 옮김", 0).get("version")).isEqualTo(1);
         // 판을 만든 뒤 설정을 바꿉니다 — 판 행의 rendered(만들 때 설정)가 아니라 결정 때 설정으로 다시 렌더링해야 합니다.
         PaperStore.SettingsRow row = store.settings().orElseThrow();
         ObjectNode changed = (ObjectNode) row.body().deepCopy();
@@ -356,12 +356,38 @@ class ClaudeBookServiceTest {
         assertThat(d.settingsVersion()).isEqualTo(row.version() + 1);
         assertThat(d.response().path("framework").toString())
                 .isEqualTo("{\"version\":1,\"status\":\"USER\",\"title\":\"사용자 OS v1\"}");
-        verify(packets).build(eq(MON), eq("SCHEDULED"), eq(false), eq(1));
+        // FW-5 패킷도 이 결정이 읽은 설정 행(시스템 프롬프트·검증기·기록과 같은 판)으로 만듭니다 — 패킷이 따로 읽지 않게.
+        verify(packets).build(eq(MON), eq("SCHEDULED"), eq(false), eq(1), eq(store.settings));
         String system = requests.get(0).path("system").get(0).path("text").asString();
         assertThat(system).isEqualTo(FrameworkService.render(body, 1, changed))
                 .startsWith("# 투자 OS — v1 (사용자 OS v1)").contains("종목 비중 ≤ 7%")
                 .doesNotContain("종목 비중 ≤ 10%");
         assertThat(store.frameworks.get(1).rendered()).as("판 행의 렌더링은 만들 때 설정 그대로").contains("종목 비중 ≤ 10%");
+    }
+
+    @Test
+    @DisplayName("FW-5 결정이 읽은 설정 행 하나로 프롬프트·패킷·기록을 만든다 — 패킷을 만드는 사이 설정 탭에서 새 판을 저장해도 패킷에는 결정의 행을 넘긴다")
+    void packetUsesDecisionSettingsRow() throws Exception {
+        activeWithHolding();
+        PaperStore.SettingsRow row = store.settings().orElseThrow();
+        ObjectNode later = (ObjectNode) row.body().deepCopy();
+        later.put("maxWeightStockPct", 8);
+        List<PaperStore.SettingsRow> passed = new CopyOnWriteArrayList<>();
+        when(packets.build(any(), anyString(), anyBoolean(), any(), any())).thenAnswer(call -> {
+            passed.add(call.getArgument(4));
+            store.saveSettings(later, List.of("maxWeightStockPct"));   // 결정이 행을 읽은 뒤 설정 탭에서 저장
+            return new PacketBuilder.Packet(MAPPER.readTree("{\"1_basis\":{\"selectionAsOf\":\"2026-10-23\"}}"),
+                    PACKET_TEXT, "hash-abc", List.of());
+        });
+        answerJson(decision(5, "오늘은 주문 없음"));
+
+        Decision d = service().decide(MON, RuleBookService.SCHEDULED, true);
+
+        assertThat(passed).containsExactly(row);
+        assertThat(d.settingsVersion()).isEqualTo(row.version());
+        String system = requests.get(0).path("system").get(0).path("text").asString();
+        assertThat(system).contains("종목 비중 ≤ 10%").doesNotContain("종목 비중 ≤ 8%");
+        assertThat(store.settings().orElseThrow().version()).as("저장한 설정은 다음 결정부터").isEqualTo(row.version() + 1);
     }
 
     @Test
@@ -513,7 +539,7 @@ class ClaudeBookServiceTest {
         assertThat(skipped.model()).isNull();
         assertThat(hits.get()).isZero();
         assertThat(callsToday()).isEqualTo(6);
-        verify(packets, org.mockito.Mockito.never()).build(any(), anyString(), anyBoolean(), any());
+        verify(packets, org.mockito.Mockito.never()).build(any(), anyString(), anyBoolean(), any(), any());
 
         // 재시도 차례인 API 오류 + 상한 → 부르지 않고 재시도를 씀(10분마다 다시 오지 않게)
         long id = store.insertDecisionIfAbsent(new Decision(0, PaperBooks.CLAUDE, MON, "MANUAL", null, "API_ERROR",
@@ -627,7 +653,7 @@ class ClaudeBookServiceTest {
         assertThat((String) preview.get("note")).as("무엇을 남겼는지 그대로 — 사용량만이 아님")
                 .contains("장부·결정·주문 기록은 바꾸지 않았습니다", "사용량", "출발일 기관 선정", "출발일 종가")
                 .doesNotContain("사용량만");
-        verify(packets).build(eq(FRI), eq("INITIAL"), eq(true), any());
+        verify(packets).build(eq(FRI), eq("INITIAL"), eq(true), any(), any());
 
         assertThat(store.decisions).isEmpty();
         assertThat(store.orders).isEmpty();
@@ -688,7 +714,7 @@ class ClaudeBookServiceTest {
             assertThat(row.pricesFinal()).isTrue();
         });
         assertThat(callsToday()).isEqualTo(1);
-        verify(packets).build(eq(FRI), eq("INITIAL"), eq(true), any());
+        verify(packets).build(eq(FRI), eq("INITIAL"), eq(true), any(), any());
 
         assertThatThrownBy(() -> service().start()).as("한 번뿐").isInstanceOf(InvalidRequestException.class)
                 .hasMessageContaining("이미 시작");
@@ -935,7 +961,7 @@ class ClaudeBookServiceTest {
     @DisplayName("초기 결정의 검증 유니버스는 패킷이 보인 12_hardRules.universe 그대로 — 관측치에 있어도 패킷 밖이면 OUT_OF_UNIVERSE")
     void initialUniverseFollowsPacket() throws Exception {
         notStartedWithStartPrices();
-        when(packets.build(any(), anyString(), anyBoolean(), any())).thenReturn(new PacketBuilder.Packet(
+        when(packets.build(any(), anyString(), anyBoolean(), any(), any())).thenReturn(new PacketBuilder.Packet(
                 MAPPER.readTree("{\"1_basis\":{\"selectionAsOf\":\"2026-10-23\"},\"12_hardRules\":{\"universe\":\"AAA,SHY\"}}"),
                 PACKET_TEXT, "hash-abc", List.of()));
         when(marketData.sourcedCloseOn(eq("XLK"), eq(FRI)))

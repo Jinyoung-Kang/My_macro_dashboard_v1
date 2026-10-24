@@ -28,15 +28,18 @@ import {
   frameworkDraftFrom,
   frameworkSavePayload,
   frameworkSaveResultView,
+  frameworkSourceCardView,
   type FrameworkVersionRow,
   frameworkVersionLabel,
   frameworkVersionRows,
+  insightNoteOptions,
   insightNotePayload,
   noteCreateResultView,
   PAPER_SOURCES,
   PROPOSAL_COST_NOTE,
   type ProposalAssessmentRow,
   type ProposalOperationRow,
+  proposalBaseToFetch,
   proposalView,
   proposeResultView,
   rejectResultView,
@@ -44,12 +47,14 @@ import {
   textLength,
 } from "@/lib/paper";
 import type {
+  PaperFrameworkMaxIds,
   PaperFrameworkProposal,
   PaperFrameworkResponse,
   PaperFrameworkSaveResult,
   PaperFrameworkVersion,
   PaperFrameworkVersionResponse,
   PaperNoteCreateResult,
+  PaperNotesResponse,
   PaperOkResult,
   PaperProposalApproveResult,
   PaperProposalsResponse,
@@ -62,9 +67,10 @@ const INPUT = "w-full rounded-md border border-border bg-canvas px-3 py-2 text-s
 /**
  * 프레임 탭(명세 F1~F5·F7·D15) — Claude 책의 판단 프레임(투자 OS) 판.
  *
- * 위에서부터: 지금 판(상태 배지 — 임시면 "임시 v0", 렌더링 미리보기는 접어 둠, 토큰 어림 vs 예산·초과 경고, 바꾼 내용), "OS 원문으로 새 판
- * 만들기"(원문 → 방법론 메모 저장 → Claude 제안 → 승인), 제안 목록(평가·변경·전후 비교, 승인·거절), 판 목록과 두 판 나란히 비교, 직접 고치기
- * (원칙·엔진·규칙 폼 — 저장하면 사용자 판).
+ * 위에서부터: 지금 판(상태 배지 — 임시면 "임시 v0", 렌더링 미리보기는 접어 둠, 토큰 어림 vs 예산·초과 경고, 바꾼 내용), 제안 요청
+ * 카드(임시 판이면 "OS 원문으로 새 판 만들기", 사용자 판이면 "방법론 글로 갱신 제안 받기" — 글 → 방법론 메모 저장 또는 있는 메모 고르기 →
+ * Claude 제안 → 승인), 제안 목록(평가·변경·전후 비교, 승인·거절), 판 목록과 두 판 나란히 비교, 직접 고치기(원칙·엔진·규칙 폼 — 저장하면
+ * 사용자 판).
  *
  * 렌더링·토큰 어림·예산 초과는 서버가 정합니다(화면은 다시 세지 않음). 제안 요청만 Claude를 부르고(비용·하루 상한 공유 — 확인 단계),
  * 승인·거절·수동 편집은 부르지 않습니다. 어느 쪽이든 판이 바뀌면 지금 판과 제안 목록을 다시 읽습니다. 규칙 책은 프레임을 쓰지 않습니다.
@@ -83,6 +89,7 @@ export function FrameworkSection() {
   const current = framework.data.current ?? null;
   const view = frameworkCurrentView(current, frameworkBudgetFrom(framework.data, settings.data?.available ? settings.data.body : null));
   const proposalList = proposals.data?.available ? proposals.data.proposals ?? [] : [];
+  const sourceCard = frameworkSourceCardView(current?.status);
   const reloadAll = () => {
     void framework.reload();
     void proposals.reload();
@@ -105,7 +112,7 @@ export function FrameworkSection() {
           <Banner tone="warn">{proposals.data.message ?? "제안을 읽을 수 없습니다."}</Banner>
         )}
         {proposals.data?.available && (proposalList.length === 0 ? (
-          <p className="text-sm text-muted">아직 제안이 없습니다 — 위 &apos;OS 원문으로 새 판 만들기&apos;에서 요청하면 생깁니다.</p>
+          <p className="text-sm text-muted">{`아직 제안이 없습니다 — 위 '${sourceCard.title}'에서 요청하면 생깁니다.`}</p>
         ) : (
           <div className="flex flex-col gap-4">
             {proposalList.map((proposal) => (
@@ -117,7 +124,7 @@ export function FrameworkSection() {
 
       <VersionsCard response={framework.data} />
 
-      <EditCard current={current} onSaved={reloadAll} />
+      <EditCard current={current} maxIds={framework.data.maxIdNumbers ?? null} onChanged={reloadAll} />
     </>
   );
 }
@@ -162,9 +169,11 @@ function CurrentCard({ view }: { view: FrameworkCurrentView | null }) {
 }
 
 /**
- * OS 원문으로 새 판 만들기 — ① 원문을 방법론 메모(INSIGHT)로 저장 → ② 그 메모로 제안 요청(Claude 호출 1회, 확인 단계) → ③ 받은 제안을
- * 그 자리에서 보고 승인·거절. 원문은 메모에만 남고 프레임에는 승인한 규칙만 들어갑니다(F4). 메모를 저장한 뒤에는 글을 잠급니다 —
- * 제안이 실패해 다시 요청할 때 같은 메모를 쓰게(다시 저장해 같은 원문 메모가 쌓이지 않게).
+ * 제안 요청 카드(F1·F2) — ① 글을 방법론 메모(INSIGHT)로 저장하거나 이미 있는 방법론 메모를 고름 → ② 그 메모로 제안 요청(Claude 호출 1회,
+ * 확인 단계) → ③ 받은 제안을 그 자리에서 보고 승인·거절. 이름·안내는 지금 판에 따라 바뀝니다(임시 판: "OS 원문으로 새 판 만들기", 사용자 판:
+ * "방법론 글로 갱신 제안 받기" — frameworkSourceCardView). 원문은 메모에만 남고 프레임에는 승인한 규칙만 들어갑니다(F4). 메모를 저장하거나
+ * 고른 뒤에는 글을 잠급니다 — 제안이 실패해 다시 요청할 때 같은 메모를 쓰게(다시 저장해 같은 글의 메모가 쌓이지 않게). 있는 메모를 고르는
+ * 목록은 보관하지 않은 방법론 메모만 보입니다(서버가 보관 메모의 제안을 거절).
  */
 function OsSourceCard({
   current,
@@ -175,8 +184,12 @@ function OsSourceCard({
   proposals: readonly PaperFrameworkProposal[];
   onChanged: () => void;
 }) {
+  const card = frameworkSourceCardView(current?.status);
+  const notes = useApi<PaperNotesResponse>(endpoints.paper.notes(false));
+  const noteOptions = insightNoteOptions(notes.data?.available ? notes.data.notes : null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [picked, setPicked] = useState<number | null>(null);
   const [confirming, setConfirming] = useState(false);
   const saveNote = useAsyncAction(
     (payload: ReturnType<typeof insightNotePayload>) => apiPost<PaperNoteCreateResult>(endpoints.paper.createNote, payload),
@@ -196,7 +209,9 @@ function OsSourceCard({
   const noteResult = saveNote.result !== dismissed.note ? saveNote.result : null;
   const proposeResult = propose.result !== dismissed.proposal ? propose.result : null;
 
-  const noteId = noteResult && noteResult.ok !== false ? noteResult.note?.id ?? null : null;
+  const savedId = noteResult && noteResult.ok !== false ? noteResult.note?.id ?? null : null;
+  const noteId = savedId ?? picked;
+  const locked = noteId !== null;
   const noteView = noteResult ? noteCreateResultView(noteResult) : null;
   const proposeView = proposeResult ? proposeResultView(proposeResult) : null;
   const createdId = proposeResult?.proposal?.id ?? null;
@@ -205,7 +220,8 @@ function OsSourceCard({
   const count = textLength(body.trim());
 
   const runSave = async () => {
-    await saveNote.run(insightNotePayload(title, body));
+    // 저장한 메모가 고르기 목록에도 보이게 다시 읽습니다("다른 글로 다시 쓰기" 뒤 그 메모를 다시 고를 수 있게).
+    if (await saveNote.run(insightNotePayload(title, body, card.defaultTitle))) void notes.reload();
   };
   const runPropose = async () => {
     if (noteId === null) return;
@@ -217,51 +233,61 @@ function OsSourceCard({
   const restart = () => {
     setTitle("");
     setBody("");
+    setPicked(null);
     setConfirming(false);
     setDismissed({ note: saveNote.result, proposal: propose.result });
   };
+  const pick = (value: string) => {
+    setPicked(value === "" ? null : Number(value));
+    setConfirming(false);
+  };
 
   return (
-    <Card
-      title="OS 원문으로 새 판 만들기"
-      subtitle="① 원문 붙여넣기 → ② 방법론 메모(INSIGHT)로 저장 → ③ Claude 제안 요청 → ④ 제안을 보고 승인(새 판)"
-      source={PAPER_SOURCES.proposals}
-    >
-      <p className="text-xs leading-relaxed text-muted">
-        원문은 메모에만 둡니다 — 프레임에는 승인한 원칙·규칙만 들어갑니다(규칙 300자, 렌더링 약 8,000토큰 예산). Claude는 원문의 주장을 하나씩
-        지금 판과 대조해 [일치·보완·수정 필요·모순]으로 평가하고, 필요한 원칙·규칙 추가·수정·삭제와 전후 비교만 냅니다. 자동 반영은 없습니다.
-        한 번에 옮기는 편이 낫다면 아래 &apos;직접 고치기&apos;로 원칙·규칙을 직접 적어 저장해도 됩니다(사용자 판).
-      </p>
+    <Card title={card.title} subtitle={card.subtitle} source={PAPER_SOURCES.proposals}>
+      <p className="text-xs leading-relaxed text-muted">{card.intro}</p>
 
       <div className="mt-3 flex flex-col gap-2">
+        {noteOptions.length > 0 && (
+          <Select
+            label="이미 있는 방법론 메모로 요청"
+            value={picked === null ? "" : String(picked)}
+            onChange={pick}
+            disabled={savedId !== null || propose.busy}
+            options={[{ value: "", label: "고르지 않음 — 아래에 글을 붙여 새 메모로" }, ...noteOptions]}
+          />
+        )}
         <label className="flex flex-col gap-1 text-xs text-muted">
-          메모 제목(비우면 &quot;투자 OS 원문&quot;)
+          {`메모 제목(비우면 "${card.defaultTitle}")`}
           <input
             type="text"
             value={title}
-            readOnly={noteId !== null}
+            readOnly={locked}
             onChange={(event) => setTitle(event.target.value)}
             className={INPUT}
           />
         </label>
         <div className="flex flex-col gap-1">
           <label className="flex flex-col gap-1 text-xs text-muted">
-            OS 원문
+            {card.bodyLabel}
             <textarea
               value={body}
               rows={10}
-              readOnly={noteId !== null}
+              readOnly={locked}
               onChange={(event) => setBody(event.target.value)}
               className={`${INPUT} font-mono text-xs leading-relaxed`}
             />
           </label>
-          <span className="text-[11px] text-muted">{formatNumber(count, 0)}자</span>
+          <span className="text-[11px] text-muted">
+            {picked !== null && savedId === null
+              ? `메모 #${picked}의 글로 요청합니다 — 새 메모를 만들지 않습니다.`
+              : `${formatNumber(count, 0)}자`}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button onClick={() => void runSave()} disabled={count === 0 || noteId !== null || saveNote.busy}>
+          <Button onClick={() => void runSave()} disabled={count === 0 || locked || saveNote.busy}>
             {saveNote.busy ? "저장 중…" : "① 메모로 저장"}
           </Button>
-          {noteId !== null && <Button variant="ghost" onClick={restart} disabled={propose.busy}>다른 글로 다시 쓰기</Button>}
+          {locked && <Button variant="ghost" onClick={restart} disabled={propose.busy}>다른 글로 다시 쓰기</Button>}
         </div>
         {saveNote.error && <Banner tone="warn">{saveNote.error}</Banner>}
         {noteView && <Banner tone={noteView.tone}>{noteView.text}</Banner>}
@@ -288,7 +314,7 @@ function OsSourceCard({
             </Button>
           </div>
         )}
-        {/* 서버 문구(호출 상한·키 없음·다른 요청 진행 중 등)를 그대로 — 무엇을 해야 하는지 서버가 적어 보냅니다. */}
+        {/* 서버 문구(호출 상한·키 없음·다른 요청 진행 중·보관한 메모 등)를 그대로 — 무엇을 해야 하는지 서버가 적어 보냅니다. */}
         {propose.error && <Banner tone="warn">{propose.error}</Banner>}
         {proposeView && <Banner tone={proposeView.tone}>{proposeView.text}</Banner>}
         {created && <ProposalItem proposal={created} current={current} onChanged={onChanged} />}
@@ -301,8 +327,9 @@ function OsSourceCard({
 type Deciding = "approve" | "reject" | null;
 
 /**
- * 제안 한 건 — 머리(상태·요청 시각·모델·근거 메모·기준 판), 요약, 평가 표, 변경 표(지금 글 → 바꿀 글), 전후 비교, 오류. 대기 중이면 승인·거절
- * (둘 다 확인 단계 — 승인은 새 판을 만들어 다음 결정부터 바뀜). 기준 판이 지금 판과 다르면 승인 버튼을 막습니다(서버도 400).
+ * 제안 한 건 — 머리(상태·요청 시각·모델·근거 메모·기준 판), 요약, 평가 표, 변경 표(대기 중이면 지금 글, 결정된 제안이면 기준 판 글 → 바꿀
+ * 글), 전후 비교, 오류. 대기 중이면 승인·거절(둘 다 확인 단계 — 승인은 새 판을 만들어 다음 결정부터 바뀜). 기준 판이 지금 판과 다르거나 변경이
+ * 0건이면 승인 버튼을 막습니다(서버도 400). 결정된 제안의 기준 판이 지금 판이 아니면 그 판을 따로 읽어 대조합니다(proposalBaseToFetch).
  */
 function ProposalItem({
   proposal,
@@ -313,7 +340,9 @@ function ProposalItem({
   current: PaperFrameworkVersion | null;
   onChanged: () => void;
 }) {
-  const view = proposalView(proposal, current);
+  const baseToFetch = proposalBaseToFetch(proposal, current);
+  const baseFrame = useApi<PaperFrameworkVersionResponse>(baseToFetch === null ? null : endpoints.paper.frameworkVersion(baseToFetch));
+  const view = proposalView(proposal, current, baseFrame.data?.available ? baseFrame.data.version ?? null : null);
   const [deciding, setDeciding] = useState<Deciding>(null);
   const approve = useAsyncAction(
     (id: number) => apiPost<PaperProposalApproveResult>(endpoints.paper.approveProposal(id)),
@@ -361,15 +390,15 @@ function ProposalItem({
       )}
 
       {(view.operations.length > 0 || view.pending) && (
-        <Part title="변경" note="승인하면 서버가 이 변경을 지금 판에 적용해 새 판을 만듭니다. 지금 글은 지금 판에서 찾은 것입니다.">
+        <Part title="변경" note={view.operationsNote}>
           <Table<ProposalOperationRow>
             rows={view.operations}
             rowKey={(row) => row.key}
-            emptyMessage="바꿀 것이 없다는 제안입니다 — 승인하면 같은 내용의 새 판이 생깁니다."
+            emptyMessage={view.emptyMessage}
             columns={[
               { key: "op", header: "변경", render: (row) => <span className="whitespace-nowrap font-semibold text-bright">{row.op}</span> },
               { key: "target", header: "대상", render: (row) => <code className="text-xs text-body">{row.target}</code> },
-              { key: "before", header: "지금 글", render: (row) => <span className="text-xs text-muted">{row.before}</span> },
+              { key: "before", header: view.beforeHeader, render: (row) => <span className="text-xs text-muted">{row.before}</span> },
               {
                 key: "after",
                 header: "바꿀 글",
@@ -407,7 +436,7 @@ function ProposalItem({
       ) : (
         <div className="flex flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="primary" onClick={() => setDeciding("approve")} disabled={busy || view.staleBase !== null}>
+            <Button variant="primary" onClick={() => setDeciding("approve")} disabled={busy || !view.approvable}>
               {`${view.title} 승인`}
             </Button>
             <Button onClick={() => setDeciding("reject")} disabled={busy}>{`${view.title} 거절`}</Button>
@@ -561,9 +590,19 @@ function RenderedPane({
 /**
  * 직접 고치기(수동 편집, F3) — 지금 판을 복사해 원칙·엔진(8개 고정)·규칙·지침을 폼으로 고치고, 바꾼 내용(changelog)과 함께 저장하면 새 판
  * (사용자 판)이 됩니다. 글자 수는 입력 중에 보이고, 300자·2,000자를 넘거나 빈 칸이 있으면 저장 버튼을 막습니다(서버가 다시 검사).
- * 편집을 시작한 뒤 다른 판이 생기면(제안 승인) 저장을 막습니다 — 그대로 저장하면 그 판의 변경이 사라집니다.
+ * 편집을 시작한 뒤 다른 판이 생기면(제안 승인) 저장을 막습니다 — 그대로 저장하면 그 판의 변경이 사라집니다. 이 화면이 아는 판만 보므로,
+ * 저장 본문에 기준 판(baseVersion)을 실어 서버도 대조하고(다른 창·탭에서 승인했으면 400), 저장이 거절되면 판을 다시 읽어 아래 "판이
+ * 바뀌었습니다" 안내가 뜨게 합니다(FW-1). 새 원칙·규칙 번호는 모든 판에서 쓴 가장 큰 번호(maxIds)보다 크게 매깁니다(FW-2).
  */
-function EditCard({ current, onSaved }: { current: PaperFrameworkVersion | null; onSaved: () => void }) {
+function EditCard({
+  current,
+  maxIds,
+  onChanged,
+}: {
+  current: PaperFrameworkVersion | null;
+  maxIds: PaperFrameworkMaxIds | null;
+  onChanged: () => void;
+}) {
   const [draft, setDraft] = useState<FrameworkDraft | null>(null);
   const [confirming, setConfirming] = useState(false);
   const save = useAsyncAction(
@@ -574,7 +613,7 @@ function EditCard({ current, onSaved }: { current: PaperFrameworkVersion | null;
   const result = save.result ? frameworkSaveResultView(save.result) : null;
 
   const start = () => {
-    setDraft(frameworkDraftFrom(current));
+    setDraft(frameworkDraftFrom(current, maxIds));
     setConfirming(false);
   };
   const edit = (change: FrameworkDraftEdit) => {
@@ -601,10 +640,9 @@ function EditCard({ current, onSaved }: { current: PaperFrameworkVersion | null;
   const submit = async () => {
     const ok = await save.run(frameworkSavePayload(draft));
     setConfirming(false);
-    if (ok) {
-      setDraft(null);
-      onSaved();
-    }
+    if (ok) setDraft(null);
+    // 실패해도 판을 다시 읽습니다 — 다른 창에서 판이 생겨 거절됐으면 지금 판이 바뀌어 "판이 바뀌었습니다" 안내가 뜹니다(편집본은 그대로).
+    onChanged();
   };
 
   return (

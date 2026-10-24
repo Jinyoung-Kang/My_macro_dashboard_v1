@@ -203,7 +203,15 @@ public class NoteService {
      * 중간에서 자르면 뜻이 바뀝니다. 뺀 메모 수는 {@code omitted}. 테이블이 없으면 빈 결과.
      */
     public PacketNotes activeMarketNotes(LocalDate asOf) {
-        JsonNode settingsBody = store.ready() ? settingsBody() : null;
+        return activeMarketNotes(asOf, store.ready() ? settingsBody() : null);
+    }
+
+    /**
+     * {@link #activeMarketNotes(LocalDate)} — 글자 상한({@code notesMaxCharsInPacket})을 부르는 쪽이 읽은 설정 본문에서 읽습니다(패킷이
+     * 결정의 설정 행 하나로 만들어지게 — {@link PacketBuilder#build(LocalDate, String, boolean, Integer, PaperStore.SettingsRow)}).
+     * null이면 기본값.
+     */
+    public PacketNotes activeMarketNotes(LocalDate asOf, JsonNode settingsBody) {
         int maxChars = maxCharsInPacket(settingsBody);
         if (!store.ready() || asOf == null) {
             return new PacketNotes(List.of(), PacketBuilder.NO_NOTES, List.of(), 0, maxChars, PACKET_NOTE);

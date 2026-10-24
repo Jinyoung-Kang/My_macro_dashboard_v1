@@ -1119,6 +1119,17 @@ export interface PaperFrameworkResponse {
   versions?: PaperFrameworkVersionSummary[];
   /** 렌더링 예산(서버가 지금 설정에서 읽은 frameworkTokenBudget). 계약 밖 — 없으면 화면이 설정 응답에서 읽습니다. */
   tokenBudget?: number | null;
+  /**
+   * 모든 판에서 쓴 가장 큰 원칙·규칙 번호(엔진별) — 수동 편집의 새 번호를 이보다 크게 매깁니다(지운 id를 판을 건너 다시 쓰지 않게, FW-2).
+   * 보내지 않는 백엔드면 기준 판의 id만으로 매깁니다.
+   */
+  maxIdNumbers?: PaperFrameworkMaxIds | null;
+}
+
+/** 모든 판에서 쓴 가장 큰 번호 — principles = P{n}의 n, rules = 엔진 id("E1"~"E8") → E{k}-R{m}의 m. */
+export interface PaperFrameworkMaxIds {
+  principles?: number | null;
+  rules?: Record<string, number | null> | null;
 }
 
 /** GET /api/paper/framework/versions/{version} */
@@ -1129,8 +1140,8 @@ export interface PaperFrameworkVersionResponse {
 }
 
 /**
- * POST /api/paper/framework `{body, changelog}`(수동 편집, F3) → 새 판 번호. 형식이 틀리면 400(서버 문구). 렌더링이 예산을 넘으면
- * 저장은 하고 warning을 붙입니다(F4 — 막지 않음).
+ * POST /api/paper/framework `{body, changelog, baseVersion}`(수동 편집, F3) → 새 판 번호. 형식이 틀리거나 기준 판(baseVersion — 편집을
+ * 시작한 판)이 지금 판과 다르면 400(서버 문구). 렌더링이 예산을 넘으면 저장은 하고 warning을 붙입니다(F4 — 막지 않음).
  */
 export interface PaperFrameworkSaveResult {
   ok: boolean;

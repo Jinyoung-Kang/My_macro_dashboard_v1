@@ -1152,12 +1152,23 @@ class ApiIntegrationTest {
                     current.path("body").deepCopy();
             ((tools.jackson.databind.node.ArrayNode) seven.path("engines")).remove(7);
             ResponseEntity<JsonNode> invalid = rest.exchange(url("/api/paper/framework"), HttpMethod.POST,
-                    new HttpEntity<>(Map.of("body", seven, "changelog", "엔진 하나 뺌"), owner), JsonNode.class);
+                    new HttpEntity<>(Map.of("body", seven, "changelog", "엔진 하나 뺌", "baseVersion", version), owner),
+                    JsonNode.class);
             assertThat(invalid.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
             assertThat(invalid.getBody().path("message").asString()).contains("엔진").contains("8개");
             assertThat(rest.exchange(url("/api/paper/framework"), HttpMethod.POST,
-                    new HttpEntity<>(Map.of("body", current.path("body"), "changelog", " "), owner), JsonNode.class)
-                    .getStatusCode()).as("변경 기록 없음").isEqualTo(HttpStatus.BAD_REQUEST);
+                    new HttpEntity<>(Map.of("body", current.path("body"), "changelog", " ", "baseVersion", version), owner),
+                    JsonNode.class).getStatusCode()).as("변경 기록 없음").isEqualTo(HttpStatus.BAD_REQUEST);
+            // FW-1 기준 판이 지금 판이 아니거나 없으면 400 — 그사이 생긴 판의 변경을 지우지 않게.
+            ResponseEntity<JsonNode> stale = rest.exchange(url("/api/paper/framework"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("body", current.path("body"), "changelog", "옛 판에서 고침", "baseVersion",
+                            version + 1), owner), JsonNode.class);
+            assertThat(stale.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(stale.getBody().path("message").asString()).contains("다른 판이 먼저 생겼습니다");
+            assertThat(rest.exchange(url("/api/paper/framework"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("body", current.path("body"), "changelog", "기준 판 없음"), owner),
+                    JsonNode.class).getStatusCode()).as("baseVersion 없음").isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(view.path("maxIdNumbers").path("rules").size()).as("새 번호의 바닥(FW-2)").isEqualTo(8);
             assertThat(authorizedGet("/api/paper/framework").path("current").path("version").asInt())
                     .as("아무것도 바꾸지 않음").isEqualTo(version);
 
@@ -1209,6 +1220,13 @@ class ApiIntegrationTest {
                     .doesNotContain("\"id\":" + marketId + ",");
             assertThat(authorizedExchange("/api/paper/notes/987654321", HttpMethod.DELETE).getStatusCode())
                     .isEqualTo(HttpStatus.BAD_REQUEST);
+            // F6 보관한 방법론 메모로는 제안하지 않음(400 — 부르지 않음).
+            assertThat(authorizedExchange("/api/paper/notes/" + insightId, HttpMethod.DELETE).getStatusCode())
+                    .isEqualTo(HttpStatus.OK);
+            ResponseEntity<JsonNode> archivedProposal = rest.exchange(url("/api/paper/framework/proposals"),
+                    HttpMethod.POST, new HttpEntity<>(Map.of("noteId", insightId), owner), JsonNode.class);
+            assertThat(archivedProposal.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(archivedProposal.getBody().path("message").asString()).contains("보관한 메모");
 
             assertThat(authorizedGet("/api/paper/overview").path("frameworkBoundaries").isArray()).isTrue();
             assertThat(authorizedGet("/api/paper/status").path("apiUsage").path("today").path("isEstimated")

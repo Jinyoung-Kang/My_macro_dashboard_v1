@@ -1323,6 +1323,15 @@ public class PaperStore {
                 frameworkMapper(), version).stream().findFirst();
     }
 
+    /**
+     * 모든 판의 본문, 번호 순 — 렌더링은 읽지 않습니다. 새 원칙·규칙 번호가 지운 id를 다시 쓰지 않게 서비스가 "쓴 적 있는 가장 큰 번호"를
+     * 모을 때 씁니다.
+     */
+    public List<JsonNode> frameworkBodies() {
+        return jdbc.query("SELECT body::text AS body FROM paper_framework_versions ORDER BY version",
+                (rs, rowNum) -> json(rs, "body"));
+    }
+
     /** 판 목록, 최근 번호 순 — 본문·렌더링은 읽지 않고 제목·상태만(판이 쌓여도 목록이 가볍게). */
     public List<FrameworkVersionSummary> frameworkVersions() {
         return jdbc.query("SELECT version, body->>'title' AS title, body->>'status' AS status, changelog, "

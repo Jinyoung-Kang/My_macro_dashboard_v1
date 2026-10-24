@@ -1016,6 +1016,8 @@ class PaperStoreDbTest {
                     PaperStore.FrameworkVersionSummary::title, PaperStore.FrameworkVersionSummary::status)
                     .containsExactly(org.assertj.core.groups.Tuple.tuple(1, "사용자 v1", "USER"),
                             org.assertj.core.groups.Tuple.tuple(0, "임시 v0", "INTERIM"));
+            assertThat(store.frameworkBodies()).as("모든 판의 본문, 번호 순(새 번호가 지운 id를 다시 쓰지 않게 — FW-2)")
+                    .extracting(body -> body.path("title").asString()).containsExactly("임시 v0", "사용자 v1");
 
             // 경계: 그 책의 결정에 판마다 처음 쓰인 거래일, 판 번호 없는 결정은 세지 않음
             store.insertBookIfAbsent(new PaperStore.Book(BOOK, "CLAUDE", "t", 100_000, null, "ACTIVE", null));

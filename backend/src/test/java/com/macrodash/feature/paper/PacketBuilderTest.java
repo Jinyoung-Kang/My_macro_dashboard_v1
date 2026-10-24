@@ -784,6 +784,29 @@ class PacketBuilderTest {
     }
 
     @Test
+    @DisplayName("FW-5 결정이 넘긴 설정 행으로 만든다 — 그사이 저장된 지금 행이 아니라 그 행의 하드 규칙(12)·settingsVersion(1)·메모 글자 상한(11)")
+    void usesGivenSettingsRow() {
+        // 결정이 읽은 행 v1(종목 10%·메모 6,000자) 뒤에 설정 탭이 v2(종목 8%·메모 3,000자)를 저장한 상황.
+        SettingsRow decisionRow = store.settings;
+        ObjectNode later = (ObjectNode) decisionRow.body().deepCopy();
+        later.put("maxWeightStockPct", 8);
+        later.put("notesMaxCharsInPacket", 3_000);
+        store.settings = new SettingsRow(2, later, store.dbNow);
+
+        JsonNode given = builder.build(FRI, RuleBookService.INITIAL, true, 0, decisionRow).body();
+        assertThat(given.get(PacketBuilder.BASIS).get("settingsVersion").asInt()).isEqualTo(1);
+        assertThat(given.get(PacketBuilder.HARD_RULES).get("maxWeightStockPct").asDouble()).isEqualTo(10);
+        assertThat(given.get(PacketBuilder.HARD_RULES).get("lines").toString()).contains("종목 ≤ 10%")
+                .doesNotContain("종목 ≤ 8%");
+        assertThat(given.get(PacketBuilder.NOTES).get("maxChars").asInt()).isEqualTo(6_000);
+
+        JsonNode now = builder.build(FRI, RuleBookService.INITIAL, true, 0).body();
+        assertThat(now.get(PacketBuilder.BASIS).get("settingsVersion").asInt()).as("행을 넘기지 않으면 지금 행").isEqualTo(2);
+        assertThat(now.get(PacketBuilder.HARD_RULES).get("maxWeightStockPct").asDouble()).isEqualTo(8);
+        assertThat(now.get(PacketBuilder.NOTES).get("maxChars").asInt()).isEqualTo(3_000);
+    }
+
+    @Test
     @DisplayName("메모(섹션 11): 그 거래일에 유효한 시황 메모만 최신부터 구분자로 감싸 싣고(가짜 구분자는 지움, 본문은 text에만), 번호는 noteIds — 초기 패킷은 기준일 이하만(PIT)")
     void notesSection() {
         activeClaude();

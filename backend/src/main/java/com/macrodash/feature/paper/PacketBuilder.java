@@ -284,9 +284,14 @@ public class PacketBuilder {
         this.mapper = mapper;
     }
 
-    /** {@link #build(LocalDate, String, boolean, Integer)} — 프레임 판을 모를 때(섹션 1의 frameworkVersion이 null — 시험·도구용). */
+    /** {@link #build(LocalDate, String, boolean, Integer, SettingsRow)} — 프레임 판을 모를 때(섹션 1의 frameworkVersion이 null — 시험·도구용). */
     public Packet build(LocalDate asOf, String kind, boolean initial) {
-        return build(asOf, kind, initial, null);
+        return build(asOf, kind, initial, null, null);
+    }
+
+    /** {@link #build(LocalDate, String, boolean, Integer, SettingsRow)} — 설정 행을 지금 읽음(시험·도구용). */
+    public Packet build(LocalDate asOf, String kind, boolean initial, Integer frameworkVersion) {
+        return build(asOf, kind, initial, frameworkVersion, null);
     }
 
     /**
@@ -296,10 +301,13 @@ public class PacketBuilder {
      * @param kind             결정 종류(SCHEDULED·MANUAL·INITIAL·REBALANCE) — 섹션 1에 그대로
      * @param initial          초기 결정 패킷(기준일 뒤 값을 하나도 넣지 않음, 매크로 카드 asOfMismatch)
      * @param frameworkVersion 시스템 프롬프트로 쓴 프레임 판(섹션 1 — 임시 v0 포함, Claude 책 결정은 늘 채움). 모르면 null
+     * @param settingsRow      이 결정이 읽은 설정 행 — 하드 규칙(섹션 12)·{@code settingsVersion}(섹션 1)·메모 글자 상한(섹션 11)을 이
+     *                         행에서 읽습니다. 결정은 시스템 프롬프트·검증기·기록에 같은 행을 쓰므로, 여기서 다시 읽으면 그사이 설정 탭에서
+     *                         저장한 판이 끼어 한 호출 안에서 프롬프트와 패킷의 한도·판 번호가 갈립니다(FW-5). null이면 지금 행(없으면 기본값)
      * @throws IllegalArgumentException 기준일이 없음·모르는 종류
      * @throws IllegalStateException    모의 매매 테이블이 없음
      */
-    public Packet build(LocalDate asOf, String kind, boolean initial, Integer frameworkVersion) {
+    public Packet build(LocalDate asOf, String kind, boolean initial, Integer frameworkVersion, SettingsRow settingsRow) {
         if (asOf == null) {
             throw new IllegalArgumentException("기준 거래일이 없습니다");
         }
@@ -309,11 +317,11 @@ public class PacketBuilder {
         if (!store.ready()) {
             throw new IllegalStateException(PaperQueryService.NOT_READY_MESSAGE);
         }
-        return reader.quietly(() -> assemble(asOf, kind, initial, frameworkVersion));
+        return reader.quietly(() -> assemble(asOf, kind, initial, frameworkVersion, settingsRow));
     }
 
-    private Packet assemble(LocalDate asOf, String kind, boolean initial, Integer frameworkVersion) {
-        Optional<SettingsRow> settingsRow = store.settings();
+    private Packet assemble(LocalDate asOf, String kind, boolean initial, Integer frameworkVersion, SettingsRow given) {
+        Optional<SettingsRow> settingsRow = given != null ? Optional.of(given) : store.settings();
         JsonNode settingsBody = settingsRow.map(SettingsRow::body).orElseGet(settings::defaultsJson);
         Integer settingsVersion = settingsRow.map(SettingsRow::version).orElse(null);
         PaperSettings paper = PaperSettings.from(settingsBody);
@@ -371,7 +379,7 @@ public class PacketBuilder {
         root.put(PORTFOLIO, portfolio(asOf, initial, ledger, paper, limits));
         root.put(DECISIONS, recentDecisions(asOf, kind, initial));
         // 메모는 기준일(as_of) ≤ 기준 거래일인 것만 — 초기 결정 패킷도 같은 거름으로 출발일 이하 메모만 봅니다(PIT, 계약 보충 §5).
-        NoteService.PacketNotes packetNotes = notes.activeMarketNotes(asOf);
+        NoteService.PacketNotes packetNotes = notes.activeMarketNotes(asOf, settingsBody);
         root.put(NOTES, notesSection(packetNotes));
         root.put(HARD_RULES, hardRules(asOf, initial, limits, paper, ruleSettings, universe, lockedOut, noPrice,
                 inputsStale, initial ? null : quotes.map(Quotes::collectedAt).orElse(null)));

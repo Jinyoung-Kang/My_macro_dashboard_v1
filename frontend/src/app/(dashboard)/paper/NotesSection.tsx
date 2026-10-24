@@ -12,6 +12,7 @@ import {
   type NoteDraft,
   type NoteRow,
   noteArchiveConfirm,
+  noteAsOfHint,
   noteCreateResultView,
   noteDraftCheck,
   noteExpiryHint,
@@ -28,7 +29,9 @@ const INPUT = "w-full rounded-md border border-border bg-canvas px-3 py-2 text-s
  * 메모 탭(명세 F6·D14) — 시황 메모(MARKET: 기준일·만료일, 유효하면 Claude 결정 패킷 섹션 11에 자료로)와 방법론 메모(INSIGHT: 만료 없음,
  * 프레임 제안에만)의 목록·쓰기·보관.
  *
- * 유효한지(active)·만료일 기본값은 서버가 정합니다 — 화면은 날짜를 다시 비교하지 않고 서버 값을 그대로 보입니다. 보관은 지우지 않고
+ * 유효한지(active)·기준일·만료일 기본값은 서버가 정합니다 — 화면은 날짜를 다시 비교하지 않고 서버 값을 그대로 보입니다. 기준일 칸에는 비우면
+ * 채워지는 날(referenceDate — 마지막으로 끝난 미국 세션)을 적고, 저장한 시황 메모가 그 거래일 패킷에 실리지 않으면(서버 active:false) 저장
+ * 결과에서 바로 알립니다(F4). 보관은 지우지 않고
  * archived로 표시하는 DELETE이고, 되돌릴 화면이 없어 확인을 한 번 거칩니다. 만료일 안내의 기본 거래일 수는 설정(notesDefaultExpiryTradingDays)을
  * 읽어 적습니다(못 읽으면 기본값이라고).
  */
@@ -48,7 +51,8 @@ export function NotesSection({ startDate }: { startDate: string | null }) {
   );
 
   const check = noteDraftCheck(draft);
-  const created = create.result ? noteCreateResultView(create.result) : null;
+  const referenceDate = notes.data?.available ? notes.data.referenceDate ?? null : null;
+  const created = create.result ? noteCreateResultView(create.result, referenceDate) : null;
   const expiryHint = noteExpiryHint(settings.data?.available ? settings.data.body : null);
 
   const edit = (change: Partial<NoteDraft>) => setDraft((current) => ({ ...current, ...change }));
@@ -175,10 +179,19 @@ export function NotesSection({ startDate }: { startDate: string | null }) {
                 <option value="INSIGHT">방법론 메모(INSIGHT) — 프레임 제안에</option>
               </select>
             </label>
-            <label className="flex flex-col gap-1 text-xs text-muted">
-              기준일(선택)
-              <input type="date" value={draft.asOfDate} onChange={(event) => edit({ asOfDate: event.target.value })} className={INPUT} />
-            </label>
+            <div className="flex flex-col gap-1">
+              <label className="flex flex-col gap-1 text-xs text-muted">
+                기준일(선택)
+                <input
+                  type="date"
+                  value={draft.asOfDate}
+                  aria-describedby="paper-note-asof-hint"
+                  onChange={(event) => edit({ asOfDate: event.target.value })}
+                  className={INPUT}
+                />
+              </label>
+              <span id="paper-note-asof-hint" className="text-[11px] text-muted">{noteAsOfHint(referenceDate)}</span>
+            </div>
             {draft.kind === "MARKET" ? (
               <div className="flex flex-col gap-1">
                 <label className="flex flex-col gap-1 text-xs text-muted">
