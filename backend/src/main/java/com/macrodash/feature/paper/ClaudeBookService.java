@@ -56,12 +56,14 @@ import java.util.concurrent.locks.ReentrantLock;
  * 🧪 Claude 재량 책(실험군) — 하루 한 번 Claude가 입력 패킷을 보고 주문과 목표 주식 노출을 <b>제안</b>하고, 검증기가 하드 규칙으로
  * 통과·거절합니다(명세 C1~C11·D5·D7·D18·D26, 설계 §5-1~§5-6).
  *
- * <p><b>결정 한 번</b>({@link #decide}): ① 일일 호출 상한(설정 {@code apiDailyCallCap}, 기본 6 — KST 하루, 결정·미리보기·시작·재시도
- * 모두 셈) → ② 시스템 프롬프트(단계 3b 전에는 {@link ClaudePrompts#INTERIM_SYSTEM}) → ③ 패킷({@link PacketBuilder}) →
+ * <p><b>결정 한 번</b>({@link #decide}): ① 일일 호출 상한(설정 {@code apiDailyCallCap}, 기본 6 — KST 하루, 결정·미리보기·시작·재시도와
+ * 프레임 제안을 모두 셈 — {@link PaperApiCalls}) → ② 시스템 프롬프트(지금 프레임 판을 결정 시점 설정으로 렌더링한 것 —
+ * {@link FrameworkService#render}, 판이 없으면 임시 v0을 시드) → ③ 패킷({@link PacketBuilder}, 섹션 1에 그 판 번호) →
  * ④ 구조화 출력 호출 한 번({@link AiService#structured}, 설정 {@code model}·{@code effort}, 자동 전환 없음 — D5) → ⑤ 사용량 기록
- * (성공·실패 모두 호출 +1, 토큰 합산) → ⑥ 스키마 전체 검사({@link StructuredSchema#validate} — API에는 보낼 수 없는 범위·길이·개수
+ * (성공·실패 모두 호출 +1, 토큰·추정 비용 합산) → ⑥ 스키마 전체 검사({@link StructuredSchema#validate} — API에는 보낼 수 없는 범위·길이·개수
  * 제약까지, D26) → ⑦ 검증기({@link OrderValidator}) → 통과 주문은 대기(PENDING, 출처 CLAUDE, 시점은 응답대로), 거절 주문은 사유와
- * 함께 REJECTED → ⑧ 결정 기록(패킷·해시·원문·검증한 응답·사용량·모델·설정 판·목표 노출·exposureMismatch·메모 번호·지연·확정 종가).
+ * 함께 REJECTED → ⑧ 결정 기록(패킷·해시·원문·검증한 응답·사용량·모델·프레임 판·설정 판·목표 노출·exposureMismatch·메모 번호·지연·
+ * 확정 종가). 프레임 판은 Claude를 부른 결정이면 늘 남깁니다(임시 v0 포함 — 응답의 {@code framework = {version, status, title}}).
  *
  * <p><b>실패</b>(C3·C7): 401·403·404·429·5xx·연결·시간 초과는 {@code API_ERROR}, 안전 분류기 거절은 {@code REFUSED}, JSON이 아니거나
  * 스키마 밖이면 {@code FORMAT_ERROR}. 출력 한도로 잘린 응답({@code MAX_TOKENS})과 200인데 텍스트가 없는 응답({@code EMPTY})도 모델이
@@ -190,6 +192,8 @@ public class ClaudeBookService {
     private final PaperLedgerService ledger;
     private final PaperAdminService admin;
     private final PacketBuilder packets;
+    private final FrameworkService framework;
+    private final PaperApiCalls calls;
     private final AiService ai;
     private final PaperSettingsService settings;
     private final PaperConfig config;
@@ -203,18 +207,18 @@ public class ClaudeBookService {
     @Autowired
     public ClaudeBookService(PaperStore store, StoreReader reader, PaperMarketData marketData,
                              PaperSelectionService selection, PaperLedgerService ledger, PaperAdminService admin,
-                             PacketBuilder packets, AiService ai, PaperSettingsService settings, PaperConfig config,
-                             ObjectMapper mapper,
+                             PacketBuilder packets, FrameworkService framework, PaperApiCalls calls, AiService ai,
+                             PaperSettingsService settings, PaperConfig config, ObjectMapper mapper,
                              @Value("${dashboard.paper.claude-timeout-seconds:300}") int timeoutSeconds) {
-        this(store, reader, marketData, selection, ledger, admin, packets, ai, settings, config, mapper,
-                timeoutSeconds, Clock.systemUTC());
+        this(store, reader, marketData, selection, ledger, admin, packets, framework, calls, ai, settings, config,
+                mapper, timeoutSeconds, Clock.systemUTC());
     }
 
     /** 테스트용 — 시계를 움직입니다(사용량의 KST 날짜·출발일 마감 검사·저장본 신선도). */
     ClaudeBookService(PaperStore store, StoreReader reader, PaperMarketData marketData, PaperSelectionService selection,
-                      PaperLedgerService ledger, PaperAdminService admin, PacketBuilder packets, AiService ai,
-                      PaperSettingsService settings, PaperConfig config, ObjectMapper mapper, int timeoutSeconds,
-                      Clock clock) {
+                      PaperLedgerService ledger, PaperAdminService admin, PacketBuilder packets,
+                      FrameworkService framework, PaperApiCalls calls, AiService ai, PaperSettingsService settings,
+                      PaperConfig config, ObjectMapper mapper, int timeoutSeconds, Clock clock) {
         this.store = store;
         this.reader = reader;
         this.marketData = marketData;
@@ -222,6 +226,8 @@ public class ClaudeBookService {
         this.ledger = ledger;
         this.admin = admin;
         this.packets = packets;
+        this.framework = framework;
+        this.calls = calls;
         this.ai = ai;
         this.settings = settings;
         this.config = config;
@@ -294,7 +300,7 @@ public class ClaudeBookService {
             return capSkipped(asOf, kind, row, claude, pricesFinal, retrying, today);
         }
         Generation before = generation(book);
-        Attempt attempt = attempt(asOf, kind, false, claude, today);
+        Attempt attempt = attempt(asOf, kind, false, row, claude, today);
         if (attempt == null) {
             return capSkipped(asOf, kind, row, claude, pricesFinal, retrying, today);
         }
@@ -397,8 +403,8 @@ public class ClaudeBookService {
         }
         try {
             Prepared prepared = prepareInitial();
-            Attempt attempt = attempt(prepared.start(), RuleBookService.INITIAL, true, prepared.claude(),
-                    prepared.today());
+            Attempt attempt = attempt(prepared.start(), RuleBookService.INITIAL, true, prepared.row(),
+                    prepared.claude(), prepared.today());
             if (attempt == null) {
                 throw new InvalidRequestException(capMessage(prepared.claude(), prepared.today()));
             }
@@ -485,8 +491,8 @@ public class ClaudeBookService {
         }
         try {
             Prepared prepared = prepareInitial();
-            Attempt attempt = attempt(prepared.start(), RuleBookService.INITIAL, true, prepared.claude(),
-                    prepared.today());
+            Attempt attempt = attempt(prepared.start(), RuleBookService.INITIAL, true, prepared.row(),
+                    prepared.claude(), prepared.today());
             if (attempt == null) {
                 throw new InvalidRequestException(capMessage(prepared.claude(), prepared.today()));
             }
@@ -597,9 +603,10 @@ public class ClaudeBookService {
     // ------------------------------------------------------------------ 호출
     /**
      * Claude 호출 한 번의 결과. {@code status}가 null이면 성공(스키마를 지킨 응답 {@code parsed}), 아니면 실패 상태와 문구.
+     * {@code frame}은 시스템 프롬프트로 쓴 프레임 판(결정 기록의 framework_version·응답의 framework).
      */
-    private record Attempt(Packet packet, AiService.StructuredResult result, String status, String error,
-                           JsonNode parsed, List<String> violations, String model, String effort) {
+    private record Attempt(Packet packet, FrameworkService.Frame frame, AiService.StructuredResult result, String status,
+                           String error, JsonNode parsed, List<String> violations, String model, String effort) {
 
         boolean succeeded() {
             return status == null;
@@ -611,54 +618,38 @@ public class ClaudeBookService {
     }
 
     /**
-     * 패킷을 만들고, 호출 한 번을 잡고(일일 상한 — 잡지 못하면 null), 부르고, 사용량을 남기고, 형식을 검사합니다. 패킷을 먼저
-     * 만드는 것은 패킷이 실패하면(자료 오류) 호출 한 번을 쓰지 않으려는 것입니다.
+     * 지금 프레임 판을 읽고(없으면 임시 v0 시드), 패킷을 만들고, 호출 한 번을 잡고(일일 상한 — 잡지 못하면 null), 부르고, 사용량을
+     * 남기고, 형식을 검사합니다. 패킷을 먼저 만드는 것은 패킷이 실패하면(자료 오류) 호출 한 번을 쓰지 않으려는 것입니다.
+     *
+     * <p>시스템 프롬프트는 그 판의 본문을 <b>이 결정이 읽은 설정 행</b>({@code row} — 결정 기록의 settings_version)으로 다시
+     * 렌더링합니다. 판 행의 {@code rendered}(판을 만들 때의 설정)를 쓰면 그 뒤 바뀐 하드 규칙 수치가 프롬프트에 남아 검증기와
+     * 어긋나고, 기록의 framework_version·settings_version으로 같은 문자열을 다시 만들 수 없습니다(계약 보충 §2).
      */
-    private Attempt attempt(LocalDate asOf, String kind, boolean initial, ClaudeSettings claude, LocalDate today) {
-        Packet packet = packets.build(asOf, kind, initial, frameworkVersion());
-        if (!store.reserveApiCall(today, claude.dailyCallCap())) {
+    private Attempt attempt(LocalDate asOf, String kind, boolean initial, SettingsRow row, ClaudeSettings claude,
+                            LocalDate today) {
+        FrameworkService.Frame frame = framework.current();
+        String system = FrameworkService.render(frame.body(), frame.version(), row.body());
+        Packet packet = packets.build(asOf, kind, initial, frame.version());
+        if (calls.reserve(today, claude.dailyCallCap()).isEmpty()) {
             return null;
         }
         AiService.StructuredResult result;
         try {
-            result = ai.structured(claude.model(), systemPrompt(), packet.text(), schema.forApi(), claude.effort(),
+            result = ai.structured(claude.model(), system, packet.text(), schema.forApi(), claude.effort(),
                     timeoutSeconds);
         } catch (RuntimeException e) {
             // 요청을 보내기 전에 멈춘 경우(인자 검사 — 코드 오류)라 잡은 호출을 돌려놓고 그대로 던집니다.
-            releaseQuietly(today);
+            calls.release(today);
             throw e;
         }
-        recordUsage(today, result);
-        return classify(packet, result, claude);
-    }
-
-    /** 키가 없어 요청을 보내지 않았으면 호출 수를 돌려놓고, 아니면 토큰을 더합니다. 기록 실패가 받은 응답을 버리게 하지 않습니다. */
-    private void recordUsage(LocalDate today, AiService.StructuredResult result) {
-        if ("NO_KEY".equals(result.errorKind())) {
-            releaseQuietly(today);
-            return;
-        }
-        try {
-            if (result.inputTokens() != null || result.outputTokens() != null || result.cacheReadTokens() != null
-                    || result.cacheWriteTokens() != null) {
-                store.addApiTokens(today, result.inputTokens(), result.outputTokens(), result.cacheReadTokens(),
-                        result.cacheWriteTokens());
-            }
-        } catch (RuntimeException e) {
-            log.warn("Claude 호출 사용량(토큰)을 남기지 못했습니다 — 결정은 계속합니다: {}", e.toString());
-        }
-    }
-
-    private void releaseQuietly(LocalDate today) {
-        try {
-            store.releaseApiCall(today);
-        } catch (RuntimeException e) {
-            log.warn("잡아 둔 Claude 호출 수를 돌려놓지 못했습니다: {}", e.toString());
-        }
+        // 키가 없어 보내지 않았으면 잡은 호출을 돌려놓고, 아니면 토큰·추정 비용을 더합니다(기록 실패는 로그만 — 받은 응답을 버리지 않음).
+        calls.record(today, claude.model(), result);
+        return classify(packet, frame, result, claude);
     }
 
     /** 결과 → 상태(클래스 설명의 실패 분류). 성공이면 JSON으로 읽고 스키마 전체로 검사합니다. */
-    private Attempt classify(Packet packet, AiService.StructuredResult result, ClaudeSettings claude) {
+    private Attempt classify(Packet packet, FrameworkService.Frame frame, AiService.StructuredResult result,
+                             ClaudeSettings claude) {
         if (!result.ok()) {
             String kind = result.errorKind() == null ? "UNKNOWN" : result.errorKind();
             String status = switch (kind) {
@@ -666,34 +657,25 @@ public class ClaudeBookService {
                 case "MAX_TOKENS", "EMPTY" -> STATUS_FORMAT_ERROR;
                 default -> STATUS_API_ERROR;
             };
-            return new Attempt(packet, result, status, clip("[" + kind + "] " + result.error(), ERROR_CHARS), null,
-                    List.of(), claude.model(), claude.effort());
+            return new Attempt(packet, frame, result, status, clip("[" + kind + "] " + result.error(), ERROR_CHARS),
+                    null, List.of(), claude.model(), claude.effort());
         }
         JsonNode parsed;
         try {
             parsed = mapper.readTree(result.text());
         } catch (RuntimeException e) {
-            return new Attempt(packet, result, STATUS_FORMAT_ERROR, "응답 형식 오류 — JSON으로 읽지 못했습니다", null,
-                    List.of("$: JSON으로 읽지 못했습니다"), claude.model(), claude.effort());
+            return new Attempt(packet, frame, result, STATUS_FORMAT_ERROR, "응답 형식 오류 — JSON으로 읽지 못했습니다",
+                    null, List.of("$: JSON으로 읽지 못했습니다"), claude.model(), claude.effort());
         }
         List<String> violations = schema.validate(parsed);
         if (!violations.isEmpty()) {
             String shown = String.join("; ", violations.subList(0, Math.min(VIOLATIONS_IN_ERROR, violations.size())));
-            return new Attempt(packet, result, STATUS_FORMAT_ERROR, clip("응답 형식 오류 — 스키마 위반 " + violations.size()
-                    + "건: " + shown + (violations.size() > VIOLATIONS_IN_ERROR ? " …" : ""), ERROR_CHARS), parsed,
+            String error = clip("응답 형식 오류 — 스키마 위반 " + violations.size() + "건: " + shown
+                    + (violations.size() > VIOLATIONS_IN_ERROR ? " …" : ""), ERROR_CHARS);
+            return new Attempt(packet, frame, result, STATUS_FORMAT_ERROR, error, parsed,
                     violations, claude.model(), claude.effort());
         }
-        return new Attempt(packet, result, null, null, parsed, List.of(), claude.model(), claude.effort());
-    }
-
-    /** 단계 3b 전에는 임시 프롬프트입니다. 3b의 프레임 서비스가 이 자리(지금 판의 렌더링)를 대신합니다. */
-    String systemPrompt() {
-        return ClaudePrompts.INTERIM_SYSTEM;
-    }
-
-    /** 시스템 프롬프트로 쓴 프레임 판. 임시 프롬프트에는 판 번호가 없어 null입니다(지어내지 않음). */
-    Integer frameworkVersion() {
-        return null;
+        return new Attempt(packet, frame, result, null, null, parsed, List.of(), claude.model(), claude.effort());
     }
 
     // ------------------------------------------------------------------ 검증
@@ -833,7 +815,7 @@ public class ClaudeBookService {
         response.put("book", PaperBooks.CLAUDE);
         response.put("kind", kind);
         response.put("asOfTradingDate", asOf.toString());
-        response.set("framework", mapper.valueToTree(frameworkView()));
+        response.set("framework", mapper.valueToTree(FrameworkService.decisionView(attempt.frame())));
         response.set("settings", mapper.valueToTree(settingsView(claude, limits, paper)));
         return new Plan(verdicts, planned, target, expected, mismatch, accepted, status, response);
     }
@@ -1022,9 +1004,9 @@ public class ClaudeBookService {
     private Decision decisionRow(long id, LocalDate asOf, String kind, String status, SettingsRow row,
                                  ClaudeSettings claude, Attempt attempt, Double target, JsonNode response, String error,
                                  boolean pricesFinal, int retryCount) {
-        return new Decision(id, PaperBooks.CLAUDE, asOf, kind, null, status, claude.model(), frameworkVersion(),
-                row.version(), attempt.selectionAsOf(), target, attempt.packet().body(), attempt.packet().sha256(),
-                attempt.result().text(), response, mapper.valueToTree(usageView(attempt)), error,
+        return new Decision(id, PaperBooks.CLAUDE, asOf, kind, null, status, claude.model(),
+                attempt.frame().version(), row.version(), attempt.selectionAsOf(), target, attempt.packet().body(),
+                attempt.packet().sha256(), attempt.result().text(), response, mapper.valueToTree(usageView(attempt)), error,
                 attempt.packet().noteIds(), pricesFinal, attempt.result().latencyMs(), retryCount,
                 attempt.packet().text());
     }
@@ -1047,7 +1029,7 @@ public class ClaudeBookService {
         failure.put("violations", attempt.violations());
         failure.put("retry", retrying != null);
         response.put("failure", failure);
-        response.put("framework", frameworkView());
+        response.put("framework", FrameworkService.decisionView(attempt.frame()));
         response.put("settings", claudeView(claude));
         Decision d = decisionRow(retrying == null ? 0 : retrying.id(), asOf, kind, attempt.status(), row, claude, attempt,
                 null, mapper.valueToTree(response), attempt.error(), pricesFinal);
@@ -1092,7 +1074,7 @@ public class ClaudeBookService {
             failure.put("violations", List.of());
             failure.put("retry", retrying != null);
             response.put("failure", failure);
-            response.put("framework", frameworkView());
+            response.put("framework", FrameworkService.decisionView(attempt.frame()));
             response.put("settings", claudeView(claude));
             Decision d = decisionRow(retrying == null ? 0 : retrying.id(), asOf, kind, STATUS_API_ERROR, row, claude,
                     attempt, null, mapper.valueToTree(response), message, pricesFinal, 1);
@@ -1196,14 +1178,6 @@ public class ClaudeBookService {
         out.put("effort", claude.effort());
         out.put("dailyCallCap", claude.dailyCallCap());
         out.put("fallbacks", claude.fallbacks());
-        return out;
-    }
-
-    private Map<String, Object> frameworkView() {
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("version", frameworkVersion());
-        out.put("interim", true);
-        out.put("label", ClaudePrompts.INTERIM_LABEL);
         return out;
     }
 

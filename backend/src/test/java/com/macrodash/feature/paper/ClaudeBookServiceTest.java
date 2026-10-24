@@ -3,6 +3,7 @@ package com.macrodash.feature.paper;
 import com.macrodash.analytics.PaperLedger;
 import com.macrodash.feature.ai.AiService;
 import com.macrodash.read.StoreReader;
+import com.macrodash.store.PaperStore;
 import com.macrodash.store.PaperStore.ApiUsage;
 import com.macrodash.store.PaperStore.Book;
 import com.macrodash.store.PaperStore.BookState;
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -44,6 +46,7 @@ import static com.macrodash.feature.paper.PaperFixtures.bar;
 import static com.macrodash.feature.paper.PaperFixtures.quotes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 import static com.macrodash.feature.paper.PaperFixtures.staleBar;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -156,7 +159,10 @@ class ClaudeBookServiceTest {
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         PaperAdminService admin = new PaperAdminService(store, marketData, reader, settings, ledger,
                 PaperFixtures.config(), MAPPER, clock);
-        return new ClaudeBookService(store, reader, marketData, selection, ledger, admin, packets, ai(key), settings,
+        AiService ai = ai(key);
+        PaperApiCalls calls = new PaperApiCalls(store, settings);
+        return new ClaudeBookService(store, reader, marketData, selection, ledger, admin, packets,
+                new FrameworkService(store, ai, settings, calls, MAPPER, 30, clock), calls, ai, settings,
                 PaperFixtures.config(), MAPPER, 30, clock);
     }
 
@@ -242,7 +248,7 @@ class ClaudeBookServiceTest {
         assertThat(d.status()).isEqualTo(ClaudeBookService.STATUS_OK);
         assertThat(d.bookCode()).isEqualTo(PaperBooks.CLAUDE);
         assertThat(d.model()).isEqualTo("claude-sonnet-5-5");
-        assertThat(d.frameworkVersion()).as("임시 프롬프트 — 판 번호를 지어내지 않음").isNull();
+        assertThat(d.frameworkVersion()).as("판이 없어 시드한 임시 v0 — 그 판 번호를 남김").isZero();
         assertThat(d.packetHash()).isEqualTo("hash-abc");
         assertThat(d.packetText()).as("보낸 패킷 문자열 그대로 — 해시를 다시 만들 수 있게").isEqualTo(PACKET_TEXT);
         assertThat(d.selectionAsOf()).isEqualTo(FRI);
@@ -253,7 +259,9 @@ class ClaudeBookServiceTest {
         assertThat(d.usage().path("inputTokens").asLong()).isEqualTo(21_000);
         assertThat(d.usage().path("cacheReadTokens").asLong()).isEqualTo(7_800);
         assertThat(d.response().path("stance").asString()).isEqualTo("RISK_ON");
-        assertThat(d.response().path("framework").path("label").asString()).isEqualTo("프레임 v1 준비 전 임시");
+        assertThat(d.response().path("framework").toString())
+                .isEqualTo("{\"version\":0,\"status\":\"INTERIM\",\"title\":\"임시 v0 — OS 원문 반영 전\"}");
+        assertThat(store.frameworks).as("판이 없으면 결정이 임시 v0을 시드").containsOnlyKeys(0);
         assertThat(d.response().path("validation")).hasSize(3);
         assertThat(d.response().path("validation").get(1).path("rejectReason").asString()).isEqualTo("OUT_OF_UNIVERSE");
         // 예상 노출 = HELD 5 + 매수 증가분 AAA 8 + HELD 5 = 18 → 목표 60과 15%p 넘게 다름(숫자를 맞추지 않고 표시만)
@@ -296,11 +304,19 @@ class ClaudeBookServiceTest {
         assertThat(usage.outputTokens()).isEqualTo(3_100);
         assertThat(usage.cacheReadTokens()).isEqualTo(7_800);
 
-        // 요청: 임시 시스템 프롬프트(캐시 블록)·패킷·스키마(API가 받지 않는 키 없음)·effort, temperature 없음
+        // 추정 비용(Sonnet 기본 단가 2/10/0.10/2.50 달러/100만 토큰): 21,000×2 + 3,100×10 + 7,800×0.10 = 73,780 → $0.07378
+        assertThat(usage.estCostUsd()).isCloseTo(0.07378, within(1e-9));
+        assertThat(usage.estCostCalls()).isEqualTo(1);
+
+        // 요청: 지금 판(임시 v0)의 렌더링(캐시 블록)·패킷·스키마(API가 받지 않는 키 없음)·effort, temperature 없음
         JsonNode request = requests.get(0);
         assertThat(request.path("model").asString()).isEqualTo("claude-sonnet-5-5");
         assertThat(request.path("max_tokens").asLong()).isEqualTo(16_000);
-        assertThat(request.path("system").get(0).path("text").asString()).contains("프레임 v1 준비 전 임시");
+        assertThat(request.path("system").get(0).path("text").asString())
+                .isEqualTo(FrameworkService.render(FrameworkService.interimBody(MAPPER), 0, store.settings().orElseThrow()
+                        .body()))
+                .startsWith("# 투자 OS — v0 (임시 v0 — OS 원문 반영 전)\n" + ClaudePrompts.ROLE)
+                .endsWith(ClaudePrompts.FIXED_RULES.strip());
         assertThat(request.path("system").get(0).path("cache_control").path("type").asString()).isEqualTo("ephemeral");
         assertThat(request.path("messages").toString()).contains("가짜 패킷");
         assertThat(request.path("output_config").path("effort").asString()).isEqualTo("high");
@@ -309,11 +325,43 @@ class ClaudeBookServiceTest {
         assertThat(request.path("output_config").toString()).doesNotContain("\"maximum\"", "\"maxLength\"");
         assertThat(request.has("temperature")).isFalse();
         assertThat(request.has("thinking")).isFalse();
-        verify(packets).build(eq(MON), eq("SCHEDULED"), eq(false), any());
+        verify(packets).build(eq(MON), eq("SCHEDULED"), eq(false), eq(0));
 
         // 같은 거래일·같은 종류는 한 번 — 다시 불러도 Claude를 부르지 않음
         assertThat(service().decide(MON, RuleBookService.SCHEDULED, true).id()).isEqualTo(d.id());
         assertThat(hits.get()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("프레임: 지금 판(가장 큰 번호)을 결정 시점 설정으로 렌더링해 보내고, 판 번호를 패킷 1_basis·결정 기록·response.framework에 남긴다")
+    void decisionUsesCurrentFrameworkRenderedWithCurrentSettings() throws Exception {
+        activeWithHolding();
+        FrameworkService frameworks = new FrameworkService(store, ai(KEY), settings, new PaperApiCalls(store, settings),
+                MAPPER, 30, Clock.fixed(NOW, ZoneOffset.UTC));
+        ObjectNode body = (ObjectNode) FrameworkService.interimBody(MAPPER).deepCopy();
+        body.put("title", "사용자 OS v1");
+        body.put("status", "USER");
+        assertThat(frameworks.save(body, "사용자 OS 원문을 옮김").get("version")).isEqualTo(1);
+        // 판을 만든 뒤 설정을 바꿉니다 — 판 행의 rendered(만들 때 설정)가 아니라 결정 때 설정으로 다시 렌더링해야 합니다.
+        PaperStore.SettingsRow row = store.settings().orElseThrow();
+        ObjectNode changed = (ObjectNode) row.body().deepCopy();
+        changed.put("maxWeightStockPct", 7);
+        store.settings = new PaperStore.SettingsRow(row.version() + 1, changed, NOW);
+        answerJson(decision(5, "오늘은 주문 없음"));
+
+        Decision d = service().decide(MON, RuleBookService.SCHEDULED, true);
+
+        assertThat(d.status()).isEqualTo(ClaudeBookService.STATUS_NO_TRADE);
+        assertThat(d.frameworkVersion()).isEqualTo(1);
+        assertThat(d.settingsVersion()).isEqualTo(row.version() + 1);
+        assertThat(d.response().path("framework").toString())
+                .isEqualTo("{\"version\":1,\"status\":\"USER\",\"title\":\"사용자 OS v1\"}");
+        verify(packets).build(eq(MON), eq("SCHEDULED"), eq(false), eq(1));
+        String system = requests.get(0).path("system").get(0).path("text").asString();
+        assertThat(system).isEqualTo(FrameworkService.render(body, 1, changed))
+                .startsWith("# 투자 OS — v1 (사용자 OS v1)").contains("종목 비중 ≤ 7%")
+                .doesNotContain("종목 비중 ≤ 10%");
+        assertThat(store.frameworks.get(1).rendered()).as("판 행의 렌더링은 만들 때 설정 그대로").contains("종목 비중 ≤ 10%");
     }
 
     @Test
@@ -374,6 +422,8 @@ class ClaudeBookServiceTest {
 
         assertThat(d.status()).isEqualTo(ClaudeBookService.STATUS_REFUSED);
         assertThat(d.error()).contains("REFUSAL", "cyber");
+        assertThat(d.frameworkVersion()).as("실패한 결정도 부른 판 번호를 남김").isZero();
+        assertThat(d.response().path("framework").path("status").asString()).isEqualTo("INTERIM");
         assertThat(d.usage().path("stopReason").asString()).isEqualTo("refusal");
         assertThat(store.ordersOf(PaperBooks.CLAUDE)).isEmpty();
         assertThat(store.positions(PaperBooks.CLAUDE)).hasSize(1);
@@ -397,6 +447,8 @@ class ClaudeBookServiceTest {
         assertThat(failed.packetText()).as("실패한 결정도 보낸 패킷을 남김").isEqualTo(PACKET_TEXT);
         assertThat(store.ordersOf(PaperBooks.CLAUDE)).isEmpty();
         assertThat(callsToday()).as("실패도 호출 1회").isEqualTo(1);
+        assertThat(store.apiUsage(TODAY_KST).orElseThrow().estCostUsd())
+                .as("토큰을 모르는 호출은 추정하지 않음(0달러로 채우지 않음)").isNull();
         assertThat(ClaudeBookService.retryable(failed)).isTrue();
 
         answerJson(decision(15, null, order("AAA", "BUY", 8.0, null, "NEXT_OBSERVATION")));

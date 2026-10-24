@@ -54,7 +54,7 @@ import java.util.TreeSet;
 @Service
 public class PaperQueryService {
 
-    static final String NOT_READY_MESSAGE = "모의 매매 테이블이 아직 없습니다. 수집기가 스키마(V8·V9)를 적용하면 생깁니다 — "
+    static final String NOT_READY_MESSAGE = "모의 매매 테이블이 아직 없습니다. 수집기가 스키마(V8·V9·V10·V11)를 적용하면 생깁니다 — "
             + "make up 후 다시 보세요.";
     /** 개요에 싣는 최근 작업 기록 수. */
     static final int OVERVIEW_JOBS = 10;
@@ -144,6 +144,7 @@ public class PaperQueryService {
         // OS 게이트 지표(참고 — 구속하지 않음, D7·D19): 결정 작업이 거래일마다 남긴 가장 최근 줄. 없으면 null.
         out.put("gate", store.recentGate(1).stream().findFirst().map(PaperGate::view).orElse(null));
         out.put("claudeExposureSeries", claudeExposureSeries(navByBook.getOrDefault(PaperBooks.CLAUDE, List.of())));
+        out.put("frameworkBoundaries", frameworkBoundaries());
         out.put("limits", limits());
         out.put("jobs", jobs(OVERVIEW_JOBS));
         return out;
@@ -271,8 +272,9 @@ public class PaperQueryService {
     }
 
     /**
-     * Claude 호출 사용량(명세 C8) — 오늘(KST)의 호출 수·상한·토큰과 이달(KST) 누적. 비용은 내지 않습니다(단가를 코드에 적어 두면
-     * 바뀌어도 모르는 숫자가 됨 — 토큰만).
+     * Claude 호출 사용량(명세 C8) — 오늘(KST)의 호출 수·상한·토큰·추정 비용과 이달(KST) 누적. 추정 비용({@code estCostUsd})은 호출
+     * 때의 설정 단가({@code pricing.*})로 낸 값의 합이고 {@code estimatedCalls}회만 셉니다(단가를 모르는 모델·토큰을 모르는 호출·단가
+     * 도입(V11) 전 호출은 빠짐 — {@link PaperApiCalls}). 추정한 호출이 없으면 null(0달러로 채우지 않음), 늘 {@code isEstimated:true}.
      */
     private Map<String, Object> apiUsage() {
         LocalDate today = Kst.today(clock);
@@ -287,6 +289,9 @@ public class PaperQueryService {
         todayView.put("outputTokens", day.map(PaperStore.ApiUsage::outputTokens).orElse(0L));
         todayView.put("cacheReadTokens", day.map(PaperStore.ApiUsage::cacheReadTokens).orElse(0L));
         todayView.put("cacheWriteTokens", day.map(PaperStore.ApiUsage::cacheWriteTokens).orElse(0L));
+        todayView.put("estCostUsd", round4(day.map(PaperStore.ApiUsage::estCostUsd).orElse(null)));
+        todayView.put("estimatedCalls", day.map(PaperStore.ApiUsage::estCostCalls).orElse(0));
+        todayView.put("isEstimated", true);
         YearMonth month = YearMonth.from(today);
         PaperStore.ApiUsageTotal total = store.apiUsageBetween(month.atDay(1), month.atEndOfMonth());
         Map<String, Object> monthView = new LinkedHashMap<>();
@@ -297,11 +302,30 @@ public class PaperQueryService {
         monthView.put("outputTokens", total.outputTokens());
         monthView.put("cacheReadTokens", total.cacheReadTokens());
         monthView.put("cacheWriteTokens", total.cacheWriteTokens());
+        monthView.put("estCostUsd", round4(total.estCostUsd()));
+        monthView.put("estimatedCalls", total.estCostCalls());
+        monthView.put("isEstimated", true);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("today", todayView);
         out.put("month", monthView);
-        out.put("note", "호출 수는 성공·실패를 모두 셉니다. 토큰은 응답이 알려 준 값의 합이고, 추정 비용은 단가를 코드에 두지 않아 "
-                + "내지 않습니다.");
+        out.put("note", "호출 수는 성공·실패를 모두 셉니다. 토큰은 응답이 알려 준 값의 합입니다. 추정 비용은 설정의 단가(pricing.*)로 낸 "
+                + "어림이고 estimatedCalls회만 셉니다 — 단가를 모르는 모델·토큰을 모르는 호출·단가 도입 전 호출은 추정에서 빠졌습니다.");
+        return out;
+    }
+
+    /**
+     * 성과 화면의 프레임 경계(F5, 계약 보충 §4) — Claude 책 결정에 판마다 처음 쓰인 거래일 {@code [{tradingDate, version, status}]},
+     * 거래일 순. 판 번호가 남은 결정이 없으면 빈 목록입니다(단계 3b 전 결정은 판 번호가 null이라 세지 않음).
+     */
+    private List<Map<String, Object>> frameworkBoundaries() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (PaperStore.FrameworkBoundary b : store.frameworkBoundaries(PaperBooks.CLAUDE)) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("tradingDate", text(b.tradingDate()));
+            row.put("version", b.version());
+            row.put("status", b.status());
+            out.add(row);
+        }
         return out;
     }
 

@@ -324,5 +324,58 @@ class PaperQueryServiceTest {
         assertThat(usage.path("month").path("days").asInt()).isEqualTo(2);
     }
 
+    @Test
+    @DisplayName("상태의 추정 비용(V11): 오늘·이달 estCostUsd(추정한 호출이 없으면 null)·estimatedCalls·isEstimated, 안내에 빠진 호출을 적음")
+    void apiUsageEstimatedCost() {
+        var mapper = PaperFixtures.MAPPER;
+        tools.jackson.databind.JsonNode empty = mapper.valueToTree(query.status().get("apiUsage"));
+        assertThat(empty.path("today").path("estCostUsd").isNull()).as("호출이 없으면 null(0달러 아님)").isTrue();
+        assertThat(empty.path("today").path("estimatedCalls").asInt(-1)).isZero();
+        assertThat(empty.path("today").path("isEstimated").asBoolean()).isTrue();
+        assertThat(empty.path("month").path("estCostUsd").isNull()).isTrue();
+
+        java.time.LocalDate today = java.time.LocalDate.of(2026, 10, 27);
+        store.apiUsage.put(today, new com.macrodash.store.PaperStore.ApiUsage(today, 3, 40_000, 6_000, 10_000, 0,
+                0.123456, 2));
+        java.time.LocalDate earlier = java.time.LocalDate.of(2026, 10, 3);
+        store.apiUsage.put(earlier, new com.macrodash.store.PaperStore.ApiUsage(earlier, 1, 20_000, 3_000, 0, 0));
+        tools.jackson.databind.JsonNode usage = mapper.valueToTree(query.status().get("apiUsage"));
+        assertThat(usage.path("today").path("estCostUsd").asDouble()).as("소수 4자리").isEqualTo(0.1235);
+        assertThat(usage.path("today").path("estimatedCalls").asInt()).isEqualTo(2);
+        assertThat(usage.path("today").path("calls").asInt()).isEqualTo(3);
+        assertThat(usage.path("month").path("estCostUsd").asDouble()).isEqualTo(0.1235);
+        assertThat(usage.path("month").path("estimatedCalls").asInt()).isEqualTo(2);
+        assertThat(usage.path("month").path("calls").asInt()).isEqualTo(4);
+        assertThat(usage.path("month").path("isEstimated").asBoolean()).isTrue();
+        assertThat(usage.path("note").asString()).contains("추정에서 빠졌습니다");
+    }
+
+    @Test
+    @DisplayName("개요의 프레임 경계(F5): Claude 책 결정에 판마다 처음 쓰인 거래일·판·상태, 거래일 순 — 판 번호 없는 결정·규칙 책은 세지 않음")
+    void frameworkBoundaries() {
+        initWithBenchmarks();
+        assertThat(query.overview().get("frameworkBoundaries")).as("결정이 없으면 빈 목록").isEqualTo(List.of());
+        var mapper = PaperFixtures.MAPPER;
+        store.insertFrameworkVersionIfAbsent(new com.macrodash.store.PaperStore.FrameworkVersion(0,
+                mapper.valueToTree(Map.of("title", "임시", "status", "INTERIM")), "# v0", 1, "임시", null, null));
+        store.insertFrameworkVersionIfAbsent(new com.macrodash.store.PaperStore.FrameworkVersion(1,
+                mapper.valueToTree(Map.of("title", "사용자", "status", "USER")), "# v1", 1, "원문", null, null));
+        for (Object[] d : new Object[][]{{PaperBooks.CLAUDE, FRI, "INITIAL", 0}, {PaperBooks.CLAUDE, MON, "SCHEDULED", 0},
+                {PaperBooks.CLAUDE, PaperFixtures.TUE, "SCHEDULED", 1}, {PaperBooks.CLAUDE, PaperFixtures.WED, "SCHEDULED",
+                null}, {PaperBooks.RULES, FRI, "INITIAL", 5}}) {
+            store.insertDecisionIfAbsent(new com.macrodash.store.PaperStore.Decision(0, (String) d[0],
+                    (java.time.LocalDate) d[1], (String) d[2], null, "OK", null, (Integer) d[3], 1, null, null, null, null,
+                    null, null, null, null, null, true, null, 0));
+        }
+        tools.jackson.databind.JsonNode boundaries = mapper.valueToTree(query.overview().get("frameworkBoundaries"));
+        assertThat(boundaries.size()).isEqualTo(2);
+        assertThat(boundaries.get(0).path("tradingDate").asString()).isEqualTo("2026-10-23");
+        assertThat(boundaries.get(0).path("version").asInt()).isZero();
+        assertThat(boundaries.get(0).path("status").asString()).isEqualTo("INTERIM");
+        assertThat(boundaries.get(1).path("tradingDate").asString()).isEqualTo("2026-10-27");
+        assertThat(boundaries.get(1).path("version").asInt()).isEqualTo(1);
+        assertThat(boundaries.get(1).path("status").asString()).isEqualTo("USER");
+    }
+
     private static final java.time.LocalDate TUE_EXPIRY = java.time.LocalDate.of(2026, 10, 29);
 }

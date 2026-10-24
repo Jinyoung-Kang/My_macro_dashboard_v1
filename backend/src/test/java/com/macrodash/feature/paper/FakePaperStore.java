@@ -378,21 +378,25 @@ class FakePaperStore extends PaperStore {
     @Override
     public ApiUsageTotal apiUsageBetween(LocalDate from, LocalDate to) {
         var rows = apiUsage.subMap(from, true, to, true).values();
+        boolean anyCost = rows.stream().anyMatch(u -> u.estCostUsd() != null);
         return new ApiUsageTotal(from, to, rows.size(), rows.stream().mapToLong(ApiUsage::calls).sum(),
                 rows.stream().mapToLong(ApiUsage::inputTokens).sum(), rows.stream().mapToLong(ApiUsage::outputTokens).sum(),
                 rows.stream().mapToLong(ApiUsage::cacheReadTokens).sum(),
-                rows.stream().mapToLong(ApiUsage::cacheWriteTokens).sum());
+                rows.stream().mapToLong(ApiUsage::cacheWriteTokens).sum(),
+                anyCost ? rows.stream().filter(u -> u.estCostUsd() != null).mapToDouble(ApiUsage::estCostUsd).sum() : null,
+                rows.stream().mapToLong(ApiUsage::estCostCalls).sum());
     }
 
+    /** 상한 안에서만 +1하고 그 호출 번호(실제 저장소의 RETURNING calls와 같음). */
     @Override
-    public boolean reserveApiCall(LocalDate day, int cap) {
+    public Optional<Integer> reserveApiCallNumber(LocalDate day, int cap) {
         ApiUsage u = apiUsage.getOrDefault(day, new ApiUsage(day, 0, 0, 0, 0, 0));
         if (cap <= 0 || u.calls() >= cap) {
-            return false;
+            return Optional.empty();
         }
         apiUsage.put(day, new ApiUsage(day, u.calls() + 1, u.inputTokens(), u.outputTokens(), u.cacheReadTokens(),
-                u.cacheWriteTokens()));
-        return true;
+                u.cacheWriteTokens(), u.estCostUsd(), u.estCostCalls()));
+        return Optional.of(u.calls() + 1);
     }
 
     @Override
@@ -400,17 +404,22 @@ class FakePaperStore extends PaperStore {
         ApiUsage u = apiUsage.get(day);
         if (u != null) {
             apiUsage.put(day, new ApiUsage(day, Math.max(0, u.calls() - 1), u.inputTokens(), u.outputTokens(),
-                    u.cacheReadTokens(), u.cacheWriteTokens()));
+                    u.cacheReadTokens(), u.cacheWriteTokens(), u.estCostUsd(), u.estCostCalls()));
         }
     }
 
     @Override
     public void addApiTokens(LocalDate day, Long inputTokens, Long outputTokens, Long cacheReadTokens,
-                             Long cacheWriteTokens) {
+                             Long cacheWriteTokens, Double estCostUsd) {
         ApiUsage u = apiUsage.getOrDefault(day, new ApiUsage(day, 0, 0, 0, 0, 0));
+        // 삼항 연산자로 쓰면 Double·double이 섞여 null을 언박싱합니다 — 나눠 씁니다.
+        Double cost = u.estCostUsd();
+        if (estCostUsd != null) {
+            cost = (cost == null ? 0.0 : cost) + estCostUsd;
+        }
         apiUsage.put(day, new ApiUsage(day, u.calls(), u.inputTokens() + orZero(inputTokens),
                 u.outputTokens() + orZero(outputTokens), u.cacheReadTokens() + orZero(cacheReadTokens),
-                u.cacheWriteTokens() + orZero(cacheWriteTokens)));
+                u.cacheWriteTokens() + orZero(cacheWriteTokens), cost, u.estCostCalls() + (estCostUsd == null ? 0 : 1)));
     }
 
     private static long orZero(Long value) {
@@ -593,6 +602,135 @@ class FakePaperStore extends PaperStore {
         return gates.descendingMap().values().stream().limit(limit).toList();
     }
 
+    // ------------------------------------------------------------------ 프레임·제안·메모(단계 3b)
+    TreeMap<Integer, FrameworkVersion> frameworks = new TreeMap<>();
+    TreeMap<Long, FrameworkProposal> proposals = new TreeMap<>();
+    TreeMap<Long, Note> notes = new TreeMap<>();
+
+    /** 번호가 이미 있으면 false(ON CONFLICT DO NOTHING). */
+    @Override
+    public boolean insertFrameworkVersionIfAbsent(FrameworkVersion v) {
+        if (frameworks.containsKey(v.version())) {
+            return false;
+        }
+        frameworks.put(v.version(), new FrameworkVersion(v.version(), v.body(), v.rendered(), v.renderedTokensEst(),
+                v.changelog(), v.sourceProposalId(), dbNow));
+        return true;
+    }
+
+    @Override
+    public Optional<FrameworkVersion> currentFramework() {
+        return Optional.ofNullable(frameworks.lastEntry()).map(Map.Entry::getValue);
+    }
+
+    @Override
+    public Optional<FrameworkVersion> frameworkVersion(int version) {
+        return Optional.ofNullable(frameworks.get(version));
+    }
+
+    @Override
+    public List<FrameworkVersionSummary> frameworkVersions() {
+        List<FrameworkVersionSummary> out = new ArrayList<>();
+        frameworks.descendingMap().values().forEach(v -> out.add(new FrameworkVersionSummary(v.version(),
+                text(v.body(), "title"), text(v.body(), "status"), v.changelog(), v.sourceProposalId(),
+                v.renderedTokensEst(), v.createdAt())));
+        return out;
+    }
+
+    /** 판마다 그 책 결정에 처음 쓰인 거래일(같으면 번호 순). */
+    @Override
+    public List<FrameworkBoundary> frameworkBoundaries(String bookCode) {
+        TreeMap<Integer, LocalDate> first = new TreeMap<>();
+        for (Decision d : decisions.values()) {
+            if (d.bookCode().equals(bookCode) && d.frameworkVersion() != null) {
+                first.merge(d.frameworkVersion(), d.asOfTradingDate(), (a, b) -> a.isBefore(b) ? a : b);
+            }
+        }
+        return first.entrySet().stream()
+                .map(e -> new FrameworkBoundary(e.getValue(), e.getKey(), frameworks.containsKey(e.getKey())
+                        ? text(frameworks.get(e.getKey()).body(), "status") : null))
+                .sorted(Comparator.comparing(FrameworkBoundary::tradingDate)
+                        .thenComparing(FrameworkBoundary::version))
+                .toList();
+    }
+
+    @Override
+    public long insertProposal(FrameworkProposal p) {
+        if (!"PENDING".equals(p.status()) && !"FAILED".equals(p.status())) {
+            throw new IllegalArgumentException("새 제안의 상태는 PENDING·FAILED입니다: " + p.status());
+        }
+        long id = ++sequence;
+        proposals.put(id, new FrameworkProposal(id, p.noteId(), p.baseVersion(), p.requestText(), p.model(),
+                p.response(), p.responseRaw(), p.status(), p.error(), null, dbNow, null));
+        return id;
+    }
+
+    @Override
+    public Optional<FrameworkProposal> proposal(long id) {
+        return Optional.ofNullable(proposals.get(id));
+    }
+
+    @Override
+    public List<FrameworkProposal> recentProposals(int limit) {
+        return proposals.descendingMap().values().stream().limit(limit).toList();
+    }
+
+    @Override
+    public boolean decideProposal(long id, String status, Integer resultVersion) {
+        FrameworkProposal p = proposals.get(id);
+        if (p == null || !"PENDING".equals(p.status())) {
+            return false;
+        }
+        proposals.put(id, new FrameworkProposal(p.id(), p.noteId(), p.baseVersion(), p.requestText(), p.model(),
+                p.response(), p.responseRaw(), status, p.error(), resultVersion, p.createdAt(), dbNow));
+        return true;
+    }
+
+    @Override
+    public long insertNote(Note n) {
+        long id = ++sequence;
+        notes.put(id, new Note(id, n.kind(), n.asOfDate(), n.expiresOn(), n.title(), n.body(), false, dbNow));
+        return id;
+    }
+
+    @Override
+    public Optional<Note> note(long id) {
+        return Optional.ofNullable(notes.get(id));
+    }
+
+    private static final Comparator<Note> NEWEST_NOTE_FIRST = Comparator.comparing(Note::asOfDate)
+            .thenComparing(Note::id).reversed();
+
+    @Override
+    public List<Note> notes(boolean includeExpired, LocalDate today) {
+        return notes.values().stream()
+                .filter(n -> includeExpired || (!n.archived() && (n.expiresOn() == null || !n.expiresOn().isBefore(today))))
+                .sorted(NEWEST_NOTE_FIRST).toList();
+    }
+
+    @Override
+    public List<Note> activeMarketNotes(LocalDate asOf) {
+        return notes.values().stream()
+                .filter(n -> "MARKET".equals(n.kind()) && !n.archived() && !n.asOfDate().isAfter(asOf)
+                        && (n.expiresOn() == null || !n.expiresOn().isBefore(asOf)))
+                .sorted(NEWEST_NOTE_FIRST).toList();
+    }
+
+    @Override
+    public boolean archiveNote(long id) {
+        Note n = notes.get(id);
+        if (n == null) {
+            return false;
+        }
+        notes.put(id, new Note(n.id(), n.kind(), n.asOfDate(), n.expiresOn(), n.title(), n.body(), true, n.createdAt()));
+        return true;
+    }
+
+    private static String text(JsonNode node, String field) {
+        JsonNode value = node == null ? null : node.get(field);
+        return value == null || value.isNull() ? null : value.asString("");
+    }
+
     @Override
     public void resetBook(String code) {
         decisions.values().removeIf(d -> d.bookCode().equals(code));
@@ -612,12 +750,15 @@ class FakePaperStore extends PaperStore {
                             List<JobRun> jobRuns, Map<String, StartPrice> startPrices, SettingsRow settings,
                             TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> trackRecords,
                             TreeMap<LocalDate, Selection> selections, TreeMap<Long, Decision> decisions,
-                            TreeMap<LocalDate, GateRow> gates) {
+                            TreeMap<LocalDate, GateRow> gates, TreeMap<Integer, FrameworkVersion> frameworks,
+                            TreeMap<Long, FrameworkProposal> proposals, TreeMap<Long, Note> notes,
+                            TreeMap<LocalDate, ApiUsage> apiUsage) {
         Snapshot(FakePaperStore s) {
             this(new TreeMap<>(s.books), new TreeMap<>(s.states), deep(s.positions), deep(s.lockouts),
                     new TreeMap<>(s.orders), new TreeMap<>(s.fills), deep(s.nav), new ArrayList<>(s.jobRuns),
                     new TreeMap<>(s.startPrices), s.settings, deepDates(s.trackRecords), new TreeMap<>(s.selections),
-                    new TreeMap<>(s.decisions), new TreeMap<>(s.gates));
+                    new TreeMap<>(s.decisions), new TreeMap<>(s.gates), new TreeMap<>(s.frameworks),
+                    new TreeMap<>(s.proposals), new TreeMap<>(s.notes), new TreeMap<>(s.apiUsage));
         }
 
         void restore(FakePaperStore s) {
@@ -635,6 +776,10 @@ class FakePaperStore extends PaperStore {
             s.selections = selections;
             s.decisions = decisions;
             s.gates = gates;
+            s.frameworks = frameworks;
+            s.proposals = proposals;
+            s.notes = notes;
+            s.apiUsage = apiUsage;
         }
 
         private static TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> deepDates(

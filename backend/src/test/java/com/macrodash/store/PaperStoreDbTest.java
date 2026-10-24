@@ -936,6 +936,181 @@ class PaperStoreDbTest {
         })).isInstanceOf(Rollback.class);
     }
 
+    @Test
+    @DisplayName("V11 전 DB(paper_api_usage.est_cost_calls 열 없음)는 준비 안 됨 — 사용량 SQL 오류(500) 대신 안내 문구, 시험 뒤 되돌림")
+    void readyRequiresV11() {
+        class Rollback extends RuntimeException {
+        }
+        assertThatThrownBy(() -> store.atomically(() -> {
+            jdbc.execute("ALTER TABLE paper_api_usage DROP COLUMN est_cost_calls");
+            assertThat(new PaperStore(jdbc, MAPPER, new SchemaCheck(jdbc)).ready()).as("V11 전이면 준비 안 됨").isFalse();
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+        assertThat(new PaperStore(jdbc, MAPPER, new SchemaCheck(jdbc)).ready()).as("되돌린 뒤").isTrue();
+    }
+
+    @Test
+    @DisplayName("추정 비용(V11): 추정이 있으면 더하고 추정 호출 수 +1, 없으면(null) 비용 열은 그대로 — 추정이 없는 날은 null, 호출 번호는 한 문장으로")
+    void apiUsageEstimatedCost() {
+        LocalDate day = LocalDate.of(1999, 2, 1);
+        LocalDate other = LocalDate.of(1999, 2, 2);
+        assertThat(store.reserveApiCallNumber(day, 3)).contains(1);
+        assertThat(store.reserveApiCallNumber(day, 3)).contains(2);
+        assertThat(store.reserveApiCallNumber(day, 0)).as("상한 0").isEmpty();
+        store.addApiTokens(day, 100L, 10L, 0L, 0L);
+        PaperStore.ApiUsage before = store.apiUsage(day).orElseThrow();
+        assertThat(before.estCostUsd()).as("추정한 호출이 없으면 null(0달러 아님)").isNull();
+        assertThat(before.estCostCalls()).isZero();
+
+        store.addApiTokens(day, 21_000L, 3_100L, 7_800L, 0L, 0.07378);
+        store.addApiTokens(day, null, null, null, null, 0.0000015);
+        store.addApiTokens(day, 5L, 5L, null, null, null);   // 추정 없는 호출 — 비용은 그대로
+        PaperStore.ApiUsage usage = store.apiUsage(day).orElseThrow();
+        assertThat(usage.calls()).isEqualTo(2);
+        assertThat(usage.inputTokens()).isEqualTo(21_105);
+        assertThat(usage.estCostUsd()).as("NUMERIC(12,6) — 소수 6자리").isEqualTo(0.073782);
+        assertThat(usage.estCostCalls()).isEqualTo(2);
+        assertThatThrownBy(() -> store.addApiTokens(day, 1L, 1L, 1L, 1L, Double.NaN))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> store.addApiTokens(day, 1L, 1L, 1L, 1L, -0.01))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        store.addApiTokens(other, 1L, 1L, 0L, 0L, null);
+        PaperStore.ApiUsageTotal month = store.apiUsageBetween(LocalDate.of(1999, 2, 1), LocalDate.of(1999, 2, 28));
+        assertThat(month.days()).isEqualTo(2);
+        assertThat(month.estCostUsd()).as("추정한 날만 더함").isEqualTo(0.073782);
+        assertThat(month.estCostCalls()).isEqualTo(2);
+        PaperStore.ApiUsageTotal none = store.apiUsageBetween(other, other);
+        assertThat(none.estCostUsd()).as("추정이 하나도 없으면 null").isNull();
+        assertThat(none.estCostCalls()).isZero();
+    }
+
+    @Test
+    @DisplayName("프레임 판: 번호가 있으면 넣지 않음(시드 한 번), 지금 판 = 가장 큰 번호, 목록은 제목·상태만 최근 순 — 시험 뒤 되돌림")
+    void frameworkVersions() {
+        class Rollback extends RuntimeException {
+        }
+        assertThatThrownBy(() -> store.atomically(() -> {
+            jdbc.update("DELETE FROM paper_framework_versions");
+            assertThat(store.currentFramework()).isEmpty();
+            JsonNode v0 = MAPPER.readTree("{\"title\":\"임시 v0\",\"status\":\"INTERIM\",\"engines\":[]}");
+            assertThat(store.insertFrameworkVersionIfAbsent(new PaperStore.FrameworkVersion(0, v0, "# v0", 3,
+                    "임시", null, null))).isTrue();
+            assertThat(store.insertFrameworkVersionIfAbsent(new PaperStore.FrameworkVersion(0,
+                    MAPPER.readTree("{\"title\":\"다른 것\"}"), "# x", 1, "x", null, null))).as("같은 번호").isFalse();
+            assertThat(store.insertFrameworkVersionIfAbsent(new PaperStore.FrameworkVersion(1,
+                    MAPPER.readTree("{\"title\":\"사용자 v1\",\"status\":\"USER\"}"), "# v1", 5, "원문", 42L, null)))
+                    .isTrue();
+
+            PaperStore.FrameworkVersion current = store.currentFramework().orElseThrow();
+            assertThat(current.version()).isEqualTo(1);
+            assertThat(current.sourceProposalId()).isEqualTo(42L);
+            assertThat(current.createdAt()).isNotNull();
+            PaperStore.FrameworkVersion first = store.frameworkVersion(0).orElseThrow();
+            assertThat(first.body().path("title").asString()).as("처음 값 그대로").isEqualTo("임시 v0");
+            assertThat(first.rendered()).isEqualTo("# v0");
+            assertThat(first.renderedTokensEst()).isEqualTo(3);
+            assertThat(first.sourceProposalId()).isNull();
+            assertThat(store.frameworkVersion(7)).isEmpty();
+            assertThat(store.frameworkVersions()).extracting(PaperStore.FrameworkVersionSummary::version,
+                    PaperStore.FrameworkVersionSummary::title, PaperStore.FrameworkVersionSummary::status)
+                    .containsExactly(org.assertj.core.groups.Tuple.tuple(1, "사용자 v1", "USER"),
+                            org.assertj.core.groups.Tuple.tuple(0, "임시 v0", "INTERIM"));
+
+            // 경계: 그 책의 결정에 판마다 처음 쓰인 거래일, 판 번호 없는 결정은 세지 않음
+            store.insertBookIfAbsent(new PaperStore.Book(BOOK, "CLAUDE", "t", 100_000, null, "ACTIVE", null));
+            for (Object[] d : new Object[][]{{DAY, 0}, {DAY.plusDays(3), 0}, {DAY.plusDays(4), null},
+                    {DAY.plusDays(5), 1}, {DAY.plusDays(6), 1}}) {
+                store.insertDecisionIfAbsent(new PaperStore.Decision(0, BOOK, (LocalDate) d[0], "SCHEDULED", null,
+                        "OK", null, (Integer) d[1], 1, null, null, null, null, null, null, null, null, null, true, null,
+                        0));
+            }
+            assertThat(store.frameworkBoundaries(BOOK)).containsExactly(
+                    new PaperStore.FrameworkBoundary(DAY, 0, "INTERIM"),
+                    new PaperStore.FrameworkBoundary(DAY.plusDays(5), 1, "USER"));
+            assertThat(store.frameworkBoundaries(OTHER_BOOK)).isEmpty();
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+    }
+
+    @Test
+    @DisplayName("프레임 제안: PENDING·FAILED만 넣고, 승인·거절은 대기 중인 행만 한 번 — 시험 뒤 되돌림")
+    void frameworkProposals() {
+        class Rollback extends RuntimeException {
+        }
+        assertThatThrownBy(() -> store.atomically(() -> {
+            long note = store.insertNote(new PaperStore.Note(0, "INSIGHT", DAY, null, "방법론", "본문", false, null));
+            JsonNode response = MAPPER.readTree("{\"summary\":\"요지\",\"operations\":[{\"op\":\"ADD_RULE\"}]}");
+            long pending = store.insertProposal(new PaperStore.FrameworkProposal(0, note, 0, "본문",
+                    "claude-sonnet-5-5", response, "{raw}", "PENDING", null, null, null, null));
+            long failed = store.insertProposal(new PaperStore.FrameworkProposal(0, null, 0, "붙인 글",
+                    "claude-haiku-5-5", null, null, "FAILED", "[NO_KEY] 키 없음", null, null, null));
+            assertThatThrownBy(() -> store.insertProposal(new PaperStore.FrameworkProposal(0, null, 0, "x", "m", null,
+                    null, "APPROVED", null, 1, null, null))).isInstanceOf(IllegalArgumentException.class);
+
+            PaperStore.FrameworkProposal saved = store.proposal(pending).orElseThrow();
+            assertThat(saved.noteId()).isEqualTo(note);
+            assertThat(saved.response().path("summary").asString()).isEqualTo("요지");
+            assertThat(saved.responseRaw()).isEqualTo("{raw}");
+            assertThat(saved.decidedAt()).isNull();
+            assertThat(saved.resultVersion()).isNull();
+            assertThat(store.proposal(failed).orElseThrow().response()).isNull();
+            assertThat(store.recentProposals(10)).extracting(PaperStore.FrameworkProposal::id)
+                    .as("최근 순").startsWith(failed, pending);
+
+            assertThat(store.decideProposal(pending, "APPROVED", 3)).isTrue();
+            assertThat(store.decideProposal(pending, "REJECTED", null)).as("이미 결정됨").isFalse();
+            assertThat(store.decideProposal(failed, "REJECTED", null)).as("FAILED는 대기가 아님").isFalse();
+            assertThat(store.decideProposal(-1, "REJECTED", null)).isFalse();
+            assertThatThrownBy(() -> store.decideProposal(failed, "PENDING", null))
+                    .isInstanceOf(IllegalArgumentException.class);
+            PaperStore.FrameworkProposal approved = store.proposal(pending).orElseThrow();
+            assertThat(approved.status()).isEqualTo("APPROVED");
+            assertThat(approved.resultVersion()).isEqualTo(3);
+            assertThat(approved.decidedAt()).isNotNull();
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+    }
+
+    @Test
+    @DisplayName("메모: 목록(보관·만료 제외/전부), 그 거래일의 유효 MARKET(기준일 ≤ 그날 ≤ 만료일, 최신 순), 보관은 지우지 않음 — 시험 뒤 되돌림")
+    void notes() {
+        class Rollback extends RuntimeException {
+        }
+        LocalDate thu = LocalDate.of(2026, 10, 22);
+        LocalDate mon = LocalDate.of(2026, 10, 26);
+        LocalDate wed = LocalDate.of(2026, 10, 28);
+        assertThatThrownBy(() -> store.atomically(() -> {
+            jdbc.update("DELETE FROM paper_framework_proposals");
+            jdbc.update("DELETE FROM paper_notes");
+            long old = store.insertNote(new PaperStore.Note(0, "MARKET", thu, DAY, "목요일", "유가 급등", false, null));
+            long fri = store.insertNote(new PaperStore.Note(0, "MARKET", DAY, wed, "금요일", "금리 하락", false, null));
+            long later = store.insertNote(new PaperStore.Note(0, "MARKET", mon, wed, "월요일", "달러 약세", false, null));
+            long insight = store.insertNote(new PaperStore.Note(0, "INSIGHT", thu, null, "방법론", "원문", false, null));
+
+            assertThat(store.activeMarketNotes(DAY)).extracting(PaperStore.Note::id).as("PIT — 그날 이하·만료 당일 포함")
+                    .containsExactly(fri, old);
+            assertThat(store.activeMarketNotes(mon)).extracting(PaperStore.Note::id).as("목요일 메모는 금요일에 만료")
+                    .containsExactly(later, fri);
+            assertThat(store.activeMarketNotes(wed.plusDays(1))).isEmpty();
+
+            assertThat(store.notes(false, mon)).extracting(PaperStore.Note::id).containsExactly(later, fri, insight);
+            assertThat(store.archiveNote(fri)).isTrue();
+            assertThat(store.archiveNote(fri)).as("이미 보관 — 멱등").isTrue();
+            assertThat(store.archiveNote(-1)).isFalse();
+            assertThat(store.note(fri).orElseThrow().archived()).isTrue();
+            assertThat(store.activeMarketNotes(mon)).extracting(PaperStore.Note::id).containsExactly(later);
+            assertThat(store.notes(false, mon)).extracting(PaperStore.Note::id).containsExactly(later, insight);
+            assertThat(store.notes(true, mon)).extracting(PaperStore.Note::id).as("보관·만료까지 전부")
+                    .containsExactly(later, fri, insight, old);
+            PaperStore.Note saved = store.note(insight).orElseThrow();
+            assertThat(saved.expiresOn()).isNull();
+            assertThat(saved.createdAt()).isNotNull();
+            assertThat(store.note(-1)).isEmpty();
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+    }
+
     private void insertPoint(String seriesId, String date, Double value) {
         jdbc.update("INSERT INTO timeseries (dataset, series_id, obs_date, value) VALUES (?, ?, ?::date, ?)",
                 TS_DATASET, seriesId, date, value);

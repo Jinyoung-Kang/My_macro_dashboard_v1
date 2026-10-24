@@ -1099,12 +1099,140 @@ class ApiIntegrationTest {
         }
     }
 
+    @Test
+    @DisplayName("🧪 투자 OS 프레임·메모: 회원은 403, 운영자는 판 보기·형식이 틀린 수동 편집 400·메모 쓰기/목록/보관·키 없는 제안은 FAILED(외부 호출 없음)")
+    void paperFrameworkAndNotes() {
+        HttpHeaders member = new HttpHeaders();
+        member.add(HttpHeaders.COOKIE, login(MEMBER, "test-password"));
+        member.setContentType(MediaType.APPLICATION_JSON);
+        for (String path : List.of("/api/paper/framework", "/api/paper/framework/versions/0",
+                "/api/paper/framework/proposals", "/api/paper/notes")) {
+            ResponseEntity<JsonNode> denied = rest.exchange(url(path), HttpMethod.GET, new HttpEntity<>(null, member),
+                    JsonNode.class);
+            assertThat(denied.getStatusCode()).as("회원 GET " + path).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(denied.getBody().path("required").asString()).isEqualTo("OWNER");
+        }
+        for (String path : List.of("/api/paper/framework", "/api/paper/framework/proposals",
+                "/api/paper/framework/proposals/1/approve", "/api/paper/framework/proposals/1/reject",
+                "/api/paper/notes")) {
+            assertThat(rest.exchange(url(path), HttpMethod.POST, new HttpEntity<>(Map.of("text", "글"), member),
+                    String.class).getStatusCode()).as("회원 POST " + path).isEqualTo(HttpStatus.FORBIDDEN);
+        }
+        assertThat(rest.exchange(url("/api/paper/notes/1"), HttpMethod.DELETE, new HttpEntity<>(null, member),
+                String.class).getStatusCode()).as("회원 DELETE 메모").isEqualTo(HttpStatus.FORBIDDEN);
+
+        assumePaperSchema();
+        HttpHeaders owner = new HttpHeaders();
+        owner.add(HttpHeaders.COOKIE, sessionCookie);
+        owner.setContentType(MediaType.APPLICATION_JSON);
+        // 테스트 DB만 — 시험 전 상태를 기억해 끝에 되돌립니다(판은 v0 시드, 사용량은 오늘(KST) 행).
+        boolean frameworkExisted = jdbc.queryForObject("SELECT COUNT(*) FROM paper_framework_versions", Long.class) > 0;
+        java.time.LocalDate today = com.macrodash.Kst.today();
+        boolean usageExisted = jdbc.queryForObject("SELECT COUNT(*) FROM paper_api_usage WHERE day = ?", Long.class,
+                java.sql.Date.valueOf(today)) > 0;
+        long callsBefore = jdbc.queryForObject("SELECT COALESCE(SUM(calls), 0) FROM paper_api_usage WHERE day = ?",
+                Long.class, java.sql.Date.valueOf(today));
+        long maxNote = jdbc.queryForObject("SELECT COALESCE(MAX(id), 0) FROM paper_notes", Long.class);
+        long maxProposal = jdbc.queryForObject("SELECT COALESCE(MAX(id), 0) FROM paper_framework_proposals", Long.class);
+        try {
+            JsonNode view = authorizedGet("/api/paper/framework");
+            assertThat(view.path("available").asBoolean()).isTrue();
+            JsonNode current = view.path("current");
+            int version = current.path("version").asInt(-1);
+            assertThat(version).isGreaterThanOrEqualTo(0);
+            assertThat(current.path("rendered").asString()).startsWith("# 투자 OS — v" + version + " (");
+            assertThat(current.path("body").path("engines").size()).isEqualTo(8);
+            assertThat(view.path("versions").size()).isGreaterThanOrEqualTo(1);
+            assertThat(authorizedGet("/api/paper/framework/versions/" + version).path("version").path("version").asInt())
+                    .isEqualTo(version);
+            assertThat(authorizedExchange("/api/paper/framework/versions/987654", HttpMethod.GET).getStatusCode())
+                    .as("없는 판은 400").isEqualTo(HttpStatus.BAD_REQUEST);
+
+            tools.jackson.databind.node.ObjectNode seven = (tools.jackson.databind.node.ObjectNode)
+                    current.path("body").deepCopy();
+            ((tools.jackson.databind.node.ArrayNode) seven.path("engines")).remove(7);
+            ResponseEntity<JsonNode> invalid = rest.exchange(url("/api/paper/framework"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("body", seven, "changelog", "엔진 하나 뺌"), owner), JsonNode.class);
+            assertThat(invalid.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(invalid.getBody().path("message").asString()).contains("엔진").contains("8개");
+            assertThat(rest.exchange(url("/api/paper/framework"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("body", current.path("body"), "changelog", " "), owner), JsonNode.class)
+                    .getStatusCode()).as("변경 기록 없음").isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(authorizedGet("/api/paper/framework").path("current").path("version").asInt())
+                    .as("아무것도 바꾸지 않음").isEqualTo(version);
+
+            ResponseEntity<JsonNode> market = rest.exchange(url("/api/paper/notes"), HttpMethod.POST, new HttpEntity<>(
+                    Map.of("kind", "MARKET", "asOfDate", "2026-10-23", "title", "시황", "body", "브렌트 95"), owner),
+                    JsonNode.class);
+            assertThat(market.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(market.getBody().path("ok").asBoolean()).isTrue();
+            long marketId = market.getBody().path("note").path("id").asLong();
+            assertThat(market.getBody().path("note").path("expiresOn").asString()).as("기준일 + 3거래일")
+                    .isEqualTo("2026-10-28");
+            ResponseEntity<JsonNode> insight = rest.exchange(url("/api/paper/notes"), HttpMethod.POST, new HttpEntity<>(
+                    Map.of("kind", "INSIGHT", "title", "방법론", "body", "집중 투자가 낫다"), owner), JsonNode.class);
+            assertThat(insight.getStatusCode()).isEqualTo(HttpStatus.OK);
+            long insightId = insight.getBody().path("note").path("id").asLong();
+            assertThat(insight.getBody().path("note").path("expiresOn").isNull()).isTrue();
+            assertThat(rest.exchange(url("/api/paper/notes"), HttpMethod.POST, new HttpEntity<>(
+                    Map.of("kind", "NEWS", "title", "t", "body", "b"), owner), JsonNode.class).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
+            JsonNode listed = authorizedGet("/api/paper/notes?includeExpired=true");
+            assertThat(listed.path("notes").toString()).contains("\"id\":" + marketId).contains("\"id\":" + insightId);
+
+            // 테스트 설정은 Anthropic 키가 비어 있어 요청을 보내지 않고 NO_KEY로 끝납니다(FAILED 제안, 호출 수는 되돌림).
+            ResponseEntity<JsonNode> proposed = rest.exchange(url("/api/paper/framework/proposals"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("noteId", insightId), owner), JsonNode.class);
+            assertThat(proposed.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(proposed.getBody().path("ok").asBoolean(true)).isFalse();
+            JsonNode failed = proposed.getBody().path("proposal");
+            assertThat(failed.path("status").asString()).isEqualTo("FAILED");
+            assertThat(failed.path("error").asString()).startsWith("[NO_KEY]");
+            assertThat(failed.path("baseVersion").asInt()).isEqualTo(version);
+            assertThat(rest.exchange(url("/api/paper/framework/proposals"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("noteId", marketId), owner), JsonNode.class).getStatusCode())
+                    .as("MARKET 메모로는 제안하지 않음").isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(rest.exchange(url("/api/paper/framework/proposals"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of(), owner), JsonNode.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(authorizedGet("/api/paper/framework/proposals").path("proposals").toString())
+                    .contains("\"id\":" + failed.path("id").asLong());
+            assertThat(authorizedExchange("/api/paper/framework/proposals/" + failed.path("id").asLong() + "/approve",
+                    HttpMethod.POST).getStatusCode()).as("FAILED는 승인할 수 없음").isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(calls), 0) FROM paper_api_usage WHERE day = ?",
+                    Long.class, java.sql.Date.valueOf(today))).as("보내지 않은 호출은 세지 않음(잡은 호출을 되돌림)")
+                    .isEqualTo(callsBefore);
+
+            ResponseEntity<JsonNode> archived = authorizedExchange("/api/paper/notes/" + marketId, HttpMethod.DELETE);
+            assertThat(archived.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(archived.getBody().path("ok").asBoolean()).isTrue();
+            assertThat(authorizedGet("/api/paper/notes").path("notes").toString()).as("보관한 메모는 기본 목록에서 빠짐")
+                    .doesNotContain("\"id\":" + marketId + ",");
+            assertThat(authorizedExchange("/api/paper/notes/987654321", HttpMethod.DELETE).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
+
+            assertThat(authorizedGet("/api/paper/overview").path("frameworkBoundaries").isArray()).isTrue();
+            assertThat(authorizedGet("/api/paper/status").path("apiUsage").path("today").path("isEstimated")
+                    .asBoolean()).isTrue();
+        } finally {
+            jdbc.update("DELETE FROM paper_framework_proposals WHERE id > ?", maxProposal);
+            jdbc.update("DELETE FROM paper_notes WHERE id > ?", maxNote);
+            if (!frameworkExisted) {
+                jdbc.update("DELETE FROM paper_framework_versions");
+            }
+            if (!usageExisted) {
+                jdbc.update("DELETE FROM paper_api_usage WHERE day = ?", java.sql.Date.valueOf(today));
+            }
+        }
+    }
+
     private void assumePaperSchema() {
         org.junit.jupiter.api.Assumptions.assumeTrue(Boolean.TRUE.equals(jdbc.queryForObject(
                 "SELECT to_regclass('paper_api_usage') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_attribute "
                         + "WHERE attrelid = to_regclass('paper_track_record') AND attname = 'data_source' "
+                        + "AND NOT attisdropped) AND EXISTS (SELECT 1 FROM pg_attribute "
+                        + "WHERE attrelid = to_regclass('paper_api_usage') AND attname = 'est_cost_calls' "
                         + "AND NOT attisdropped)", Boolean.class)),
-                "테스트 DB에 V8·V9(paper_*)가 없습니다 — make db-test");
+                "테스트 DB에 V8~V11(paper_*)이 없습니다 — make db-test");
     }
 
     @Test

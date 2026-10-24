@@ -105,14 +105,70 @@ public class PaperStore {
     /**
      * 하루(KST 달력)의 Claude 호출 사용량({@code paper_api_usage}, 명세 C8·D18). 호출 수는 성공·실패를 모두 세고, 토큰은 응답이 알려
      * 준 값만 더합니다(모르는 값은 더하지 않음 — 열이 NOT NULL이라 0을 더한 것과 같습니다).
+     *
+     * <p>{@code estCostUsd}·{@code estCostCalls}(V11)는 추정 비용과 그 추정에 든 호출 수입니다. 단가를 모르는 모델·토큰을 모르는
+     * 호출·단가 도입 전 호출은 추정에서 빠지므로 {@code estCostCalls ≤ calls}이고, 추정한 호출이 하나도 없으면
+     * {@code estCostUsd}는 null입니다(0달러로 채우지 않음).
      */
     public record ApiUsage(LocalDate day, int calls, long inputTokens, long outputTokens, long cacheReadTokens,
-                           long cacheWriteTokens) {
+                           long cacheWriteTokens, Double estCostUsd, int estCostCalls) {
+
+        /** 추정 비용 없이(V11 전 모양 — 시험·단계 3a 호출). */
+        public ApiUsage(LocalDate day, int calls, long inputTokens, long outputTokens, long cacheReadTokens,
+                        long cacheWriteTokens) {
+            this(day, calls, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, null, 0);
+        }
     }
 
-    /** 기간(양끝 포함)의 사용량 합계. {@code days}는 기록이 있는 날 수(호출이 없던 날은 행이 없음). */
+    /**
+     * 기간(양끝 포함)의 사용량 합계. {@code days}는 기록이 있는 날 수(호출이 없던 날은 행이 없음). {@code estCostUsd}는 추정한 날의
+     * 합(추정이 하나도 없으면 null), {@code estCostCalls}는 추정에 든 호출 수 합.
+     */
     public record ApiUsageTotal(LocalDate from, LocalDate to, int days, long calls, long inputTokens,
-                                long outputTokens, long cacheReadTokens, long cacheWriteTokens) {
+                                long outputTokens, long cacheReadTokens, long cacheWriteTokens, Double estCostUsd,
+                                long estCostCalls) {
+
+        /** 추정 비용 없이(V11 전 모양). */
+        public ApiUsageTotal(LocalDate from, LocalDate to, int days, long calls, long inputTokens, long outputTokens,
+                             long cacheReadTokens, long cacheWriteTokens) {
+            this(from, to, days, calls, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, null, 0);
+        }
+    }
+
+    /**
+     * 투자 OS 프레임의 판 하나({@code paper_framework_versions}, 명세 F1~F5). {@code body}는 구조화한 프레임 JSON(원칙·엔진 8개·
+     * 지침 — 모양은 {@code FrameworkService}가 검사), {@code rendered}는 그 판을 만들 때의 렌더링(화면용)과 그 토큰 어림입니다.
+     * 판 번호는 0(임시)부터 올라가고 지금 판은 가장 큰 번호입니다. {@code createdAt}은 넣을 때 쓰지 않고 DB가 채웁니다.
+     */
+    public record FrameworkVersion(int version, JsonNode body, String rendered, int renderedTokensEst,
+                                   String changelog, Long sourceProposalId, Instant createdAt) {
+    }
+
+    /** 판 목록의 한 줄 — 큰 열(본문·렌더링)은 읽지 않고 본문의 제목·상태만. */
+    public record FrameworkVersionSummary(int version, String title, String status, String changelog,
+                                          Long sourceProposalId, int renderedTokensEst, Instant createdAt) {
+    }
+
+    /**
+     * 프레임 갱신 제안({@code paper_framework_proposals}, F2·F7). {@code status}는 PENDING·APPROVED·REJECTED·FAILED, 승인되면
+     * {@code resultVersion}이 그 새 판. {@code response}는 형식 검사를 거친(또는 실패한 경우 받은 그대로 읽은) JSON, 읽지 못했으면
+     * null이고 {@code responseRaw}는 모델이 보낸 원문입니다. {@code createdAt}은 넣을 때 쓰지 않습니다.
+     */
+    public record FrameworkProposal(long id, Long noteId, int baseVersion, String requestText, String model,
+                                    JsonNode response, String responseRaw, String status, String error,
+                                    Integer resultVersion, Instant createdAt, Instant decidedAt) {
+    }
+
+    /**
+     * 메모 한 건({@code paper_notes}, F6·D14). {@code kind}는 MARKET(시황 — 만료가 있고 유효하면 패킷에 들어감)·INSIGHT(방법론 글 —
+     * 만료 없음, 프레임 제안에만). 지우지 않고 {@code archived}로 내립니다. {@code createdAt}은 넣을 때 쓰지 않습니다.
+     */
+    public record Note(long id, String kind, LocalDate asOfDate, LocalDate expiresOn, String title, String body,
+                       boolean archived, Instant createdAt) {
+    }
+
+    /** 성과 화면의 프레임 경계(F5) — 그 판이 그 책의 결정에 처음 쓰인 거래일과 판의 상태(INTERIM·USER, 판이 없으면 null). */
+    public record FrameworkBoundary(LocalDate tradingDate, int version, String status) {
     }
 
     /**
@@ -274,6 +330,13 @@ public class PaperStore {
             + "AS rejected_count";
     private static final String GATE_COLUMNS = "trading_date, inputs::text AS inputs, level, streaks::text AS streaks, "
             + "created_at";
+    private static final String FRAMEWORK_COLUMNS = "version, body::text AS body, rendered, rendered_tokens_est, "
+            + "changelog, source_proposal_id, created_at";
+    private static final String PROPOSAL_COLUMNS = "id, note_id, base_version, request_text, model, "
+            + "response::text AS response, response_raw, status, error, result_version, created_at, decided_at";
+    private static final String NOTE_COLUMNS = "id, kind, as_of_date, expires_on, title, body, archived, created_at";
+    private static final String API_USAGE_COLUMNS = "day, calls, input_tokens, output_tokens, cache_read_tokens, "
+            + "cache_write_tokens, est_cost_usd, est_cost_calls";
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -289,14 +352,15 @@ public class PaperStore {
     }
 
     /**
-     * 테이블이 있는가. 수집기가 아직 V8~V10을 적용하지 않았으면 false입니다 — V8이 마지막에 만드는 테이블과 V9·V10이 더하는
-     * 열({@code paper_track_record.data_source}·{@code paper_decisions.packet_text})로 봅니다. V8만 있는 DB(백엔드만 새로 띄운
-     * 경우, QA-016)에서 참이면 트랙레코드 읽기·쓰기가 {@code group_code}·{@code data_source} 열과 새 기본키에서, 결정 읽기·쓰기가
-     * {@code packet_text} 열에서 SQL 오류(500)를 냅니다.
+     * 테이블이 있는가. 수집기가 아직 V8~V11을 적용하지 않았으면 false입니다 — V8이 마지막에 만드는 테이블과 V9~V11이 더하는
+     * 열({@code paper_track_record.data_source}·{@code paper_decisions.packet_text}·{@code paper_api_usage.est_cost_calls})로
+     * 봅니다. V8만 있는 DB(백엔드만 새로 띄운 경우, QA-016)에서 참이면 트랙레코드 읽기·쓰기가 {@code group_code}·{@code data_source}
+     * 열과 새 기본키에서, 결정 읽기·쓰기가 {@code packet_text} 열에서, 사용량 읽기·쓰기가 추정 비용 열에서 SQL 오류(500)를 냅니다.
      */
     public boolean ready() {
         return schema.tableExists("paper_api_usage") && schema.columnExists("paper_track_record", "data_source")
-                && schema.columnExists("paper_decisions", "packet_text");
+                && schema.columnExists("paper_decisions", "packet_text")
+                && schema.columnExists("paper_api_usage", "est_cost_calls");
     }
 
     /**
@@ -756,23 +820,28 @@ public class PaperStore {
     // ------------------------------------------------------------------ Claude 호출 사용량
     /** 그날(KST)의 사용량. 그날 호출이 없었으면 empty. */
     public Optional<ApiUsage> apiUsage(LocalDate day) {
-        return jdbc.query("SELECT day, calls, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens "
-                        + "FROM paper_api_usage WHERE day = ?",
+        return jdbc.query("SELECT " + API_USAGE_COLUMNS + " FROM paper_api_usage WHERE day = ?",
                 (rs, rowNum) -> new ApiUsage(date(rs, "day"), rs.getInt("calls"), rs.getLong("input_tokens"),
-                        rs.getLong("output_tokens"), rs.getLong("cache_read_tokens"), rs.getLong("cache_write_tokens")),
+                        rs.getLong("output_tokens"), rs.getLong("cache_read_tokens"), rs.getLong("cache_write_tokens"),
+                        nullableDouble(rs, "est_cost_usd"), rs.getInt("est_cost_calls")),
                 Date.valueOf(day)).stream().findFirst();
     }
 
-    /** 기간(양끝 포함, KST 날짜)의 사용량 합계 — 월 누적 표시용. 기록이 없으면 모두 0·{@code days = 0}. */
+    /**
+     * 기간(양끝 포함, KST 날짜)의 사용량 합계 — 월 누적 표시용. 기록이 없으면 모두 0·{@code days = 0}. 추정 비용은 추정한 날만
+     * 더하고(SUM은 NULL을 건너뜀), 추정이 하나도 없으면 null입니다.
+     */
     public ApiUsageTotal apiUsageBetween(LocalDate from, LocalDate to) {
         return jdbc.queryForObject("SELECT COUNT(*) AS days, COALESCE(SUM(calls), 0) AS calls, "
                         + "COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, "
                         + "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
-                        + "COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens "
+                        + "COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, "
+                        + "SUM(est_cost_usd) AS est_cost_usd, COALESCE(SUM(est_cost_calls), 0) AS est_cost_calls "
                         + "FROM paper_api_usage WHERE day BETWEEN ? AND ?",
                 (rs, rowNum) -> new ApiUsageTotal(from, to, rs.getInt("days"), rs.getLong("calls"),
                         rs.getLong("input_tokens"), rs.getLong("output_tokens"), rs.getLong("cache_read_tokens"),
-                        rs.getLong("cache_write_tokens")),
+                        rs.getLong("cache_write_tokens"), nullableDouble(rs, "est_cost_usd"),
+                        rs.getLong("est_cost_calls")),
                 Date.valueOf(from), Date.valueOf(to));
     }
 
@@ -784,12 +853,23 @@ public class PaperStore {
      * @return 잡았으면 true, 상한에 닿았으면(또는 {@code cap ≤ 0}) false — 아무것도 바꾸지 않음
      */
     public boolean reserveApiCall(LocalDate day, int cap) {
+        return reserveApiCallNumber(day, cap).isPresent();
+    }
+
+    /**
+     * {@link #reserveApiCall}과 같고, 잡았으면 그 호출이 그날 몇 번째인지(이 호출까지 센 호출 수)를 같은 문장에서 돌려줍니다 —
+     * 다시 읽으면 그사이 다른 호출이 끼어 번호가 어긋날 수 있습니다.
+     *
+     * @return 잡았으면 그날 호출 수(1 이상), 상한에 닿았으면(또는 {@code cap ≤ 0}) empty — 아무것도 바꾸지 않음
+     */
+    public Optional<Integer> reserveApiCallNumber(LocalDate day, int cap) {
         if (cap <= 0) {
-            return false;
+            return Optional.empty();
         }
-        return jdbc.update("INSERT INTO paper_api_usage (day, calls) VALUES (?, 1) "
-                + "ON CONFLICT (day) DO UPDATE SET calls = paper_api_usage.calls + 1 "
-                + "WHERE paper_api_usage.calls < ?", Date.valueOf(day), cap) == 1;
+        return jdbc.query("INSERT INTO paper_api_usage (day, calls) VALUES (?, 1) "
+                        + "ON CONFLICT (day) DO UPDATE SET calls = paper_api_usage.calls + 1 "
+                        + "WHERE paper_api_usage.calls < ? RETURNING calls",
+                (rs, rowNum) -> rs.getInt("calls"), Date.valueOf(day), cap).stream().findFirst();
     }
 
     /** 잡아 둔 호출 한 번을 돌려놓습니다 — 키가 없어 요청을 보내지도 않은 경우. 0 아래로는 내리지 않습니다. */
@@ -803,18 +883,39 @@ public class PaperStore {
      */
     public void addApiTokens(LocalDate day, Long inputTokens, Long outputTokens, Long cacheReadTokens,
                              Long cacheWriteTokens) {
+        addApiTokens(day, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, null);
+    }
+
+    /**
+     * {@link #addApiTokens(LocalDate, Long, Long, Long, Long)}에 그 호출의 추정 비용(달러)을 함께 더합니다(V11) — 추정이 있으면
+     * {@code est_cost_usd = COALESCE(est_cost_usd, 0) + cost}, {@code est_cost_calls + 1}. null이면(단가를 모르는 모델·토큰을 모르는
+     * 호출) 비용 열은 그대로입니다 — 추정하지 않은 호출을 0달러로 세지 않습니다. 토큰과 비용을 한 문장으로 써 둘이 어긋나지 않습니다.
+     *
+     * @throws IllegalArgumentException 비용이 NaN·무한대·음수(계산 오류를 장부에 남기지 않음)
+     */
+    public void addApiTokens(LocalDate day, Long inputTokens, Long outputTokens, Long cacheReadTokens,
+                             Long cacheWriteTokens, Double estCostUsd) {
+        if (estCostUsd != null && (!Double.isFinite(estCostUsd) || estCostUsd < 0)) {
+            throw new IllegalArgumentException("est_cost_usd 값이 0 이상의 유한한 수가 아닙니다: " + estCostUsd);
+        }
         jdbc.update("INSERT INTO paper_api_usage (day, calls, input_tokens, output_tokens, cache_read_tokens, "
-                        + "cache_write_tokens) VALUES (?, 0, ?, ?, ?, ?) ON CONFLICT (day) DO UPDATE SET "
+                        + "cache_write_tokens, est_cost_usd, est_cost_calls) VALUES (?, 0, ?, ?, ?, ?, ?, ?) "
+                        + "ON CONFLICT (day) DO UPDATE SET "
                         + "input_tokens = paper_api_usage.input_tokens + EXCLUDED.input_tokens, "
                         + "output_tokens = paper_api_usage.output_tokens + EXCLUDED.output_tokens, "
                         + "cache_read_tokens = paper_api_usage.cache_read_tokens + EXCLUDED.cache_read_tokens, "
-                        + "cache_write_tokens = paper_api_usage.cache_write_tokens + EXCLUDED.cache_write_tokens",
+                        + "cache_write_tokens = paper_api_usage.cache_write_tokens + EXCLUDED.cache_write_tokens, "
+                        + "est_cost_usd = CASE WHEN EXCLUDED.est_cost_usd IS NULL THEN paper_api_usage.est_cost_usd "
+                        + "ELSE COALESCE(paper_api_usage.est_cost_usd, 0) + EXCLUDED.est_cost_usd END, "
+                        + "est_cost_calls = paper_api_usage.est_cost_calls + EXCLUDED.est_cost_calls",
                 ps -> {
                     setDate(ps, 1, day);
                     ps.setLong(2, tokens(inputTokens));
                     ps.setLong(3, tokens(outputTokens));
                     ps.setLong(4, tokens(cacheReadTokens));
                     ps.setLong(5, tokens(cacheWriteTokens));
+                    setMoney(ps, 6, estCostUsd, "est_cost_usd");
+                    ps.setInt(7, estCostUsd == null ? 0 : 1);
                 });
     }
 
@@ -1189,6 +1290,182 @@ public class PaperStore {
                 }) == 1;
     }
 
+    // ------------------------------------------------------------------ 투자 OS 프레임
+    /**
+     * 판 하나를 그 번호가 아직 없을 때만 넣습니다({@code ON CONFLICT (version) DO NOTHING}) — 임시 v0 시드가 여러 번(동시에) 불려도
+     * 한 행이고, 새 판 저장이 같은 번호와 겹치면 기존 판을 덮지 않습니다. {@code createdAt}은 쓰지 않고 DB가 채웁니다.
+     *
+     * @return 이번에 넣었으면 true, 그 번호가 이미 있었으면 false(기존 판 그대로)
+     */
+    public boolean insertFrameworkVersionIfAbsent(FrameworkVersion v) {
+        String body = mapper.writeValueAsString(v.body());
+        return jdbc.update("INSERT INTO paper_framework_versions (version, body, rendered, rendered_tokens_est, changelog, "
+                        + "source_proposal_id) VALUES (?, CAST(? AS jsonb), ?, ?, ?, ?) ON CONFLICT (version) DO NOTHING",
+                ps -> {
+                    ps.setInt(1, v.version());
+                    ps.setString(2, body);
+                    ps.setString(3, v.rendered());
+                    ps.setInt(4, v.renderedTokensEst());
+                    ps.setString(5, v.changelog());
+                    setLong(ps, 6, v.sourceProposalId());
+                }) == 1;
+    }
+
+    /** 지금 판 — 가장 큰 번호. 판이 하나도 없으면 empty(서비스가 임시 v0을 시드). */
+    public Optional<FrameworkVersion> currentFramework() {
+        return jdbc.query("SELECT " + FRAMEWORK_COLUMNS + " FROM paper_framework_versions ORDER BY version DESC LIMIT 1",
+                frameworkMapper()).stream().findFirst();
+    }
+
+    /** 그 번호의 판. 없으면 empty. */
+    public Optional<FrameworkVersion> frameworkVersion(int version) {
+        return jdbc.query("SELECT " + FRAMEWORK_COLUMNS + " FROM paper_framework_versions WHERE version = ?",
+                frameworkMapper(), version).stream().findFirst();
+    }
+
+    /** 판 목록, 최근 번호 순 — 본문·렌더링은 읽지 않고 제목·상태만(판이 쌓여도 목록이 가볍게). */
+    public List<FrameworkVersionSummary> frameworkVersions() {
+        return jdbc.query("SELECT version, body->>'title' AS title, body->>'status' AS status, changelog, "
+                        + "source_proposal_id, rendered_tokens_est, created_at FROM paper_framework_versions "
+                        + "ORDER BY version DESC",
+                (rs, rowNum) -> new FrameworkVersionSummary(rs.getInt("version"), rs.getString("title"),
+                        rs.getString("status"), rs.getString("changelog"), rs.getObject("source_proposal_id", Long.class),
+                        rs.getInt("rendered_tokens_est"), instant(rs, "created_at")));
+    }
+
+    /**
+     * 그 책의 결정에 판마다 처음 쓰인 거래일(F5 성과 화면의 버전 경계) — 거래일 순(같은 날이면 번호 순). 판 번호가 없는 결정
+     * (규칙 책·Claude를 부르지 않은 SKIPPED·3b 전 결정)은 세지 않습니다. 상태는 그 판 본문의 {@code status}(판 행이 없으면 null).
+     */
+    public List<FrameworkBoundary> frameworkBoundaries(String bookCode) {
+        return jdbc.query("SELECT d.framework_version AS version, MIN(d.as_of_trading_date) AS trading_date, "
+                        + "MAX(f.body->>'status') AS status FROM paper_decisions d "
+                        + "LEFT JOIN paper_framework_versions f ON f.version = d.framework_version "
+                        + "WHERE d.book_code = ? AND d.framework_version IS NOT NULL "
+                        + "GROUP BY d.framework_version ORDER BY trading_date, version",
+                (rs, rowNum) -> new FrameworkBoundary(date(rs, "trading_date"), rs.getInt("version"),
+                        rs.getString("status")),
+                bookCode);
+    }
+
+    // ------------------------------------------------------------------ 프레임 제안
+    /**
+     * 제안을 넣습니다(PENDING 또는 FAILED — 승인·거절은 {@link #decideProposal}). {@code id}·{@code createdAt}·{@code decidedAt}·
+     * {@code resultVersion}은 무시합니다.
+     *
+     * @return 새 제안 번호
+     * @throws IllegalArgumentException 상태가 PENDING·FAILED가 아님(결정된 제안을 바로 넣지 않음)
+     */
+    public long insertProposal(FrameworkProposal p) {
+        if (!"PENDING".equals(p.status()) && !"FAILED".equals(p.status())) {
+            throw new IllegalArgumentException("새 제안의 상태는 PENDING·FAILED입니다: " + p.status());
+        }
+        String response = p.response() == null ? null : mapper.writeValueAsString(p.response());
+        List<Long> ids = jdbc.query("INSERT INTO paper_framework_proposals (note_id, base_version, request_text, model, "
+                        + "response, response_raw, status, error) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?) RETURNING id",
+                ps -> {
+                    setLong(ps, 1, p.noteId());
+                    ps.setInt(2, p.baseVersion());
+                    ps.setString(3, p.requestText());
+                    ps.setString(4, p.model());
+                    ps.setString(5, response);
+                    ps.setString(6, p.responseRaw());
+                    ps.setString(7, p.status());
+                    ps.setString(8, p.error());
+                },
+                (rs, rowNum) -> rs.getLong("id"));
+        return single(ids, "제안");
+    }
+
+    public Optional<FrameworkProposal> proposal(long id) {
+        return jdbc.query("SELECT " + PROPOSAL_COLUMNS + " FROM paper_framework_proposals WHERE id = ?",
+                proposalMapper(), id).stream().findFirst();
+    }
+
+    /** 최근 제안 {@code limit}건, 최근 순(만든 시각, 번호). */
+    public List<FrameworkProposal> recentProposals(int limit) {
+        return jdbc.query("SELECT " + PROPOSAL_COLUMNS + " FROM paper_framework_proposals "
+                + "ORDER BY created_at DESC, id DESC LIMIT ?", proposalMapper(), limit);
+    }
+
+    /**
+     * 대기 중인 제안을 승인·거절로 바꿉니다 — {@code status = 'PENDING'}인 행만 바꾸는 한 문장이라, 두 곳에서 동시에 눌러도 한 번만
+     * 반영됩니다. 승인이면 {@code resultVersion}(새 판), 거절이면 null. {@code decided_at}은 지금.
+     *
+     * @return 바꿨으면 true, 없거나 이미 결정됐으면 false(아무것도 바꾸지 않음)
+     * @throws IllegalArgumentException 상태가 APPROVED·REJECTED가 아님
+     */
+    public boolean decideProposal(long id, String status, Integer resultVersion) {
+        if (!"APPROVED".equals(status) && !"REJECTED".equals(status)) {
+            throw new IllegalArgumentException("제안 결정은 APPROVED·REJECTED입니다: " + status);
+        }
+        return jdbc.update("UPDATE paper_framework_proposals SET status = ?, result_version = ?, decided_at = now() "
+                + "WHERE id = ? AND status = 'PENDING'", ps -> {
+                    ps.setString(1, status);
+                    setInteger(ps, 2, resultVersion);
+                    ps.setLong(3, id);
+                }) == 1;
+    }
+
+    // ------------------------------------------------------------------ 메모
+    /**
+     * 메모를 넣습니다. {@code id}·{@code createdAt}은 무시하고, {@code archived}는 늘 false로 시작합니다.
+     *
+     * @return 새 메모 번호
+     */
+    public long insertNote(Note n) {
+        List<Long> ids = jdbc.query("INSERT INTO paper_notes (kind, as_of_date, expires_on, title, body) "
+                        + "VALUES (?, ?, ?, ?, ?) RETURNING id",
+                ps -> {
+                    ps.setString(1, n.kind());
+                    setDate(ps, 2, n.asOfDate());
+                    setDate(ps, 3, n.expiresOn());
+                    ps.setString(4, n.title());
+                    ps.setString(5, n.body());
+                },
+                (rs, rowNum) -> rs.getLong("id"));
+        return single(ids, "메모");
+    }
+
+    public Optional<Note> note(long id) {
+        return jdbc.query("SELECT " + NOTE_COLUMNS + " FROM paper_notes WHERE id = ?", noteMapper(), id)
+                .stream().findFirst();
+    }
+
+    /**
+     * 메모 목록, 기준일 최근 순(같으면 번호 최근 순). {@code includeExpired}가 false면 보관하지 않았고 {@code today}에 아직 만료되지
+     * 않은 것만(만료일 당일까지는 유효 — 만료가 없는 INSIGHT는 늘 포함), true면 보관·만료한 것까지 전부.
+     */
+    public List<Note> notes(boolean includeExpired, LocalDate today) {
+        if (includeExpired) {
+            return jdbc.query("SELECT " + NOTE_COLUMNS + " FROM paper_notes ORDER BY as_of_date DESC, id DESC",
+                    noteMapper());
+        }
+        return jdbc.query("SELECT " + NOTE_COLUMNS + " FROM paper_notes WHERE NOT archived "
+                        + "AND (expires_on IS NULL OR expires_on >= ?) ORDER BY as_of_date DESC, id DESC",
+                noteMapper(), Date.valueOf(today));
+    }
+
+    /**
+     * 그 거래일에 유효한 시황 메모(F6, 계약 E) — MARKET이고 보관하지 않았고 기준일 ≤ {@code asOf}이고 만료가 없거나 만료일 ≥
+     * {@code asOf}. 최신부터(기준일 최근 순, 같으면 번호 최근 순). 글자 수 상한은 부르는 쪽이 셉니다.
+     */
+    public List<Note> activeMarketNotes(LocalDate asOf) {
+        return jdbc.query("SELECT " + NOTE_COLUMNS + " FROM paper_notes WHERE kind = 'MARKET' AND NOT archived "
+                        + "AND as_of_date <= ? AND (expires_on IS NULL OR expires_on >= ?) ORDER BY as_of_date DESC, id DESC",
+                noteMapper(), Date.valueOf(asOf), Date.valueOf(asOf));
+    }
+
+    /**
+     * 메모를 보관합니다(지우지 않음 — 결정 기록의 {@code note_ids}·제안의 {@code note_id}가 가리키는 행이 남게). 이미 보관한
+     * 메모도 그대로 참입니다(멱등).
+     *
+     * @return 그 번호의 메모가 있었으면 true
+     */
+    public boolean archiveNote(long id) {
+        return jdbc.update("UPDATE paper_notes SET archived = true WHERE id = ?", id) == 1;
+    }
+
     // ------------------------------------------------------------------ 초기화
     /**
      * 한 책의 장부를 비웁니다 — 체결·주문·결정·보유·재진입 금지·순자산·상태를 한 트랜잭션으로 지웁니다. 책 행(상태·출발일)은
@@ -1257,6 +1534,25 @@ public class PaperStore {
                     noteIds, rs.getBoolean("prices_final"), rs.getObject("latency_ms", Long.class),
                     rs.getInt("retry_count"), rs.getBoolean("packet_text_stored") ? packet : null);
         };
+    }
+
+    private RowMapper<FrameworkVersion> frameworkMapper() {
+        return (rs, rowNum) -> new FrameworkVersion(rs.getInt("version"), json(rs, "body"), rs.getString("rendered"),
+                rs.getInt("rendered_tokens_est"), rs.getString("changelog"), rs.getObject("source_proposal_id", Long.class),
+                instant(rs, "created_at"));
+    }
+
+    private RowMapper<FrameworkProposal> proposalMapper() {
+        return (rs, rowNum) -> new FrameworkProposal(rs.getLong("id"), rs.getObject("note_id", Long.class),
+                rs.getInt("base_version"), rs.getString("request_text"), rs.getString("model"), json(rs, "response"),
+                rs.getString("response_raw"), rs.getString("status"), rs.getString("error"),
+                rs.getObject("result_version", Integer.class), instant(rs, "created_at"), instant(rs, "decided_at"));
+    }
+
+    private static RowMapper<Note> noteMapper() {
+        return (rs, rowNum) -> new Note(rs.getLong("id"), rs.getString("kind"), date(rs, "as_of_date"),
+                date(rs, "expires_on"), rs.getString("title"), rs.getString("body"), rs.getBoolean("archived"),
+                instant(rs, "created_at"));
     }
 
     private RowMapper<GateRow> gateMapper() {

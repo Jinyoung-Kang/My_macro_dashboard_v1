@@ -94,7 +94,11 @@ class RouteInventoryTest {
             "POST /api/paper/books/{code}/reset", "POST /api/paper/run/risk", "GET /api/paper/track-record",
             "POST /api/paper/run/rerank", "GET /api/paper/decisions", "GET /api/paper/decisions/{id}",
             "POST /api/paper/run/decision", "POST /api/paper/run/initial-decision", "GET /api/paper/settings",
-            "POST /api/paper/settings", "GET /api/paper/settings/history"));
+            "POST /api/paper/settings", "GET /api/paper/settings/history",
+            "GET /api/paper/framework", "GET /api/paper/framework/versions/{version}", "POST /api/paper/framework",
+            "GET /api/paper/framework/proposals", "POST /api/paper/framework/proposals",
+            "POST /api/paper/framework/proposals/{id}/approve", "POST /api/paper/framework/proposals/{id}/reject",
+            "GET /api/paper/notes", "POST /api/paper/notes", "DELETE /api/paper/notes/{id}"));
 
     @Test
     @DisplayName("컨트롤러가 여는 경로가 고정 목록과 정확히 같다")
