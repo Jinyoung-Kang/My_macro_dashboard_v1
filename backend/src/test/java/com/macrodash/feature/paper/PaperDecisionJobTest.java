@@ -11,6 +11,7 @@ import com.macrodash.store.PaperStore.Selection;
 import com.macrodash.store.Snapshot;
 import com.macrodash.support.InvalidRequestException;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.env.YamlPropertySourceLoader;
@@ -65,6 +66,8 @@ class PaperDecisionJobTest {
 
     /** 금요일 장중(15:30 ET) 저장본 — 확정 종가 아님. */
     private static final Instant FRI_INTRADAY = Instant.parse("2026-10-23T19:30:00Z");
+    /** 2026-10-22(목) — setUp의 규칙 책 출발일(출발일 당일은 초기 결정이 그날 결정이라 정기 결정을 내지 않음). */
+    private static final LocalDate THU = LocalDate.of(2026, 10, 22);
     /** 2026-11-17(화) = 2026-09-30 분기의 재선정일. EST라 마감 21:00Z. */
     private static final LocalDate RESELECTION = LocalDate.of(2026, 11, 17);
 
@@ -118,8 +121,8 @@ class PaperDecisionJobTest {
                     pricesFinal, 0L, 0);
         });
         store.initSettingsIfAbsent(PaperFixtures.settings(store).defaultsJson());
-        // 운용 중인 규칙 책(현금만)과 시작 전 Claude 책
-        store.books.put(PaperBooks.RULES, new Book(PaperBooks.RULES, PaperBooks.KIND_RULES, "규칙 책", 100_000, FRI,
+        // 운용 중인 규칙 책(현금만, 금요일 결정이 정기 결정이 되게 목요일 출발)과 시작 전 Claude 책
+        store.books.put(PaperBooks.RULES, new Book(PaperBooks.RULES, PaperBooks.KIND_RULES, "규칙 책", 100_000, THU,
                 PaperBooks.ACTIVE, FRI_CLOSE));
         store.states.put(PaperBooks.RULES, new BookState(PaperBooks.RULES, 100_000, 100_000, 0, 0, FRI_CLOSE,
                 FRI_CLOSE, FRI, null));
@@ -432,6 +435,22 @@ class PaperDecisionJobTest {
         assertThat(decided).isEmpty();
         assertThat(store.gates).containsKey(FRI);
         assertThat(job.run().outcome()).as("할 일을 다 함").isEqualTo(PaperDecisionJob.ALREADY_DECIDED);
+    }
+
+    @Test
+    @Disabled("재현 — 다음 커밋에서 고침: 규칙 책이 출발일 당일에도 SCHEDULED를 냄")
+    @DisplayName("규칙 책도 출발일 이하 거래일에는 정기 결정을 내지 않는다 — 초기 결정(INITIAL)이 그날 결정, 할 일도 남지 않음")
+    void rulesSkipsScheduledOnStartDay() {
+        store.books.put(PaperBooks.RULES, new Book(PaperBooks.RULES, PaperBooks.KIND_RULES, "규칙 책", 100_000, FRI,
+                PaperBooks.ACTIVE, FRI_CLOSE));
+        observed(Instant.parse("2026-10-23T20:30:00Z"), FRI);
+        PaperDecisionJob job = job(Instant.parse("2026-10-24T00:00:00Z"));
+
+        assertThat(job.run().outcome()).as("게이트 지표는 남김").isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(decided).isEmpty();
+        assertThat(store.gates).containsKey(FRI);
+        assertThat(store.jobRuns.get(0).detail().path("rules").asString()).contains("출발일");
+        assertThat(job.run().outcome()).as("할 일이 남지 않음").isEqualTo(PaperDecisionJob.ALREADY_DECIDED);
     }
 
     @Test
