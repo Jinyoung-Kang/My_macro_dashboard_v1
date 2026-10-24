@@ -51,6 +51,7 @@
 | `regime_log` | 국면 판정 라이브 기록 — 하루 한 건, 추가만. **백엔드가 씁니다**(ADR 0008) |
 | `users`·`user_sessions`·`audit_log`·`email_tokens`·`usage_counters` | 계정·DB 세션·감사 기록·메일 링크 토큰·하루 사용량 — **백엔드가 씁니다**(ADR 0010) |
 | `alert_rules`·`alert_events`·`alert_deliveries` | 알림 규칙·사건·알림함 — **백엔드가 씁니다**(ADR 0011). 수집기는 종목 규칙의 코드만 읽습니다 |
+| `paper_*` 19개 (V8, V9~V11은 열 추가) | 🧪 모의 매매(로컬 전용 브랜치) — 책·보유·재진입 금지·주문·체결·순자산, 결정 기록, 게이트 지표, 13F 트랙레코드·기관 선정, 프레임 판·제안, 메모, 설정, 작업 기록, 출발일 종가, Claude 사용량·추정 비용. **백엔드가 씁니다**(ADR 0008, JDBC는 `store.PaperStore`에만). 수집기는 쓰지 않습니다(`collector/tests/test_table_ownership.py`가 검사) |
 
 **데이터셋 이름은 두 언어에 같은 문자열로 존재합니다** — `collector/app/catalog.py`와
 `backend/.../store/Datasets.java`. `DatasetsParityTest`가 실제로 `catalog.py`를
@@ -114,7 +115,8 @@ pandas DataFrame을 JSON 문자열로 저장하면 **dtype을 따로 실어야**
 ```
 feature/<기능>/  기능 하나의 컨트롤러(HTTP 경계) + 서비스(저장본을 읽어 analytics에 넘기고
                  화면용 응답으로 조립). auth · macro · institution · insight · positioning ·
-                 publicdata · status · snapshot(전체 원본 텍스트) · ai · toss
+                 publicdata · status · snapshot(전체 원본 텍스트) · ai · toss · alert ·
+                 paper(🧪 모의 매매, 로컬 전용 브랜치)
 analytics/       스프링도 DB도 모릅니다. 입력은 숫자와 날짜, 출력도 숫자입니다.
 read/            읽기 정책(StoreReader) — 저장본이 오래됐으면 읽기 모드에 따라 수집을 요청하고 다시 읽음
 store/           저장소 접근 · 데이터셋 이름 · 신선도 (외부 호출 없음)
@@ -144,6 +146,19 @@ config/          설정 값(AppProperties) · 정기 작업 켜기 — 여러 �
 | `Verification` | 교차 검증 판정 |
 | `FlowIntegrity` | 토스 투자자별 매매대금 정합성 (매수 합계 = 매도 합계, 기관 = 세부 7개 합) |
 | `FlowRecord` | 투자자별 매매 기록 한 건(값을 모르면 null) — 수급 계산의 입력 타입 |
+| `UsMarketCalendar` | 🧪 미국 거래일·세션 날짜(휴장일 규칙은 화면 `lib/marketCalendar.ts`와 같음)·13F 공시 기한 다음 거래일 |
+| `DailySeries` | 🧪 일별 값 계열(원시 배열 + 이진 탐색 — 10년 × 수백 종목을 힙에 들기 위해). 기준일 뒤 값은 `until`로 자름 |
+| `PaperLedger` | 🧪 체결(수량 십진 내림·슬리피지)·평가·노출 |
+| `TrailingStop` | 🧪 최고가 갱신·스탑 판정·재진입 금지 |
+| `SplitDetector` | 🧪 수정주가로 다시 쓰인 체결일 종가로 분할·병합 비율 판정 |
+| `PaperStats` | 🧪 누적·CAGR·변동성·MDD·샤프·초과·베타(20거래일 미만이면 누적만) |
+| `GateIndicator` | 🧪 OS 원문의 매크로 게이트 단계(L0/L1/L2) — 지표만, 어느 책도 구속하지 않음 |
+| `TrackRecord13F` | 🧪 13F 공시일 다음 거래일 기준 복제 수익률·커버리지·자격·순위 |
+| `Signal13F` | 🧪 신호 풀 기관의 분기 비교 → 매수 후보·매도 신호, 두 기관 그룹 섞기·배분 |
+| `OrderValidator` | 🧪 Claude가 제안한 주문의 하드 규칙 — 제안은 모델, 집행 여부는 이 검사 |
+
+🧪 = 모의 알고리즘 매매(운영자 전용, 로컬 전용 브랜치 `claude/paper-trading-2026-10`). 규칙의 근거는
+[명세](specs/2026-10-24-paper-trading-spec.md)·[설계](specs/2026-10-24-paper-trading-design-plan.md)·[ADR 0018](adr/0018-paper-trading-guardrails.md)입니다.
 
 `analytics`는 `java.*`만 씁니다. 저장본 JSON을 읽는 일(`support.Json`)과 계산 입력 타입으로
 바꾸는 일(`support.FlowJson`)은 서비스 쪽에서 끝냅니다 — JSON 라이브러리가 바뀌어도 계산 코드는
@@ -152,6 +167,24 @@ config/          설정 값(AppProperties) · 정기 작업 켜기 — 여러 �
 **왜 나눴나** — 이 계산들이 이 프로젝트에서 가장 조용히 틀리는 곳입니다.
 표본이 부족한데 숫자를 만들어내거나, 배열이 한 칸 밀리거나, 미래 정보를 쓰거나.
 저장소 의존성을 걷어내면 테스트가 이런 규칙을 직접 고정할 수 있습니다.
+
+### 4-2. 정기 작업과 스케줄러 스레드
+
+백엔드 정기 작업은 저장본을 `StoreReader.quietly`로만 읽고(수집을 깨우지 않음), DB 유일 제약으로 같은 일을 두 번 해도 한 번만
+남깁니다([ADR 0008](adr/0008-backend-owned-tables-and-scheduled-jobs.md)). 🧪 모의 매매가 더한 작업은 셋입니다.
+
+| 작업 | 주기 | 하는 일 |
+|---|---|---|
+| `PaperRiskJob` | 5분 | 새 관측치(`paper.quotes`, 1시간마다 수집)가 있을 때만 장부에 적용 — 대기 주문 체결·스탑·분할·평가 |
+| `PaperDecisionJob` | 10분 폴링 | 미국 세션 다음 날 아침(KST)에 그 거래일 결정을 한 번 — 관측치 처리 → 게이트 지표 → (재선정일이면) 기관 선정 → 규칙 책 → Claude 책. 두 책의 오류는 따로 잡음 |
+| `PaperAdminService` 출발일 종가 | 30분 | 출발일 확정 종가를 `paper_start_prices`에 한 번 얼림 — 배당락 뒤 수정주가로 낮아진 값이 사후 체결에 쓰이지 않게 |
+
+- **스레드 4개**(`application.yml`의 `spring.task.scheduling.pool.size`, Spring Boot 기본 1개). 결정 작업이 Claude를 부르는 몇 분
+  (한도 `claude-timeout-seconds` 300초) 동안 리스크 점검·알림·국면 기록이 그 뒤에 줄을 섰기 때문입니다.
+- 같은 작업은 fixedDelay라 스스로 겹치지 않고, 결정과 리스크 점검은 장부 잠금으로 줄을 섭니다. Claude 호출은 장부 잠금 밖에서
+  하고, 응답을 받은 뒤 잠금 안에서 책이 일시정지·리셋됐는지 다시 봅니다. 정기 결정은 결정 잠금을 `tryLock`으로만 잡아, 수동
+  결정이 쥐고 있으면 그 주기를 건너뜁니다.
+- `PAPER_ENABLED=false`(`dashboard.paper.enabled`)면 세 작업이 쉽니다. 화면의 수동 실행은 그대로 돕니다.
 
 ## 5. 응답 캐시 (측정 기반)
 
@@ -282,6 +315,7 @@ UTC라서 `LocalDate.now()`를 그대로 쓰면 한국 시각 00:00~09:00 사이
 - 수집기: `ZoneInfo("Asia/Seoul")`
 - 화면: 표시 시각은 백엔드가 KST 문자열로 내려보낸 것을 그대로 씁니다
 
-거래소 개장 여부는 화면이 계산합니다(`lib/marketCalendar.ts`). 공휴일 API를 쓰지
+거래소 개장 여부는 화면이 계산합니다(`lib/marketCalendar.ts`). 🧪 모의 매매 장부가 세는 미국 거래일만 백엔드
+`analytics.UsMarketCalendar`가 같은 휴장일 규칙으로 셉니다. 공휴일 API를 쓰지
 않는 이유는 [PRINCIPLES.md](PRINCIPLES.md)를 보세요 — **공휴일과 거래소 휴장일은
 다릅니다.**

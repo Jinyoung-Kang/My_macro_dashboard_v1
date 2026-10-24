@@ -2,8 +2,9 @@
 
 > 명세: [2026-10-24-paper-trading-spec.md](2026-10-24-paper-trading-spec.md). 결정에 따라 정해진 곳은 "(D#)"로 표시했습니다.
 >
-> - 상태: **구현 중**(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
+> - 상태: **구현 완료**(2026-10-25 — 단계 0~4, 결과는 §9-1~§9-3) · 이전: 구현 중(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
 > - 단계 0 근거 표: [2026-10-24-paper-trading-step0.md](2026-10-24-paper-trading-step0.md). 요약은 §13.
+> - 구현 결과(단계별 결과·운영 상태·남은 확인, 2026-10-25): §9-1~§9-3. 설계 결정과 지키는 시험: [ADR 0018](../adr/0018-paper-trading-guardrails.md).
 > - 이 문서는 **어떻게, 어떤 순서로** 만들지 정합니다. 파일·클래스 이름은 구현 때 바뀔 수 있지만 배치 규칙(§1)은 바뀌지 않습니다.
 
 ---
@@ -12,7 +13,7 @@
 
 ### 0-1. 기능 모듈 `feature/paper` 추가
 
-컨트롤러 3개 + 서비스 10여 개가 한 폴더에 들어간다. 다른 기능의 **서비스**는 쓰되(`feature.ai.AiService`) 컨트롤러는 쓰지 않는다(`ArchitectureRulesTest.featuresShareServicesNotControllers`). 컨트롤러는 자기 기능의 서비스 + `support` + `config`만 쓰고(`controllersGoThroughTheirOwnServices`), 생성자 인자는 5개 이하(`RouteInventoryTest.controllersStaySmall`).
+컨트롤러 3개(구현은 설정 컨트롤러가 더해져 4개 — 장부·결정·프레임·설정) + 서비스 10여 개가 한 폴더에 들어간다. 다른 기능의 **서비스**는 쓰되(`feature.ai.AiService`) 컨트롤러는 쓰지 않는다(`ArchitectureRulesTest.featuresShareServicesNotControllers`). 컨트롤러는 자기 기능의 서비스 + `support` + `config`만 쓰고(`controllersGoThroughTheirOwnServices`), 생성자 인자는 5개 이하(`RouteInventoryTest.controllersStaySmall`).
 
 ### 0-2. 백엔드 소유 테이블 `paper_*` 추가 (ADR 0008 연장)
 
@@ -582,7 +583,45 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | **2. 규칙 책** | V9(`paper_track_record.group_code`), 그룹 B 선정(D27), `Signal13F`(기관 가중 × 확신도, 확신도 비례 배분), `RuleBookService`, `PaperDecisionJob`(규칙 책까지, 재선정일 분기·놓친 재선정일 따라잡기), 규칙 책 "시작"(`POST /run/initial-decision`)에 10-23 사후 체결(신호 풀 A ∪ B, 최대 9곳), 결정 로그 탭(규칙 책) | M | 10-23 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·순위·행동 기록. 재선정일 외 매수 없음 테스트 |
 | **3a. Claude 책 — 결정** | `AiService.structured`, 스키마 2개, `PacketBuilder`(게이트 참고·트랙레코드 섹션 포함), `OrderValidator`(예산 규칙 없음), `ClaudeBookService`, `paper_api_usage`, 설정 테이블·API·탭, 결정 로그 탭(패킷·응답·검증·노출), `run/decision`·`run/initial-decision` | L | 가짜 서버 4종. 검증기 규칙별 테스트 + "노출 0%·100% 모두 통과" 테스트. 초기 결정 패킷에 10-23 이후 값 없음. 실제 키로 10-23 초기 결정 미리보기 1회(장부를 바꾸지 않음 — 책 시작은 사용자가 누름, L2) |
 | **3b. 프레임·메모** | `paper_framework_*`·`paper_notes`, `FrameworkService`(v1 시드 — 매크로 축은 지침 문장으로)·`NoteService`, API, 탭 | M | 승인 전후 테스트. 만료 메모 제외. v1 규칙 목록 사람이 검토 |
-| **4. 마무리** | ADR 0018, ARCHITECTURE·API.md·DATA_SOURCES·README·`.env.example`·compose(`PAPER_ENABLED`), 이 문서 구현 결과 표 | S | `make test` 통과, `/paper` 여섯 탭 동작, `git branch -r --contains HEAD` 빈 결과 |
+| **4. 마무리** | ADR 0018, ARCHITECTURE·API.md·DATA_SOURCES·README·`.env.example`·compose(`PAPER_ENABLED`), 이 문서 구현 결과 표 | S | `make test` 통과, `/paper` 여섯 탭 동작(구현은 일곱 탭 — 단계 3b에서 '프레임·메모'를 '프레임'·'메모'로 나눔, §9-1), `git branch -r --contains HEAD` 빈 결과 |
+
+### 9-1. 구현 결과 (2026-10-25)
+
+브랜치 커밋 26개(`git log --oneline main..HEAD` — `9bde281` … `515c524`, 기준 `main@590260f`). 마지막 전체 시험은 `515c524`의 `make test`
+(수집기 598 통과·12 건너뜀 — `psql` 없음, 백엔드 1062, 화면 575)와 JDK 21(Temurin 컨테이너) 검증(종료 코드 0)이다. 같은 커밋으로 `make up`했다.
+결정과 그것을 지키는 시험은 [ADR 0018](../adr/0018-paper-trading-guardrails.md)에 있다.
+
+| 단계 | 만든 것 | 주요 커밋 | 끝났다는 기준 | 계획과 달라진 것 |
+|---|---|---|---|---|
+| 0 | §13, [단계 0 문서](2026-10-24-paper-trading-step0.md) | `9bde281`(명세·설계) · `b67e8f6` · `b7d304e` | **충족.** 매핑 추가 후보는 200개가 아니라 상위 600개를 조회해 498개 채택 | D23(가격 저장 방식), D25(CUSIP 매핑표), D26(스키마 제약을 API용·검증용으로) |
+| 1 | 수집기 `paper_quotes`·`paper_price_history`, V8(`paper_*` 19개), `PaperStore`, `analytics`(`UsMarketCalendar`·`DailySeries`·`PaperLedger`·`TrailingStop`·`SplitDetector`·`PaperStats`·`GateIndicator`), `PaperLedgerService`·`PaperRiskJob`·`PaperAdminService`·`PaperQueryService`, API 10개, '개요'·'보유·체결' 탭 | `282a5b5` · `045d9c1` · `24a5bb0` · `8e80f41` | **시험으로 충족** — 벤치마크 사후 체결 수량(`PaperAdminServiceTest.initBackfillsBenchmarks`), 룩어헤드·스탑·분할(`PaperLedgerServiceTest`). 운영 장부를 SPY·SHY 추이와 대조하는 것은 출발일(금) 뒤 세션이 아직 없어 **[확인 필요]**(§9-3) | 출발일 종가 동결 `paper_start_prices`(§2)와 그것을 30분마다 얼리는 정기 작업(`PaperAdminService` — 정기 작업이 §0-3의 2개에서 3개로), 관측치 처리 순서 — 분할 먼저·스탑은 매수 앞·현금성 매수는 마지막(§3-1) |
+| 1b | 수집기 `TRACK_RECORD_FILERS`(27곳·선행 CIK 2)·`task_sec_13f_track_record`(실행당 400건)·`TRACK_RECORD_CUSIPS` 498개(유니버스 615종목), `TrackRecord13F`·`PaperSelectionService`, API 2개, 기관 선정 탭 | `482b5ea` · `da26067` · `b522bde` | **충족.** 27곳 30분기 수집 완료(실행 3번), 손계산·룩어헤드·커버리지·자격 시험(`TrackRecord13FTest`), 2026-10-23 순위표·상위 5 기록, 원형과 대조(`matchesStepZeroPrototype`, §13) | 원형과 5·6위가 바뀜(Coatue ↔ Himalaya — 거래일 달력·상장폐지 처리 차이, §13). `q30`은 필요한 열만 SQL로 읽음(힙) |
+| 2 | V9(`group_code`·`data_source`), 그룹 B(D27), `Signal13F`, `RuleBookService`, `PaperDecisionJob`(규칙 책), 규칙 책 "시작", API 4개, 결정 로그 탭·게이트 지표 카드 | `694025f`(D27) · `e79074c` · `beb2efb` · `38bc265` · 결함 `79294e6` → `6ff9f58` | **충족.** 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·그룹·가중·확신도 근거(`RuleBookServiceTest.startBackfillsWithEvidence`), 재선정일 외 매수 없음(`nonReselectionDayOnlySells`) | 두 그룹 섞기·확신도 비례 배분(D27, §4-0 ⑥·§4-1·§4-2), 놓친 재선정일 따라잡기(§6-2), 매일 남는 현금 SHY(`rules.parkCashThresholdPct`). 출발일 당일 정기 결정 중복 결함 — 재현 `79294e6`, 수정 `6ff9f58`(§6-2 구현 메모) |
+| 3a | `AiService.structured`(먼저 `cfaa402`로 예외 분류를 떼어 냄), `StructuredSchema`·`decision.schema.json`, `OrderValidator`, `PacketBuilder`, `ClaudeBookService`, 설정 API 3개·설정 탭, Claude 결정 상세·노출 추이·호출 사용량, V10 | `cfaa402` · `7feca27` · `d17d16f` · `ad5555f` | **충족.** 가짜 서버 4종(`ClaudeBookServiceTest` 정상·형식 오류·거절·429), 검증기 규칙별·노출 0%·100%(`OrderValidatorTest`), 초기 패킷에 10-23 뒤 값 없음(`PacketBuilderTest.initialPacketHasNothingAfterAsOf`), 실제 키 미리보기 1회(§9-2) | V10 `packet_text`, `BELOW_ONE_SHARE`, 체결 시점을 나눈 `OVER_ALLOCATED`·`MAX_POSITIONS`, 그룹별 기관 상한, 호출은 장부 잠금 밖 + 일시정지·초기화 재확인, 응답 뒤 실패는 다시 부르지 않음(`AFTER_RESPONSE`), 스케줄러 스레드 4개 + `tryLock`(§5-2·§5-4·§5-5·§6-2 구현 메모) |
+| 3b | `FrameworkService`(v0 시드·렌더링·제안→승인·수동 편집)·`NoteService`·`PaperApiCalls`, V11, API 10개, 프레임·메모 탭 | `99059dc` · `941cceb` · `b6f7016` · 결함 `d38eda8` → `0e07824` · 리뷰 수정 `515c524` | **시험으로 충족** — 승인 전후(`FrameworkServiceTest`), 만료 메모 제외(`NoteServiceTest.packetNotes`). 'v1 규칙 목록 사람 검토'는 v1이 사용자 원문을 그대로 옮긴 판이 되면서 성격이 바뀜 — 사용자 확인 여부 **[확인 필요]** | v0 임시·v1 사용자 OS(F1), 결정 시점 설정으로 렌더링, 추정 비용 단가 설정(V11, C8), 메모 기준일 기본값, 탭을 '프레임'·'메모' 둘로. 메모 빈 줄 결함 — 재현 `d38eda8`, 수정 `0e07824`. 리뷰 수정(§5-7 구현 메모 ①~⑥) |
+| 4 | ADR 0018·ADR 목록, `docs/ARCHITECTURE.md`(§3 표·§4-1·§4-2·§8), `README.md`(메뉴·환경변수·폴더), `docs/DATA_SOURCES.md`(저장본 표의 기존 저장본 행·미국 재무 없음), `.env.example`·`docker-compose.yml`(`PAPER_ENABLED`가 끄는 정기 작업 셋), 이 절, §12-2의 낡은 수치(태스크 수·예산 기본값). 앞 단계에서 함께 고친 것: `docs/API.md`(29행), `docs/DATA_SOURCES.md`(태스크 3개·후보 기관·저장본과 한계), `.env.example`·`docker-compose.yml`(`PAPER_ENABLED`·`TRACK_RECORD_FETCH_BUDGET`) | (문서 정리) | **충족.** `make test` 통과(위 — 단계 4는 문서만 고침), `/paper` 일곱 탭 동작(QA 스택·헤드리스 Chrome, §9-2), `git branch -r --contains HEAD` 빈 결과(2026-10-25) | 탭 여섯 → 일곱(명세 U2·§1 그림은 여섯 탭 그대로) |
+
+### 9-2. 운영 상태 (2026-10-25, `515c524`에서 `make up`)
+
+| 항목 | 상태 |
+|---|---|
+| 스키마 | V8~V11 적용 |
+| 책 | `bench_spy`·`bench_mix`·`rules` 운용(ACTIVE), 출발일 2026-10-23. `claude`는 시작 전(NOT_STARTED) — 사용자가 "시작"을 누른다(L2) |
+| 규칙 책 결정 | 1번 INITIAL(체결 11건). 2번 SCHEDULED 10-23 NO_TRADE는 수정 전 결함(출발일 당일 정기 결정, `79294e6`·`6ff9f58`)이 남긴 행 — 이력으로 둔다 |
+| 프레임 | v0 INTERIM(시드), v1 USER = 사용자 OS 원문 "빠방이 투자 운영체계"(원칙 5·엔진 8·규칙 29, 문구 그대로). 원문 전체는 INSIGHT 메모 #2. 메모 #1은 보관 — 수정 전 정규화가 빈 줄을 지운 본문(`d38eda8`·`0e07824`) |
+| 실제 키 호출 | 10-23 초기 결정 미리보기 1회(장부 변화 없음): 24.8초, 입력 26,866 + 캐시 쓰기 2,714 + 출력 2,632토큰 ≈ $0.09(§5-9 단가), 목표 노출 42%, 주문 6건 모두 통과. 패킷 시점 검사에서 10-23 뒤 값은 매크로 카드(`asOfMismatch`, C6이 허용)와 달력의 `nextSession`뿐 |
+| 화면 확인 | QA 스택(`QA_NO_LOGIN=1`, `backups/macrodash-20261025-033109.sql` 복원)에서 헤드리스 Chrome으로 일곱 탭 모두 그려짐, 콘솔 오류·HTTP ≥ 400 없음 |
+
+### 9-3. 남은 확인과 알려진 한계
+
+| 항목 | 내용 |
+|---|---|
+| 장중 마지막 봉 | **[확인 필요]** 10-26(월) KST 22:30 뒤 — §13 첫 행 |
+| 벤치마크 추이 대조 | 두 벤치마크 책 순자산을 SPY·SHY 종가 변화와 대조 — 출발일 뒤 첫 세션(10-26)의 확정 순자산이 생긴 뒤 **[확인 필요]** |
+| 재무제표 | 패킷에 없음. 사용자 OS 엔진 E3·E4·E5·E8-R4가 재무 수치를 요구 — 모델은 '확인 필요'로 다룰 것으로 봄(추정). §14-1 |
+| 패킷 크기 | 실제 호출의 캐시 안 된 입력 26,866토큰이 §5-2 목표(25,000)보다 큼. `PacketBuilderTest.fitsTokenBudget`은 어림 토큰으로 잰다 — 패킷만의 실제 토큰 수는 **[확인 필요]** |
+| 순자산 차트 | 하루 범위가 $1 미만이면 y축 눈금 글자가 같은 값으로 되풀이됨(화면만) |
+| `AI_ENGINES` | [ADR 0014](../adr/0014-aws-demo-ai-report.md) 허용 목록이 `AiService.structured`를 거르지 않음. 로컬 전용이라 지금은 상관없음 — main·AWS로 옮기기 전에 고친다 |
 
 ---
 
@@ -649,9 +688,9 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 |---|---|
 | `docs/ARCHITECTURE.md` | §3 `paper_*` 행, §4-1 기능 목록 `paper`(누락 `alert`도), `analytics` 표 새 클래스 |
 | `docs/API.md` | §1 "🧪 모의 매매(운영자)" 29행 |
-| `docs/DATA_SOURCES.md` | 태스크 표에 `sec_13f_track_record`(21개), 13F 소절에 "후보 기관 30분기·예산·증분", `PRICE_HISTORY_PERIOD` 10y, 매핑표 확장 절차, "이 기능이 쓰는 저장본과 한계" |
+| `docs/DATA_SOURCES.md` | 태스크 표에 새 태스크 3개(23개), 13F 소절에 "후보 기관 30분기·예산·증분", 10년 이력은 `catalog.PAPER_HISTORY_PERIOD`(10y — 기존 `PRICE_HISTORY_PERIOD` 5y는 그대로, D23), 매핑표 확장 절차, "이 기능이 쓰는 저장본과 한계" |
 | `README.md` | 주요 기능 한 줄 + "로컬 전용" |
-| `.env.example`·`docker-compose.yml` | `PAPER_ENABLED`(기본 true), `TRACK_RECORD_FETCH_BUDGET`(기본 60) |
+| `.env.example`·`docker-compose.yml` | `PAPER_ENABLED`(기본 true), `TRACK_RECORD_FETCH_BUDGET`(기본 400, 1~2000 — §4-0 ②) |
 | `docs/adr/README.md` | 0018 행 |
 | 이 문서 | §13, 구현 결과 표 |
 
@@ -667,7 +706,7 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 
 | 항목 | 결과 | 영향 |
 |---|---|---|
-| 미국 장중 저장본의 마지막 봉 | 토요일이라 직접 비교 불가, 지난 장중 저장본도 남아 있지 않음. 같은 수집 함수로 열린 시장(BTC-USD)을 75초 간격으로 받으면 마지막 봉이 오늘 날짜이고 값이 바뀜 | 설계 그대로(D3). 장중 봉이 없어도 체결 조건 2로 `NEXT_OBSERVATION`이 다음 확정 종가 체결이 됨. **[확인 필요]** 10-26(월) KST 22:30 뒤 `PaperRiskJob` 기록으로 확인 |
+| 미국 장중 저장본의 마지막 봉 | 토요일이라 직접 비교 불가, 지난 장중 저장본도 남아 있지 않음. 같은 수집 함수로 열린 시장(BTC-USD)을 75초 간격으로 받으면 마지막 봉이 오늘 날짜이고 값이 바뀜 | 설계 그대로(D3). 장중 봉이 없어도 체결 조건 2로 `NEXT_OBSERVATION`이 다음 확정 종가 체결이 됨. **[확인 필요 — 구현 뒤에도 남음, 2026-10-25]** 10-26(월) KST 22:30(미국 개장) 뒤 `paper.quotes`(1시간 주기)가 두 번 이상 들어온 다음, `paper_job_runs`(job `risk`) `detail`의 `collectedAtKst`·`barDate`·`session`·`finalClose`를 본다 — `barDate`가 10-26이고 `finalClose=false`면 장중 봉이다(기록 형식은 `PaperRiskJobTest.recordsWorkWithObservationSummary`). 장중 봉이 없으면 명세 §7대로 `NEXT_OBSERVATION` = `NEXT_CLOSE` |
 | 후보 기관 CIK (27곳) | 27곳 모두 13F-HR 이력 있음. 선행 CIK가 필요한 곳 2(Greenlight → DME Capital Management, Pershing PSCM → Pershing Square Inc.). Scion은 2025-09-30 분기가 마지막 | 후보 27곳 그대로(D21). `TRACK_RECORD_FILERS`에 선행 CIK(§4-0 ①·②) |
 | EDGAR 목록 깊이·기관당 30분기 수집 시간 | `count=100` 한 페이지에서 27곳 모두 원본 30건. 기관당 10.0~17.5초, 27곳 약 6분 | 예산 기본 400건/실행(§4-0 ②). 다음 페이지(`start=`)는 안전장치로만 |
 | 후보 기관 티커 커버리지 (기관별 %) | 지금 매핑표로는 D22 자격 1곳(버크셔). CUSIP 매핑 498개를 더하면 23곳 자격, 미달 4곳(Baupost·Scion·Soros·Tudor) | **D22 그대로.** 매핑은 이름이 아니라 CUSIP으로(D25, §4-0 ③). 미달 4곳은 목록에 남기고 사유를 보임 |
