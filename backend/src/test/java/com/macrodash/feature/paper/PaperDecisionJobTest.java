@@ -11,7 +11,6 @@ import com.macrodash.store.PaperStore.Selection;
 import com.macrodash.store.Snapshot;
 import com.macrodash.support.InvalidRequestException;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.env.YamlPropertySourceLoader;
@@ -438,7 +437,6 @@ class PaperDecisionJobTest {
     }
 
     @Test
-    @Disabled("재현 — 다음 커밋에서 고침: 규칙 책이 출발일 당일에도 SCHEDULED를 냄")
     @DisplayName("규칙 책도 출발일 이하 거래일에는 정기 결정을 내지 않는다 — 초기 결정(INITIAL)이 그날 결정, 할 일도 남지 않음")
     void rulesSkipsScheduledOnStartDay() {
         store.books.put(PaperBooks.RULES, new Book(PaperBooks.RULES, PaperBooks.KIND_RULES, "규칙 책", 100_000, FRI,

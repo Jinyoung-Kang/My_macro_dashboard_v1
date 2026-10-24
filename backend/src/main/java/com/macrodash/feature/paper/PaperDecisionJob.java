@@ -45,7 +45,7 @@ import java.util.concurrent.locks.ReentrantLock;
  *  그날 할 일(게이트 지표·규칙 책 결정·Claude 책 결정)이 다 됨 → ALREADY_DECIDED(기록 안 함)
  *  관측치가 d의 확정 종가가 아님 && decisionDeadlineKst(12:00) 전 → PRICES_NOT_FINAL(기록 안 함 — 다음 주기에 다시)
  *  관측치 처리 → (확정이 아니면) d의 미확정 순자산 줄 → 게이트 지표 → 재선정일이면 선정 → 규칙 책 결정
- *  → Claude 책 결정(운용 중일 때만) → 작업 기록
+ *  → Claude 책 결정(운용 중일 때만) → 작업 기록     (두 책 모두 출발일 뒤 거래일만 — 출발일은 초기 결정이 그날 결정)
  * </pre>
  *
  * <p>확정 종가 = 관측치의 다수 티커 봉 날짜가 d이고 마감 + 15분 뒤에 수집함. 기한을 넘기면 확정 종가 없이 진행하고 결정·순자산
@@ -331,6 +331,11 @@ public class PaperDecisionJob {
             detail.put("rules", view);
             return existing.get();
         }
+        if (rulesStarted && !afterStart(book.get(), d)) {
+            // 출발일은 초기 결정(INITIAL)이 그날 결정입니다 — Claude 책과 같게, 같은 거래일에 정기 결정을 하나 더 내지 않습니다.
+            detail.put("rules", "출발일(" + book.get().startedOn() + ") 이하 — 초기 결정이 그날 결정입니다");
+            return null;
+        }
         boolean rebalance = rulesStarted && rebalanceMissing(book.get(), reselectionDay);
         if (rebalance && !reselection) {
             detail.put("catchUpReselection", reselectionDay.toString());
@@ -431,8 +436,13 @@ public class PaperDecisionJob {
     private Work pendingWork(LocalDate d) {
         Optional<Book> book = store.book(PaperBooks.RULES);
         boolean rules = book.isPresent() && !PaperBooks.NOT_STARTED.equals(book.get().status())
-                && rulesDecisionOn(d).isEmpty();
+                && afterStart(book.get(), d) && rulesDecisionOn(d).isEmpty();
         return new Work(store.gate(d).isEmpty(), rules, claudeSkipReason(store.book(PaperBooks.CLAUDE), d) == null);
+    }
+
+    /** 출발일 뒤 거래일인가 — 출발일 이하는 초기 결정이 그날 결정이라 정기 결정을 내지 않습니다(두 책 같음). */
+    private static boolean afterStart(Book book, LocalDate d) {
+        return book.startedOn() != null && d.isAfter(book.startedOn());
     }
 
     /** 규칙 책의 그 거래일 정기 결정(REBALANCE 먼저, 없으면 SCHEDULED). 수동(MANUAL)은 정기 결정을 대신하지 않습니다. */
