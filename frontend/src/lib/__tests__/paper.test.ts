@@ -5,6 +5,12 @@ import { describe, expect, it } from "vitest";
 import {
   bookCard,
   bookStatusBadge,
+  collectionView,
+  criteriaText,
+  eligibilityBadge,
+  filingSpanText,
+  formatCoverage,
+  formatExcessPoints,
   formatSharePrice,
   heldText,
   initPrompt,
@@ -13,20 +19,36 @@ import {
   navChart,
   notStartedNote,
   orderSizeText,
+  PAPER_TABS,
+  periodCoverageText,
+  periodsText,
   positionBadges,
+  quartersText,
   quotesLine,
+  rerankResultView,
   resetResultView,
   resolveBookCode,
   riskOutcomeText,
   riskResultView,
   sampleNote,
+  selectedBadge,
+  selectionHistoryRows,
   statCells,
   statusResultText,
   statusToggle,
   stopText,
   timingLabel,
+  trackMetricLabel,
+  trackRecordRows,
 } from "../paper";
-import type { PaperBookSummary, PaperPosition, PaperRiskOutcome, PaperStats } from "../types";
+import type {
+  PaperBookSummary,
+  PaperPosition,
+  PaperRiskOutcome,
+  PaperStats,
+  PaperTrackRecordCandidate,
+  PaperTrackRecordCollection,
+} from "../types";
 
 const STATS: PaperStats = {
   cumReturnPct: 1.234, cagrPct: 12.5, volPct: 15.2, mddPct: -3.4, sharpe: 0.81, excessPct: -0.52, beta: 0.97, sampleDays: 42,
@@ -334,5 +356,132 @@ describe("책 초기화 결과", () => {
     expect(resetResultView({
       ok: true, book: book("rules", { label: "규칙 책", status: "NOT_STARTED" }), backfilled: false, skippedReason: null,
     })).toEqual({ tone: "info", text: "규칙 책을(를) 초기화했습니다 — 지금 시작 전 · 현금만" });
+  });
+});
+
+describe("기관 선정 — 트랙레코드 표기", () => {
+  function candidate(cik: string, over: Partial<PaperTrackRecordCandidate> = {}): PaperTrackRecordCandidate {
+    return {
+      cik, name: `기관 ${cik}`, style: "가치·집중", rank: null, eligible: false, ineligibleReason: null, cagrPct: 12.3456,
+      cumReturnPct: 125.5, spyCumReturnPct: 110.25, excessVsSpyPct: 15.25, volPct: 18.2, mddPct: -32.1, sharpe: 0.71,
+      periodsUsed: 27, periodsTotal: 28, coverageMin: 0.523, coverageAvg: 0.786, firstFilingDate: "2019-11-14",
+      lastFilingDate: "2026-08-14", storedQuarters: 30, complete: true, selected: false, periods: [], ...over,
+    };
+  }
+
+  const COLLECTION: PaperTrackRecordCollection = {
+    filers: 27, completeCount: 20, storedFilings: 700, targetFilings: 810, updatedAtKst: "2026-10-24 03:10",
+  };
+
+  it("탭 — 기관 선정은 이제 내용이 있다(준비 중 아님)", () => {
+    expect(PAPER_TABS.find((tab) => tab.key === "selection")?.opensIn).toBeNull();
+  });
+
+  it("커버리지는 0~1 비율을 소수 1자리 %로 — 49.7%가 '50%'로 보이지 않게, 모르면 —", () => {
+    expect(formatCoverage(0.497)).toBe("49.7%");
+    expect(formatCoverage(1)).toBe("100.0%");
+    expect(formatCoverage(0)).toBe("0.0%");
+    expect(formatCoverage(null)).toBe("—");
+    expect(formatCoverage(undefined)).toBe("—");
+  });
+
+  it("초과는 %p, 모르면 —", () => {
+    expect(formatExcessPoints(15.25)).toBe("+15.25%p");
+    expect(formatExcessPoints(-3.1)).toBe("-3.10%p");
+    expect(formatExcessPoints(null)).toBe("—");
+  });
+
+  it("순위 기준·자격 기준 문구 — 모르는 기준은 받은 글자 그대로, 기준이 없으면 null", () => {
+    expect(trackMetricLabel("CAGR")).toBe("연율 수익률(CAGR)");
+    expect(trackMetricLabel("EXCESS_VS_SPY")).toBe("SPY 대비 초과 수익률");
+    expect(trackMetricLabel("SORTINO")).toBe("SORTINO");
+    expect(trackMetricLabel(null)).toBe("—");
+    expect(criteriaText({ windowYears: 7, minPeriods: 24, minCoverage: 0.5, avgCoverage: 0.7 }))
+      .toBe("창 7년 · 구간 ≥ 24개 · 최소 커버리지 ≥ 50% · 평균 커버리지 ≥ 70%");
+    expect(criteriaText(null)).toBeNull();
+  });
+
+  it("자격 배지 — 자격 · 수집 중(complete=false) · 자격 없음, 선정 배지는 선정된 기관만", () => {
+    expect(eligibilityBadge(candidate("a", { eligible: true })).label).toBe("자격");
+    expect(eligibilityBadge(candidate("b", { complete: false, collecting: true })).label).toBe("수집 중");
+    // collecting을 보내지 않아도 complete=false면 수집 중
+    expect(eligibilityBadge(candidate("c", { complete: false })).label).toBe("수집 중");
+    const ineligible = eligibilityBadge(candidate("d"));
+    expect(ineligible.label).toBe("자격 없음");
+    expect(ineligible.className).toContain("text-warn");
+    expect(selectedBadge(candidate("e", { selected: true }))?.label).toBe("선정");
+    expect(selectedBadge(candidate("f"))).toBeNull();
+  });
+
+  it("행 순서 — 순위대로, 순위 없는 기관은 뒤에 서버 순서대로(순위를 다시 매기지 않음)", () => {
+    const rows = trackRecordRows([
+      candidate("x"), candidate("r2", { rank: 2, eligible: true }), candidate("y"), candidate("r1", { rank: 1, eligible: true }),
+    ]);
+    expect(rows.map((row) => row.cik)).toEqual(["r1", "r2", "x", "y"]);
+    expect(rows.map((row) => row.rank)).toEqual([1, 2, null, null]);
+    expect(trackRecordRows(undefined)).toEqual([]);
+  });
+
+  it("구간·공시 기간·수집 칸 — 모르는 값은 —, 완료는 30분기 미만이어도 완료", () => {
+    expect(periodsText(candidate("a"))).toBe("27/28");
+    expect(periodsText(candidate("b", { periodsUsed: null, periodsTotal: null }))).toBe("—");
+    expect(filingSpanText(candidate("c"))).toBe("2019-11-14 ~ 2026-08-14");
+    expect(filingSpanText(candidate("d", { firstFilingDate: null, lastFilingDate: null }))).toBe("—");
+    expect(quartersText(candidate("e", { storedQuarters: 18, complete: false }), 30)).toBe("18/30 · 수집 중");
+    expect(quartersText(candidate("f", { storedQuarters: 22, complete: true }), 30)).toBe("22/30 · 완료");
+    expect(quartersText(candidate("g", { storedQuarters: 18, complete: false }), null)).toBe("18분기 · 수집 중");
+    expect(quartersText(candidate("h", { storedQuarters: null, complete: false }), 30)).toBe("— · 수집 중");
+  });
+
+  it("수집 진행률 — 목표 분기는 서버 값, 없으면 목표 공시 ÷ 기관 수가 나누어떨어질 때만", () => {
+    const view = collectionView(COLLECTION);
+    expect(view.line).toBe("후보 27곳 중 수집 완료 20곳 · 저장 공시 700/810건 · 마지막 수집 2026-10-24 03:10");
+    expect(view.targetQuarters).toBe(30);
+    expect(collectionView({ ...COLLECTION, targetQuarters: 32 }).targetQuarters).toBe(32);
+    expect(collectionView({ ...COLLECTION, targetFilings: 800 }).targetQuarters).toBeNull();
+    expect(collectionView({ ...COLLECTION, filers: 0 }).targetQuarters).toBeNull();
+    // 계약상 개수지만 목록으로 와도 개수를 센다
+    expect(collectionView({ ...COLLECTION, filers: Array.from({ length: 27 }, () => ({})) as unknown as number }).line)
+      .toContain("후보 27곳");
+    const missing = collectionView(null);
+    expect(missing.targetQuarters).toBeNull();
+    expect(missing.line).toContain("아직 없습니다");
+  });
+
+  it("구간 커버리지 칸 — 비율과 티커 수 · 보유 줄 수", () => {
+    expect(periodCoverageText({ coverage: 0.824, coveredTickers: 31, holdings: 40 })).toBe("82.4% (티커 31개 · 보유 40줄)");
+  });
+
+  it("선정 이력 — CIK를 후보 이름으로, 목록에 없으면 CIK 그대로, 빈 선정은 그렇다고", () => {
+    const rows = selectionHistoryRows(
+      [{ asOfDate: "2026-10-23", selectedCiks: ["a", "zzz"] }, { asOfDate: "2026-08-15", selectedCiks: [] }],
+      [candidate("a")],
+    );
+    expect(rows).toEqual([
+      { asOfDate: "2026-10-23", names: "기관 a, zzz" },
+      { asOfDate: "2026-08-15", names: "선정 없음 — 자격 있는 기관이 없었습니다" },
+    ]);
+    expect(selectionHistoryRows(undefined, undefined)).toEqual([]);
+  });
+
+  it("재계산 결과 — 선정은 바꾸지 않았다고 적고, computed는 수·참거짓 둘 다 받는다, ok:false는 서버 문구", () => {
+    expect(rerankResultView({ ok: true, asOfDate: "2026-10-23", computed: 27, selectedUnchanged: true })).toEqual({
+      tone: "info",
+      text: "2026-10-23 기준으로 다시 계산했습니다 · 후보 27곳 — 선정은 바꾸지 않았습니다(선정은 재선정일·초기 선정 때 한 번만 남깁니다).",
+    });
+    expect(rerankResultView({ ok: true, asOfDate: "2026-10-23", computed: true, selectedUnchanged: true }).text)
+      .toBe("2026-10-23 기준으로 다시 계산했습니다 — 선정은 바꾸지 않았습니다(선정은 재선정일·초기 선정 때 한 번만 남깁니다).");
+    expect(rerankResultView({ ok: true, asOfDate: "2026-10-23", computed: false, selectedUnchanged: true }).tone).toBe("warn");
+    expect(rerankResultView({ ok: false, message: "모의 매매 테이블이 아직 없습니다." }))
+      .toEqual({ tone: "warn", text: "모의 매매 테이블이 아직 없습니다." });
+  });
+
+  it("재계산 결과 — 서버가 계산하지 못한 이유를 보내면 그 문구 그대로(수집 진행률 안내로 바꾸지 않음)", () => {
+    const reason = "후보가 없습니다 — 설정 trackRecord.candidateCiks가 수집 목록의 기관과 겹치지 않습니다.";
+    expect(rerankResultView({
+      ok: true, asOfDate: "2026-10-23", computed: 0, eligible: 0, collecting: 0, selectedUnchanged: true, skippedReason: reason,
+    })).toEqual({ tone: "warn", text: `2026-10-23 기준 — 계산하지 못했습니다: ${reason}` });
+    expect(rerankResultView({ ok: true, asOfDate: "2026-10-23", computed: 0, skippedReason: null }).text)
+      .toBe("2026-10-23 기준 — 계산할 후보가 없었습니다. 수집 진행률을 보세요.");
   });
 });

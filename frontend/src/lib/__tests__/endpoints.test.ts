@@ -109,6 +109,11 @@ const CASES: Case[] = [
   { name: "paper.nav", before: "/api/paper/books/bench_mix/nav", after: endpoints.paper.nav("bench_mix") },
   { name: "paper.bookStatus", before: "/api/paper/books/rules/status", after: endpoints.paper.bookStatus("rules") },
   { name: "paper.bookReset", before: "/api/paper/books/claude/reset", after: endpoints.paper.bookReset("claude") },
+  ...[s("2026-10-23"), s("")].map((asOf) => ({
+    name: `paper.trackRecord asOf=${asOf || "없음"}`,
+    before: `/api/paper/track-record${asOf ? `?asOf=${asOf}` : ""}`,
+    after: endpoints.paper.trackRecord(asOf),
+  })),
 ];
 
 describe("API 경로 — 예전 조립식과 서버가 받는 값이 같다", () => {
@@ -157,6 +162,6 @@ describe("docs/API.md 백엔드 표와 대조", () => {
     const paths = [...strings, ...CASES.map(({ after }) => after)].map(documentedForm);
     expect(paths.filter((path) => !documented.has(path))).toEqual([]);
     // 경로를 만드는 함수는 모두 위 CASES에 한 줄 이상 있습니다. 새 함수를 만들었다면 CASES에 추가하고 이 숫자를 고치세요.
-    expect(functions).toBe(44);
+    expect(functions).toBe(45);
   });
 });

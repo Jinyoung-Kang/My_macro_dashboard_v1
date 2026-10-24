@@ -15,9 +15,15 @@ import type {
   PaperOverviewResponse,
   PaperPosition,
   PaperQuotesSummary,
+  PaperRerankResult,
   PaperRiskOutcome,
   PaperRiskResult,
+  PaperSelectionHistoryEntry,
   PaperStats,
+  PaperTrackRecordCandidate,
+  PaperTrackRecordCollection,
+  PaperTrackRecordCriteria,
+  PaperTrackRecordPeriod,
 } from "./types";
 
 /**
@@ -28,6 +34,10 @@ export const PAPER_SOURCES = {
   ledger: "대시보드 모의 장부 (PostgreSQL paper_*) — 체결가는 Yahoo Finance(yfinance) 지연 시세, 사후 체결은 그날 종가",
   quotes: "Yahoo Finance (yfinance) — 모의 매매 유니버스 일봉(장중 마지막 봉 = 지연 시세, 저장본 paper.quotes)",
   jobs: "대시보드 작업 기록 (PostgreSQL paper_job_runs)",
+  trackRecord: "SEC EDGAR 13F-HR(후보 기관 분기 공시, 저장본 sec.13f.{cik}.q30) · 수정주가 Yahoo Finance(yfinance, equity_close) — "
+    + "공시일 기준 복제 수익률은 대시보드 백엔드 계산(PostgreSQL paper_track_record)",
+  selection: "대시보드 선정 기록 (PostgreSQL paper_selection_log)",
+  collection: "대시보드 수집기 (SEC EDGAR 13F-HR, 저장본 sec.13f.track_record_index)",
 } as const;
 
 /**
@@ -36,10 +46,7 @@ export const PAPER_SOURCES = {
  */
 export const PAPER_TABS = [
   { key: "overview", label: "개요", opensIn: null, upcoming: null },
-  {
-    key: "selection", label: "기관 선정", opensIn: "단계 1b(13F 트랙레코드)",
-    upcoming: "후보 기관의 7년 트랙레코드 표(순위·CAGR·초과·변동성·MDD·샤프·구간 수·커버리지·자격·선정 여부), 선정 이력, 수집 진행률",
-  },
+  { key: "selection", label: "기관 선정", opensIn: null, upcoming: null },
   { key: "holdings", label: "보유·체결", opensIn: null, upcoming: null },
   {
     key: "decisions", label: "결정 로그", opensIn: "단계 2(규칙 책)·3a(Claude 책)",
@@ -516,4 +523,198 @@ export function resetResultView(result: PaperBookResetResult): { tone: "warn" | 
     return { tone: "warn", text: `${base}. 출발일 종가로 다시 사후 체결하지 못했습니다 — ${result.skippedReason}` };
   }
   return { tone: "info", text: result.backfilled ? `${base} · 출발일 종가로 다시 사후 체결했습니다` : base };
+}
+
+// ---------------------------------------------------------------- 기관 선정(13F 트랙레코드)
+
+const TRACK_METRIC: Record<string, string> = {
+  CAGR: "연율 수익률(CAGR)",
+  EXCESS_VS_SPY: "SPY 대비 초과 수익률",
+  SHARPE: "샤프",
+};
+
+/** 순위 기준 이름. 모르는 값은 받은 글자 그대로. */
+export const trackMetricLabel = (metric: string | null | undefined) => labelOf(TRACK_METRIC, metric);
+
+const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+
+/**
+ * 0~1 비율을 %로 — 커버리지 표기. 백엔드는 커버리지를 자격 기준(0.5·0.7)과 같은 비율로 보내므로 표기할 때만 100을 곱합니다
+ * (주문의 sellFraction 표기와 같음). 소수 1자리 — 0자리면 49.7%가 "50%"로 보여 기준(50%)을 넘은 것처럼 읽힙니다.
+ */
+export function formatCoverage(value: number | null | undefined): string {
+  return isNumber(value) ? formatWithUnit(value * 100, 1, "%") : EMPTY;
+}
+
+/** SPY 대비 초과(%p). 수익률(%)끼리의 차이라 단위가 %p입니다. */
+export function formatExcessPoints(value: number | null | undefined): string {
+  return isNumber(value) ? `${formatSigned(value, 2)}%p` : EMPTY;
+}
+
+/** 자격 기준 한 줄 — "창 7년 · 구간 ≥ 24개 · 최소 커버리지 ≥ 50% · 평균 커버리지 ≥ 70%". 기준을 모르면 null. */
+export function criteriaText(criteria: PaperTrackRecordCriteria | null | undefined): string | null {
+  if (!criteria) return null;
+  const threshold = (ratio: number) => (isNumber(ratio) ? formatWithUnit(ratio * 100, 0, "%") : EMPTY);
+  return [
+    `창 ${formatWithUnit(criteria.windowYears, 0, "년")}`,
+    `구간 ≥ ${formatWithUnit(criteria.minPeriods, 0, "개")}`,
+    `최소 커버리지 ≥ ${threshold(criteria.minCoverage)}`,
+    `평균 커버리지 ≥ ${threshold(criteria.avgCoverage)}`,
+  ].join(" · ");
+}
+
+/**
+ * 자격 배지 — 자격 · 수집 중 · 자격 없음. 사유 문구는 서버가 보낸 그대로 배지 옆에 적습니다(화면이 사유를 짓지 않음).
+ * 수집 중(30분기를 아직 다 받지 못함)은 기준 미달과 성격이 달라 — 기다리면 풀림 — 경고색이 아니라 흐린 색입니다.
+ */
+export function eligibilityBadge(candidate: Pick<PaperTrackRecordCandidate, "eligible" | "collecting" | "complete">): Badge {
+  if (candidate.eligible) {
+    return { key: "eligible", label: "자격", className: TONE.ok, title: "자격 기준(구간 수·최소/평균 커버리지)을 모두 넘었습니다." };
+  }
+  if (candidate.collecting === true || candidate.complete === false) {
+    return {
+      key: "collecting", label: "수집 중", className: TONE.muted,
+      title: "13F 분기 공시를 아직 다 받지 못해 자격 판정에서 뺐습니다 — 수집기가 다음 실행에 이어 받습니다.",
+    };
+  }
+  return { key: "ineligible", label: "자격 없음", className: TONE.warn, title: "자격 기준에 못 미쳐 순위에서 뺐습니다." };
+}
+
+/** 선정 배지 — 그 기준일의 선정에 든 기관만. */
+export function selectedBadge(candidate: Pick<PaperTrackRecordCandidate, "selected">): Badge | null {
+  return candidate.selected
+    ? { key: "selected", label: "선정", className: TONE.info, title: "이 기준일의 선정(상위 기관)에 든 기관 — 규칙 책이 이 기관들의 13F 신호를 씁니다." }
+    : null;
+}
+
+/**
+ * 후보 표의 행 순서 — 순위가 있는(자격 있는) 기관을 순위대로, 그 뒤에 순위가 없는 기관을 서버가 보낸 순서대로.
+ * 순위는 서버가 매긴 값 그대로이고 화면은 다시 매기지 않습니다. 서버가 이미 이 순서로 보내면 바뀌는 것이 없습니다(안정 정렬).
+ */
+export function trackRecordRows(candidates: readonly PaperTrackRecordCandidate[] | null | undefined): PaperTrackRecordCandidate[] {
+  const order = (candidate: PaperTrackRecordCandidate) => (isNumber(candidate.rank) ? candidate.rank : Number.POSITIVE_INFINITY);
+  return [...(candidates ?? [])].sort((a, b) => {
+    const left = order(a);
+    const right = order(b);
+    return left === right ? 0 : left < right ? -1 : 1;
+  });
+}
+
+/** 구간 칸 — "수익률이 있는 구간 / 창 안 구간"(예: "26/27"). 둘 다 모르면 "—". */
+export function periodsText(candidate: Pick<PaperTrackRecordCandidate, "periodsUsed" | "periodsTotal">): string {
+  if (!isNumber(candidate.periodsUsed) && !isNumber(candidate.periodsTotal)) return EMPTY;
+  return `${formatNumber(candidate.periodsUsed, 0)}/${formatNumber(candidate.periodsTotal, 0)}`;
+}
+
+/** 공시 기간 — "2019-11-14 ~ 2026-08-14". 모르는 쪽은 "—". */
+export function filingSpanText(candidate: Pick<PaperTrackRecordCandidate, "firstFilingDate" | "lastFilingDate">): string {
+  if (!candidate.firstFilingDate && !candidate.lastFilingDate) return EMPTY;
+  return `${candidate.firstFilingDate ?? EMPTY} ~ ${candidate.lastFilingDate ?? EMPTY}`;
+}
+
+/**
+ * 수집 칸 — "30/30 · 완료", "18/30 · 수집 중". 목표 분기 수를 모르면 "18분기 · 수집 중".
+ * complete는 30분기를 다 받았거나 EDGAR에 더 오래된 원본 공시가 없다는 뜻이라, 30에 못 미쳐도 "완료"일 수 있습니다(신생 운용사).
+ */
+export function quartersText(
+  candidate: Pick<PaperTrackRecordCandidate, "storedQuarters" | "complete">,
+  targetQuarters: number | null,
+): string {
+  const stored = candidate.storedQuarters;
+  const count = !isNumber(stored)
+    ? EMPTY
+    : targetQuarters === null
+      ? `${formatNumber(stored, 0)}분기`
+      : `${formatNumber(stored, 0)}/${formatNumber(targetQuarters, 0)}`;
+  return `${count} · ${candidate.complete ? "완료" : "수집 중"}`;
+}
+
+/** 개수 — 정수면 그대로, 목록이면 길이(계약상 개수지만 목록으로 와도 "[object Object]"를 그리지 않게), 아니면 null. */
+function countOf(value: unknown): number | null {
+  if (isNumber(value)) return value;
+  return Array.isArray(value) ? value.length : null;
+}
+
+/** 수집 진행률 카드의 표시. */
+export interface CollectionView {
+  /** 기관마다의 목표 분기 수(30). 모르면 null — 수집 칸이 "n분기"로만 적습니다. */
+  targetQuarters: number | null;
+  line: string;
+}
+
+/**
+ * 수집 진행률 — "후보 27곳 중 수집 완료 20곳 · 저장 공시 700/810건 · 마지막 수집 …".
+ *
+ * 기관마다의 목표 분기 수는 서버가 보내면(targetQuarters) 그것을, 아니면 목표 공시 수 ÷ 기관 수가 나누어떨어질 때만 그 몫을
+ * 씁니다 — 목표 공시 수가 기관 수 × 30으로 정의돼 있어서입니다. 나누어떨어지지 않으면 정의가 다르다는 뜻이라 짐작하지 않습니다(null).
+ */
+export function collectionView(collection: PaperTrackRecordCollection | null | undefined): CollectionView {
+  if (!collection) {
+    return {
+      targetQuarters: null,
+      line: "수집 진행률 저장본(sec.13f.track_record_index)이 아직 없습니다 — 수집기의 13F 트랙레코드 태스크가 한 번 돌면 생깁니다.",
+    };
+  }
+  const filers = countOf(collection.filers);
+  const sent = collection.targetQuarters;
+  const derived = filers !== null && filers > 0 && isNumber(collection.targetFilings) && collection.targetFilings % filers === 0
+    ? collection.targetFilings / filers
+    : null;
+  return {
+    targetQuarters: isNumber(sent) ? sent : derived,
+    line: [
+      `후보 ${formatWithUnit(filers, 0, "곳")} 중 수집 완료 ${formatWithUnit(collection.completeCount, 0, "곳")}`,
+      `저장 공시 ${formatNumber(collection.storedFilings, 0)}/${formatNumber(collection.targetFilings, 0)}건`,
+      `마지막 수집 ${formatKst(collection.updatedAtKst)}`,
+    ].join(" · "),
+  };
+}
+
+/** 구간의 커버리지 칸 — "82.4% (티커 31개 · 보유 40줄)". 보유 줄에는 티커가 없는 줄도 듭니다. */
+export function periodCoverageText(period: Pick<PaperTrackRecordPeriod, "coverage" | "coveredTickers" | "holdings">): string {
+  return `${formatCoverage(period.coverage)} (티커 ${formatWithUnit(period.coveredTickers, 0, "개")} · 보유 ${formatWithUnit(period.holdings, 0, "줄")})`;
+}
+
+/** 선정 이력 한 줄 — 기준일과 선정 기관 이름(후보 목록에 없는 CIK는 CIK 그대로). */
+export interface SelectionHistoryRow {
+  asOfDate: string;
+  names: string;
+}
+
+export function selectionHistoryRows(
+  history: readonly PaperSelectionHistoryEntry[] | null | undefined,
+  candidates: readonly PaperTrackRecordCandidate[] | null | undefined,
+): SelectionHistoryRow[] {
+  const names = new Map((candidates ?? []).map((candidate) => [candidate.cik, candidate.name]));
+  return (history ?? []).map((entry) => {
+    const ciks = entry.selectedCiks ?? [];
+    return {
+      asOfDate: entry.asOfDate,
+      // 자격 있는 기관이 0곳이면 선정도 비어 있습니다 — 그때 규칙 책은 매수 없이 SHY만 듭니다(설계 §4-0 ⑤).
+      names: ciks.length > 0 ? ciks.map((cik) => names.get(cik) ?? cik).join(", ") : "선정 없음 — 자격 있는 기관이 없었습니다",
+    };
+  });
+}
+
+/**
+ * 수동 재계산 결과 — 배너 색과 한 줄. ok:false(테이블 없음 등)면 서버 문구를 경고로.
+ * 서버가 계산하지 못한 이유(skippedReason)를 보내면 그 문구 그대로 — 원인(후보 목록 저장본 없음, 설정 후보가 수집 목록과
+ * 겹치지 않음)마다 할 일이 달라 화면이 한 가지 안내로 뭉뚱그리지 않습니다(resetResultView와 같은 방식).
+ * computed는 계산한 후보 수(정수)나 참·거짓으로 옵니다(타입 주석). 선정은 바꾸지 않는다는 것을 결과에도 적습니다 —
+ * 순위가 바뀌어 보여도 규칙 책이 쓰는 선정은 그대로라는 것을 놓치기 쉽습니다.
+ */
+export function rerankResultView(result: PaperRerankResult): { tone: "warn" | "info"; text: string } {
+  if (result.ok === false) return { tone: "warn", text: result.message ?? "다시 계산하지 못했습니다." };
+  const asOf = result.asOfDate ?? EMPTY;
+  if (result.skippedReason) {
+    return { tone: "warn", text: `${asOf} 기준 — 계산하지 못했습니다: ${result.skippedReason}` };
+  }
+  if (result.computed === false || result.computed === 0) {
+    return { tone: "warn", text: `${asOf} 기준 — 계산할 후보가 없었습니다. 수집 진행률을 보세요.` };
+  }
+  const count = isNumber(result.computed) ? ` · 후보 ${formatNumber(result.computed, 0)}곳` : "";
+  const unchanged = result.selectedUnchanged === false
+    ? ""
+    : " — 선정은 바꾸지 않았습니다(선정은 재선정일·초기 선정 때 한 번만 남깁니다)";
+  return { tone: "info", text: `${asOf} 기준으로 다시 계산했습니다${count}${unchanged}.` };
 }

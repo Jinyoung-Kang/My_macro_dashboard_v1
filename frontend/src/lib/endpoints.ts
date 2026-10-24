@@ -174,6 +174,10 @@ export const endpoints = {
     status: "/api/paper/status",
     init: "/api/paper/init",
     runRisk: "/api/paper/run/risk",
+    /** 13F 트랙레코드·선정. asOf(YYYY-MM-DD)가 없으면 가장 최근 계산. */
+    trackRecord: (asOf?: string) => withQuery("/api/paper/track-record", { asOf: optional(asOf) }),
+    /** 수동 재계산 — 본문 `{asOf?}`(없으면 마지막 완료 세션). 선정은 바꾸지 않습니다. */
+    runRerank: "/api/paper/run/rerank",
     positions: (code: string) => `/api/paper/books/${segment(code)}/positions`,
     orders: (code: string, limit: number) => withQuery(`/api/paper/books/${segment(code)}/orders`, { limit }),
     fills: (code: string, limit: number) => withQuery(`/api/paper/books/${segment(code)}/fills`, { limit }),

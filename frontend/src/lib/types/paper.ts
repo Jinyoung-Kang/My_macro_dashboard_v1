@@ -298,3 +298,138 @@ export interface PaperRiskResult {
   outcome?: PaperRiskOutcome | null;
   message?: string;
 }
+
+/** 트랙레코드 순위 기준(설정 `trackRecord.metric`, 명세 R10·D20). 기본 CAGR. */
+export type PaperTrackRecordMetric = "CAGR" | "EXCESS_VS_SPY" | "SHARPE";
+
+/**
+ * 트랙레코드 구간 하나(TrackRecord13F.Period, 명세 R7) — 공시 F_i의 보유를 공시 다음 거래일(start) 종가에 사서
+ * 다음 공시의 다음 거래일(end, 마지막 구간은 기준일) 종가까지 든 평가액 가중 수익률. 첫 구간의 start는 7년 창 시작으로 자릅니다.
+ * 커버된 평가액이 0이면 returnPct가 null이고, 그 구간은 누적·통계와 periodsUsed에서 빠집니다.
+ */
+export interface PaperTrackRecordPeriod {
+  filingDate: string;
+  /** 그 공시가 보고한 분기 말일. */
+  reportDate: string;
+  start: string;
+  end: string;
+  returnPct: number | null;
+  spyReturnPct: number | null;
+  /**
+   * 시작·끝 가격이 모두 있는 보유의 평가액 / 그 공시 총평가액(티커 없는 보유 포함) — **0~1 비율**(%가 아님).
+   * 자격 기준 `criteria.minCoverage`(0.5)와 같은 단위입니다.
+   */
+  coverage: number;
+  /** 시작·끝 가격이 다 있어 수익률에 들어간 티커 수. */
+  coveredTickers: number;
+  /** 그 공시의 보유 줄 수(티커 없는 줄 포함). */
+  holdings: number;
+}
+
+/**
+ * 후보 기관 하나의 트랙레코드(TrackRecord13F.Result + 후보 목록 정보). 수익률·통계는 `%`(×100) 값이고, 커버리지는 0~1 비율입니다.
+ * 표본이 없으면 수치는 null — 0으로 채우지 않습니다. 자격이 없으면 rank가 null이고 ineligibleReason에 사유(여럿이면 "; ")가 옵니다.
+ */
+export interface PaperTrackRecordCandidate {
+  cik: string;
+  name: string;
+  /** 가치·집중 · 성장·테크 · 매크로(후보 목록의 분류). */
+  style: string | null;
+  rank: number | null;
+  eligible: boolean;
+  ineligibleReason: string | null;
+  /** 30분기 수집이 아직 끝나지 않음(complete=false) — 자격 없음, 사유 "수집 중(저장 분기 n/30)". */
+  collecting?: boolean;
+  cagrPct: number | null;
+  cumReturnPct: number | null;
+  spyCumReturnPct: number | null;
+  /** 누적 − SPY 누적(%p). */
+  excessVsSpyPct: number | null;
+  volPct: number | null;
+  /** 최대 낙폭 — 음수(%). */
+  mddPct: number | null;
+  sharpe: number | null;
+  /** 창 안에서 수익률이 있는 구간 수(자격 기준 minPeriods와 비교). */
+  periodsUsed: number | null;
+  /** 창 안의 구간 수(수익률이 null인 구간 포함). */
+  periodsTotal: number | null;
+  coverageMin: number | null;
+  coverageAvg: number | null;
+  firstFilingDate: string | null;
+  lastFilingDate: string | null;
+  /** 저장본(sec.13f.{cik}.q30)에 든 분기 수. */
+  storedQuarters: number | null;
+  complete: boolean;
+  /** 그 기준일의 선정(paper_selection_log)에 든 기관인가. */
+  selected: boolean;
+  periods: PaperTrackRecordPeriod[];
+}
+
+/** 자격 기준(TrackRecord13F.Criteria, 명세 R9·D22). 커버리지는 0~1 비율. */
+export interface PaperTrackRecordCriteria {
+  windowYears: number;
+  minPeriods: number;
+  minCoverage: number;
+  avgCoverage: number;
+}
+
+/** 선정 한 번(paper_selection_log). 선정은 재선정일·초기 선정 때 한 번 남고, 수동 재계산은 바꾸지 않습니다. */
+export interface PaperSelectionHistoryEntry {
+  asOfDate: string;
+  selectedCiks: string[];
+}
+
+/**
+ * 13F 트랙레코드 수집 진행률(수집기 저장본 sec.13f.track_record_index). 개수는 모두 정수.
+ * - filers: 후보 기관 수 · completeCount: 30분기를 다 받은(또는 EDGAR에 더 오래된 공시가 없는) 기관 수
+ * - storedFilings / targetFilings: 저장된 공시 수 / 목표(기관 수 × 30)
+ */
+export interface PaperTrackRecordCollection {
+  filers: number;
+  completeCount: number;
+  storedFilings: number;
+  targetFilings: number;
+  /** 기관마다의 목표 분기 수(30). 아직 보내지 않는 백엔드에서는 없습니다 — 화면은 targetFilings ÷ filers로 대신합니다. */
+  targetQuarters?: number | null;
+  updatedAtKst: string | null;
+}
+
+/**
+ * GET /api/paper/track-record?asOf= (asOf가 없으면 가장 최근 계산).
+ * 계산이 아직 없으면 `computed:false`와 수집 진행률(collection)만 옵니다 — 그때 candidates는 없거나 비어 있습니다.
+ */
+export interface PaperTrackRecordResponse {
+  available: boolean;
+  message?: string;
+  computed?: boolean;
+  asOfDate?: string | null;
+  windowYears?: number | null;
+  metric?: PaperTrackRecordMetric | null;
+  criteria?: PaperTrackRecordCriteria | null;
+  candidates?: PaperTrackRecordCandidate[];
+  /** 그 기준일에 유효한 선정의 CIK(순서는 선정 순위). */
+  selected?: string[];
+  selectionHistory?: PaperSelectionHistoryEntry[];
+  collection?: PaperTrackRecordCollection | null;
+  /** 트랙레코드의 한계 — 복제 수익률·생존 편향·커버리지 문구(순서대로). */
+  limits?: string[];
+}
+
+/**
+ * POST /api/paper/run/rerank — 수동 재계산. 같은 기준일의 트랙레코드를 덮어쓰고 **선정은 바꾸지 않습니다**(selectedUnchanged).
+ * computed는 계산한 후보 수(정수) 또는 계산했는지(참·거짓)입니다 — 계약에 둘 중 무엇인지 적혀 있지 않아 화면은 둘 다 받습니다.
+ * 테이블이 없으면 `{available:false, message, ok:false}`입니다.
+ */
+export interface PaperRerankResult {
+  ok: boolean;
+  asOfDate?: string | null;
+  computed?: number | boolean | null;
+  /** 자격 있는 기관 수. */
+  eligible?: number | null;
+  /** 30분기 수집이 끝나지 않아 자격에서 뺀 기관 수. */
+  collecting?: number | null;
+  selectedUnchanged?: boolean;
+  /** 계산하지 못한 이유(후보 목록 저장본 없음·설정 후보가 수집 목록과 겹치지 않음 등). 계산했으면 null. */
+  skippedReason?: string | null;
+  message?: string;
+}
