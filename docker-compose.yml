@@ -107,6 +107,8 @@ services:
       TOSS_CLIENT_SECRET: "${TOSS_CLIENT_SECRET:-}"
       # SEC EDGAR는 연락처 없는 요청을 403으로 막습니다(13F 메뉴).
       SEC_USER_AGENT: "${SEC_USER_AGENT:-}"
+      # 모의 매매 13F 트랙레코드 수집의 실행당 공시 예산. 비우면 400(collector/app/settings.py).
+      TRACK_RECORD_FETCH_BUDGET: "${TRACK_RECORD_FETCH_BUDGET:-}"
       # 국내 공공 API — 공공데이터포털 키 하나로 특일정보·주식시세를 씁니다.
       DATA_GO_KR_SERVICE_KEY: "${DATA_GO_KR_SERVICE_KEY:-}"
       DART_API_KEY: "${DART_API_KEY:-}"

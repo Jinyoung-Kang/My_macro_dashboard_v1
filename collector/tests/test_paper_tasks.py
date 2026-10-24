@@ -7,7 +7,7 @@ tests/test_paper_tasks.py
   2. 일부 실패 → 빠진 티커는 직전 저장본으로 잇고 isStale(QA-032와 같은 규칙). 장부는 isStale 봉으로 체결하지 않습니다.
   3. 전부 실패 → EmptyResult, 저장본을 덮지 않습니다.
   4. 10년 이력은 묶음마다 받아 티커별 timeseries equity_close에 upsert — 값이 없는 점은 쓰지 않고, 기존 행은 지우지 않습니다.
-  5. 유니버스 = 13F 매핑 티커 ∪ PAPER_ETFS, 중복 없음.
+  5. 유니버스 = 13F 이름 매핑 티커 ∪ 후보 기관 CUSIP 매핑 티커(장외 라인 포함) ∪ PAPER_ETFS, 중복 없음.
   6. 10년 이력은 동부 마감 + 15분(16:15) 전이면 오늘 세션의 봉을 쓰지 않습니다 — 백엔드가 이 값을 확정 종가로 믿고 사후 체결합니다.
      관측치(paper.quotes)는 장중 마지막 봉이 곧 관측치라 그대로 둡니다.
 """
@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app import catalog, equities, indicators, paper_universe, tasks
+from app import catalog, equities, equities_cusip, indicators, paper_universe, tasks
 from app.tasks import paper as paper_tasks
 
 _FRAME = {"dates": ["2026-10-22", "2026-10-23"], "close": [100.0, 101.0]}
@@ -246,6 +246,9 @@ def test_유니버스는_매핑표_티커와_PAPER_ETFS를_중복_없이_담는�
     assert list(universe) == sorted(universe)
     assert set(indicators.PAPER_ETFS) <= set(universe)
     assert {ticker for ticker, _ in equities.EQUITY_MAP.values()} <= set(universe)
+    # 후보 기관 CUSIP 매핑표의 티커(장외 라인 CFRHF 등 포함) — 트랙레코드가 덮으려면 10년 이력이, 신호로 사려면 관측치가 필요합니다.
+    assert set(equities_cusip.TRACK_RECORD_CUSIPS.values()) <= set(universe)
+    assert "CFRHF" in universe
     # 원화 종가(069500.KS)는 달러 장부의 매매 대상이 아닙니다 — equities.all_tickers()를 그대로 쓰면 섞입니다.
     assert not [ticker for ticker in universe if ticker.endswith(".KS")]
     assert paper_universe.history() == universe

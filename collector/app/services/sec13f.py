@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import re
 import xml.etree.ElementTree as ET
+from collections import Counter
 from datetime import datetime
 
 from bs4 import BeautifulSoup
@@ -33,7 +34,22 @@ logger = logging.getLogger(__name__)
 EDGAR_BROWSE = "https://www.sec.gov/cgi-bin/browse-edgar"
 
 
-def collect_13f(cik: str, max_quarters: int = 8, previous_quarters: list[dict] | None = None) -> dict:
+# 원본 13F-HR이 한 쪽(count)에 다 들어오지 않으면 다음 쪽(start=)을 봅니다. 단계 0 측정에서 count=100 한 쪽에 후보 27곳
+# 모두 원본 30건이 들어왔으니, 다음 쪽은 정정 공시가 많은 기관을 위한 안전장치입니다 — 끝없이 넘기지 않게 3쪽까지.
+# list_count를 준 호출(트랙레코드)만 넘깁니다 — 기존 13F 화면(q8)은 예전처럼 40행 한 쪽.
+MAX_LIST_PAGES = 3
+DEFAULT_LIST_COUNT = 40
+
+
+def collect_13f(
+    cik: str,
+    max_quarters: int = 8,
+    previous_quarters: list[dict] | None = None,
+    *,
+    reuse_stored: bool = False,
+    list_count: int | None = None,
+    fetch_budget: int | None = None,
+) -> dict:
     """
     최근 max_quarters개 분기의 13F를 수집합니다.
 
@@ -43,14 +59,31 @@ def collect_13f(cik: str, max_quarters: int = 8, previous_quarters: list[dict] |
       "error": null | "사람이 읽는 실패 사유",
       "quarters": [
         {"filingDate","reportDate","totalValue",
-         "holdings":[{"name","cusip","class","value","shares","weight"}]}
-      ]
+         "holdings":[{"name","cusip","class","value","shares","weight"}]}   # reuse_stored면 + "filingUrl"
+      ],
+      "fetchedFilings": 새로 내려받으려 한 공시 수(실패·쓸 수 없는 공시 포함 — 예산은 요청 수를 묶는 것),
+      "budgetExhausted": 예산이 모자라 내려받지 못한 공시가 있는지,
+      "linksFound": 찾은 원본 13F-HR 링크 수(최대 max_quarters),
+      "noMoreFilings": EDGAR에 이보다 오래된 원본이 없는지(목록 마지막 쪽까지 봤고 링크가 max_quarters에 못 미침)
     }
-    quarters는 최신 분기가 앞입니다(q1은 q8의 앞부분과 같습니다).
+    quarters는 최신 분기가 앞입니다(q1은 q8의 앞부분과 같습니다). 기존 13F 화면은 앞의 세 키만 저장합니다.
 
     공시 하나를 받지 못하면(시간 초과·403·XML 없음) 직전 저장본(``previous_quarters``)의 **같은 공시**를
     이어받고 ``isStale``을 붙입니다. 직전 저장본에도 없으면 그 기관은 실패입니다 — 건너뛰면 분기가 한 칸
     밀려, 백엔드가 0번·1번을 '최신 대 직전'으로 비교할 때 두 분기 떨어진 공시를 비교했습니다(QA-031).
+
+    모의 매매 트랙레코드(30분기, tasks/filings.task_sec_13f_track_record)가 쓰는 인자 — 기본값이면 위 동작 그대로입니다
+    (목록 요청 한 번 40행, 저장본은 받지 못한 공시를 이어받을 때만 제출일로 찾음, 분기 모양도 같음).
+      - ``list_count``: 공시 목록 한 쪽의 행 수(browse-edgar ``count``). 이 값을 준 호출만, 원본 링크가 max_quarters에 못
+        미치고 그 쪽이 꽉 찼으면(행 수 == list_count) ``start=``로 다음 쪽을 봅니다(MAX_LIST_PAGES까지). 주지 않으면 40행 한 쪽.
+      - ``reuse_stored``: 직전 저장본에 **같은 공시 문서**가 있고 ``isStale``이 아니면 내려받지 않고 그대로 씁니다. 13F
+        원본은 한 번 내면 바뀌지 않고(고칠 때는 정정 공시 13F-HR/A를 따로 냄 — 원본만 분기로 셈), 30분기를 실행마다 다시 받으면
+        12시간마다 약 810건이라 SEC 한도를 기존 수집과 나눠 쓰기 어렵습니다. 같은 공시인지는 분기에 적어 두는 문서 URL
+        (``filingUrl``, 접수번호가 든 색인 주소)로 봅니다 — 밀린 분기를 같은 날 두 건 낸 기관도 실행마다 다시 받지 않게.
+        ``filingUrl``이 없는 저장본은 제출일로 찾되, 그날 공시가 목록·저장본 모두 하나일 때만입니다.
+      - ``fetch_budget``: 새로 내려받는 공시 수 상한. 다 쓰면 내려받아야 하는 공시는 건너뛰고(최신부터 채우므로 다음 실행이
+        더 오래된 쪽을 이어 받음), 저장본에 있는 공시는 계속 이어 씁니다 — 멈추면 아직 안 본 오래된 분기의 저장본까지
+        결과에서 빠져, 이번 저장이 그 분기들을 지웁니다.
     """
     try:
         session = get_sec_session()
@@ -61,65 +94,158 @@ def collect_13f(cik: str, max_quarters: int = 8, previous_quarters: list[dict] |
 
     cik_padded = str(cik).lstrip("0").zfill(10)
 
-    params = {
-        "action": "getcompany",
-        "CIK": cik_padded,
-        "type": "13F-HR",
-        "dateb": "",
-        "owner": "include",
-        "count": 40,
-    }
+    pages = MAX_LIST_PAGES if list_count is not None else 1
+    count = list_count if list_count is not None else DEFAULT_LIST_COUNT
+    links: list[tuple[str, str]] = []
+    no_more = False
+    for page in range(pages):
+        params = {
+            "action": "getcompany",
+            "CIK": cik_padded,
+            "type": "13F-HR",
+            "dateb": "",
+            "owner": "include",
+            "count": count,
+        }
+        if page:
+            params["start"] = page * count
 
-    try:
-        sec_rate_limit()
-        res = session.get(EDGAR_BROWSE, params=params, timeout=30)
-        res.raise_for_status()
-    except Exception as exc:  # noqa: BLE001
-        # 403은 대개 "연락처 없는 User-Agent"입니다. SEC가 정책으로 막습니다.
-        hint = (
-            " — SEC_USER_AGENT에 본인 이메일을 넣으세요"
-            if "403" in str(exc) else ""
-        )
-        return _fail(cik, f"SEC EDGAR 연결 실패: {brief_error(exc)}{hint}")
+        try:
+            sec_rate_limit()
+            res = session.get(EDGAR_BROWSE, params=params, timeout=30)
+            res.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            if page:
+                # 다음 쪽만 실패하면 찾은 공시로 갑니다. 더 오래된 원본이 있는지는 모르므로 noMoreFilings는 False로 둡니다.
+                logger.warning("13F 공시 목록 %d쪽 조회 실패 (%s): %s", page + 1, cik, brief_error(exc))
+                break
+            # 403은 대개 "연락처 없는 User-Agent"입니다. SEC가 정책으로 막습니다.
+            hint = (
+                " — SEC_USER_AGENT에 본인 이메일을 넣으세요"
+                if "403" in str(exc) else ""
+            )
+            return _fail(cik, f"SEC EDGAR 연결 실패: {brief_error(exc)}{hint}")
 
-    links = _parse_filing_links(res.text, max_quarters)
+        # 쪽을 넘기는 사이 새 공시가 올라오면 목록이 한 칸 밀려 앞 쪽의 마지막 공시가 다시 옵니다 — 같은 문서는 한 번만.
+        seen = {url for _filed, url in links}
+        fresh = [link for link in _parse_filing_links(res.text, max_quarters) if link[1] not in seen]
+        links.extend(fresh[:max_quarters - len(links)])
+        if len(links) >= max_quarters:
+            break
+        if _listing_row_count(res.text) < count:
+            no_more = True
+            break
+
     if not links:
         return _fail(cik, "조회된 13F-HR 공시 문서가 없습니다.")
 
-    previous_by_filing = {
-        q.get("filingDate"): q for q in (previous_quarters or []) if isinstance(q, dict) and q.get("filingDate")
-    }
+    previous = [q for q in (previous_quarters or []) if isinstance(q, dict) and q.get("filingDate")]
+    previous_by_filing = {q.get("filingDate"): q for q in previous}
+    previous_by_url = {q["filingUrl"]: q for q in previous if q.get("filingUrl")} if reuse_stored else {}
+    # 같은 날 낸 원본이 둘 이상이면(밀린 분기를 한꺼번에 냄) 제출일만으로는 저장본의 어느 공시인지 알 수 없습니다.
+    same_day = Counter(filing_date for filing_date, _url in links)
+    stored_same_day = Counter(q.get("filingDate") for q in previous)
+
+    def stored_for(filing_date: str, doc_url: str) -> dict | None:
+        if not reuse_stored:
+            return previous_by_filing.get(filing_date)   # 기존 동작 — 받지 못한 공시를 이어받을 때만 씀
+        kept = previous_by_url.get(doc_url)
+        if kept is not None:
+            return kept
+        kept = previous_by_filing.get(filing_date)
+        if kept is not None and not kept.get("filingUrl") and same_day[filing_date] == 1 \
+                and stored_same_day[filing_date] == 1:
+            return kept
+        return None
+
     quarters = []
     missing: list[str] = []
+    fetched = 0
+    budget_exhausted = False
     for filing_date, doc_url in links:
+        kept = stored_for(filing_date, doc_url)
+        if reuse_stored and kept is not None and not kept.get("isStale"):
+            quarters.append(kept)
+            continue
+        if fetch_budget is not None and fetched >= fetch_budget:
+            budget_exhausted = True
+            if reuse_stored:
+                # 이어받아 둔(isStale) 값 — 버리면 이번 저장이 그 분기를 지워, 다음 실행까지 분기 중간에 구멍이 납니다.
+                quarters.extend(_carried_over(kept, filing_date, previous, quarters))
+            continue
+        fetched += 1
         holdings = _collect_one_filing(session, filing_date, doc_url)
         if holdings is UNUSABLE_FILING:
             logger.info("13F 공시에 쓸 보유가 없어 건너뜀 (%s %s)", cik, filing_date)
             continue
         if holdings is None:
-            kept = previous_by_filing.get(filing_date)
             if kept is None:
                 missing.append(filing_date)
             else:
-                quarters.append({**kept, "isStale": True})
+                quarters.append({**kept, "isStale": True, **({"filingUrl": doc_url} if reuse_stored else {})})
             continue
+        if reuse_stored:
+            holdings["filingUrl"] = doc_url
         quarters.append(holdings)
 
+    progress = {
+        "fetchedFilings": fetched,
+        "budgetExhausted": budget_exhausted,
+        "linksFound": len(links),
+        "noMoreFilings": no_more,
+    }
     if missing:
         return _fail(
             cik,
             f"공시 {len(missing)}건({', '.join(missing)})을 받지 못했습니다 — "
             "분기가 밀리지 않게 직전 저장본을 유지합니다.",
+            **progress,
         )
 
     if not quarters:
+        if budget_exhausted:
+            # 실패가 아니라 이번 예산으로는 아무것도 못 받은 것입니다(저장본도 없음). 다음 실행이 이어 받습니다.
+            return {"cik": str(cik), "error": None, "quarters": [], **progress}
         return _fail(
             cik,
             "성공적으로 추출된 분기 데이터가 없습니다 "
             "(공시 문서가 비었거나 파싱 가능한 13F XML이 없습니다).",
+            **progress,
         )
 
-    return {"cik": str(cik), "error": None, "quarters": quarters}
+    return {"cik": str(cik), "error": None, "quarters": quarters, **progress}
+
+
+def chain_predecessors(current: list[dict], predecessors: list[list[dict]], max_quarters: int) -> list[dict]:
+    """
+    같은 운용 주체가 CIK를 바꿔 신고하는 기관의 분기를 하나로 잇습니다(최신순, 최대 max_quarters).
+
+    :param current: 지금 CIK의 분기(collect_13f 결과)
+    :param predecessors: 옛 CIK마다의 분기 목록(indicators.TRACK_RECORD_FILERS의 ``predecessors`` 순서와 무관)
+    옛 CIK는 그 분기들의 마지막 reportDate까지 쓰고, 그보다 뒤 분기만 다음 CIK(옛 CIK가 여럿이면 마지막 보고가 늦은 쪽,
+    맨 끝은 지금 CIK)에서 가져옵니다 — 다음 CIK의 같은·앞선 보고 분기는 버립니다. 겹치는 기간에 새 CIK가 일부만 신고하는
+    경우가 있어서입니다(퍼싱 스퀘어 Inc.는 2025-06-30~2026-03-31에 하워드 휴스 지분 한 종목만, 펀드 전체는 옛 CIK PSCM).
+    같은 reportDate가 둘 이상이면 먼저 낸(filingDate가 이른) 공시 — 그날 시장이 처음 알게 된 보유이고, 트랙레코드는
+    공시일 다음 거래일부터 복제합니다(룩어헤드 없음, ADR 0009). 선행 CIK가 없어도 이 정리(중복 보고 분기·정렬)는 같습니다.
+    """
+    def last_report(quarters: list[dict]) -> str:
+        return max((q.get("reportDate") or "" for q in quarters), default="")
+
+    segments = sorted((list(p) for p in predecessors if p), key=last_report) + [list(current or [])]
+    chained: list[dict] = []
+    cutoff = ""
+    for segment in segments:
+        chained.extend(q for q in segment if (q.get("reportDate") or "") > cutoff)
+        cutoff = max(cutoff, last_report(segment))
+
+    by_report: dict[str, dict] = {}
+    for quarter in chained:
+        key = quarter.get("reportDate") or ""
+        kept = by_report.get(key)
+        if kept is None or (quarter.get("filingDate") or "") < (kept.get("filingDate") or ""):
+            by_report[key] = quarter
+    ordered = sorted(by_report.values(), key=lambda q: q.get("reportDate") or "", reverse=True)
+    return ordered[:max_quarters]
 
 
 def merge_filers(group_quarters: list[dict], filers: list[dict], max_quarters: int) -> list[dict]:
@@ -207,6 +333,38 @@ def _parse_filing_links(html: str, max_quarters: int) -> list[tuple[str, str]]:
         if len(links) >= max_quarters:
             break
     return links
+
+
+def _listing_row_count(html: str) -> int:
+    """
+    공시 목록 표(tableFile2)의 행 수(머리 행 제외) — 원본·정정을 모두 셉니다. 한 쪽이 꽉 찼는지(행 수 == count) 볼 때
+    씁니다. 꽉 차지 않았으면 EDGAR에 더 오래된 공시가 없습니다.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    tables = soup.find_all("table", class_="tableFile2")
+    return len(tables[0].find_all("tr")[1:]) if tables else 0
+
+
+def _carried_over(kept: dict | None, filing_date: str, previous: list[dict], quarters: list[dict]) -> list[dict]:
+    """
+    예산 때문에 내려받지 못한 공시 대신 결과에 남길 저장본. 같은 공시의 저장본이 있으면 그것 하나.
+
+    ``filingUrl``을 적기 전의 저장본에서 같은 날 낸 공시 둘은 어느 쪽이 이 문서인지 모르므로, 그 제출일의 저장본 중 아직 결과에
+    없는 보고 분기를 모두 남깁니다(같은 날의 다른 공시를 이미 받았으면 그 보고 분기는 빼서 겹치지 않게).
+    """
+    if kept is not None:
+        return [kept]
+    have = {id(q) for q in quarters}
+    reports = {q.get("reportDate") for q in quarters}
+    out: list[dict] = []
+    for quarter in previous:
+        if quarter.get("filingDate") != filing_date or quarter.get("filingUrl") or id(quarter) in have:
+            continue
+        if quarter.get("reportDate") in reports:
+            continue
+        out.append(quarter)
+        reports.add(quarter.get("reportDate"))
+    return out
 
 
 # 다시 받아도 쓸 수 없는 공시(정보표 XML이 없거나 롱 보유가 0건 — 옵션 행뿐). 일시 실패(None)와 구분합니다(QA-059).
@@ -413,5 +571,10 @@ def _to_float(text: str) -> float:
     return to_float(text) or 0.0
 
 
-def _fail(cik: str, message: str) -> dict:
-    return {"cik": str(cik), "error": message, "quarters": []}
+def _fail(cik: str, message: str, **progress) -> dict:
+    """실패 결과. 진행 정보(fetchedFilings 등)는 실패해도 싣습니다 — 트랙레코드 수집이 쓴 예산을 셉니다."""
+    return {
+        "cik": str(cik), "error": message, "quarters": [],
+        "fetchedFilings": 0, "budgetExhausted": False, "linksFound": 0, "noMoreFilings": False,
+        **progress,
+    }

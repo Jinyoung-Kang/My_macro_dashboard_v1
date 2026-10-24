@@ -889,6 +889,7 @@ def missing_datasets() -> list[dict]:
         (catalog.SNAP_COT_HISTORY, "CFTC COT 통합"),
         (catalog.snap_daum_futures_trend(25), "Daum 선물 수급 (계약수)"),
         (catalog.SNAP_PAPER_QUOTES, "모의 매매 시세"),
+        (catalog.SNAP_TRACK_RECORD_INDEX, "모의 매매 13F 트랙레코드 수집 진행"),
     ]
 
     # 키가 있어야 받을 수 있는 데이터셋은 키가 설정된 경우에만 "누락"으로 봅니다.

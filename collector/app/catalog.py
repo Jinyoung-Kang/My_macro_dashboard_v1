@@ -29,6 +29,7 @@ SNAP_FSC_PRICES_META = "kr.fsc_prices_meta"     # 금융위 시세 최신 기준
 SNAP_TOSS_MARKET_FLOWS = "kr.toss_market_flows" # 코스피·코스닥 투자자별 매매대금 (토스증권 공식, 일별)
 SNAP_TOSS_RADAR_UNIVERSE = "kr.toss_radar_universe"  # 거래대금 상위 100종목의 투자자 매매 (레이더 폴백용)
 SNAP_PAPER_QUOTES = "paper.quotes"      # 모의 매매 유니버스 최근 3개월 일봉(장중 마지막 봉 = 지연 시세) — 장부 관측치
+SNAP_TRACK_RECORD_INDEX = "sec.13f.track_record_index"  # 모의 매매 트랙레코드 후보 기관 목록·기관별 수집 진행률(q30)
 
 # 변동성 지수(^VIX / ^MOVE)는 가장 긴 기간으로 한 번 저장하고, 짧은 기간
 # 요청은 잘라 씁니다 (13F에서 q1을 q8에서 유도하는 것과 같은 방식).
@@ -110,3 +111,8 @@ MAX_AGE_SLOW = 24 * 60 * 60     # 분기 공시(13F) 등 거의 변하지 않는
 
 # 13F 수집기가 저장하는 최대 분기 수. q1은 q8의 앞부분을 잘라 만듭니다.
 MAX_TRACKED_QUARTERS = 8
+
+# 모의 매매 트랙레코드 후보 기관(indicators.TRACK_RECORD_FILERS)의 13F 분기 수 — 저장 이름은 snap_sec_13f(cik, 30).
+# 7년 창(28분기) + 공시 지연 여유: 재선정일에는 최신 분기 공시가 아직 없을 수 있고(마감 45일), 창의 첫 구간은 창 시작 전에
+# 낸 공시로 시작합니다. 기존 13F 화면(q8)과 따로 받습니다.
+TRACK_RECORD_QUARTERS = 30

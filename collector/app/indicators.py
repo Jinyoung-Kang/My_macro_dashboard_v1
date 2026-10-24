@@ -202,6 +202,55 @@ INSTITUTIONS = [
 
 
 # ==============================================================================
+# 2-1. 모의 매매 — 트랙레코드 후보 기관 (명세 R8·D21, 설계 §4-0 ①)
+# ==============================================================================
+# 액티브·롱 편향 운용사 27곳. CIK는 2026-10-24 단계 0에서 EDGAR 회사 검색 + submissions JSON으로 하나씩 확인했습니다
+# (docs/specs/2026-10-24-paper-trading-step0.md 표 A). 인덱스·준인덱스(뱅가드·블랙록·노르웨이·국민연금 등)와 퀀트·멀티전략·
+# 마켓메이커(시타델·르네상스 등)는 13F 롱 보유가 실체를 왜곡해 넣지 않습니다.
+#
+# predecessors — 같은 운용 주체가 CIK를 바꿔 신고하는 경우의 옛 CIK. 옛 CIK의 마지막 보고 분기까지 + 지금 CIK의 그 뒤 분기를
+# 잇습니다(services/sec13f.chain_predecessors). 겹치는 분기는 옛 CIK — 퍼싱 스퀘어 Inc.(PSI)는 2025-06-30~2026-03-31에
+# 자기 몫(하워드 휴스 지분)만 신고했고, 펀드 전체는 PSCM이 신고했습니다.
+#
+# 이 목록 자체가 "오늘 살아 있고 이름이 알려진 운용사"라 생존 편향이 있습니다(명세 §6-6). 사이언은 2025-09-30 분기가
+# 마지막 공시라 재선정일마다 "최신 분기 공시 없음"으로 빠집니다(R5) — 목록에는 남겨 사유를 보입니다.
+TRACK_RECORD_FILERS: tuple[dict, ...] = (
+    # ── 가치·집중 ──
+    {"cik": "0001067983", "name": "버크셔 해서웨이 (Berkshire Hathaway)", "style": "가치·집중"},
+    {"cik": "0001061768", "name": "바우포스트 (Baupost Group)", "style": "가치·집중"},
+    {"cik": "0002026053", "name": "퍼싱 스퀘어 (Pershing Square)", "style": "가치·집중",
+     "predecessors": ("0001336528",)},   # Pershing Square Capital Management, L.P. — 2026-03-31 분기까지
+    {"cik": "0001040273", "name": "서드 포인트 (Third Point)", "style": "가치·집중"},
+    {"cik": "0001489933", "name": "그린라이트 캐피털 (Greenlight Capital / DME)", "style": "가치·집중",
+     "predecessors": ("0001079114",)},   # Greenlight Capital Inc — 2023-12-31 분기까지, 이후 DME Capital Management
+    {"cik": "0001656456", "name": "아팔루사 (Appaloosa)", "style": "가치·집중"},
+    {"cik": "0001112520", "name": "에이커 캐피털 (Akre Capital)", "style": "가치·집중"},
+    {"cik": "0001720792", "name": "루안 커니프 (Ruane Cunniff · Sequoia)", "style": "가치·집중"},
+    {"cik": "0000200217", "name": "닷지 앤 콕스 (Dodge & Cox)", "style": "가치·집중"},
+    {"cik": "0001036325", "name": "데이비스 (Davis Selected Advisers)", "style": "가치·집중"},
+    {"cik": "0001096343", "name": "마켈 (Markel Group)", "style": "가치·집중"},
+    {"cik": "0001709323", "name": "히말라야 캐피털 (Himalaya Capital)", "style": "가치·집중"},
+    {"cik": "0000860643", "name": "가드너 루소 앤 퀸 (Gardner Russo & Quinn)", "style": "가치·집중"},
+    {"cik": "0001649339", "name": "사이언 (Scion Asset Management)", "style": "가치·집중"},
+    # ── 성장·테크 ──
+    {"cik": "0001167483", "name": "타이거 글로벌 (Tiger Global)", "style": "성장·테크"},
+    {"cik": "0001061165", "name": "론 파인 (Lone Pine Capital)", "style": "성장·테크"},
+    {"cik": "0001103804", "name": "바이킹 글로벌 (Viking Global)", "style": "성장·테크"},
+    {"cik": "0001135730", "name": "코투 (Coatue Management)", "style": "성장·테크"},
+    {"cik": "0001541617", "name": "알티미터 (Altimeter Capital)", "style": "성장·테크"},
+    {"cik": "0001747057", "name": "D1 캐피털 (D1 Capital Partners)", "style": "성장·테크"},
+    {"cik": "0000934639", "name": "매버릭 (Maverick Capital)", "style": "성장·테크"},
+    {"cik": "0001088875", "name": "베일리 기퍼드 (Baillie Gifford)", "style": "성장·테크"},
+    {"cik": "0001536411", "name": "듀케인 패밀리 오피스 (Duquesne Family Office)", "style": "성장·테크"},
+    {"cik": "0000850529", "name": "피셔 자산운용 (Fisher Asset Management)", "style": "성장·테크"},
+    # ── 매크로 (13F는 주식 롱만 보임) ──
+    {"cik": "0001350694", "name": "브리지워터 (Bridgewater Associates)", "style": "매크로"},
+    {"cik": "0001029160", "name": "소로스 (Soros Fund Management)", "style": "매크로"},
+    {"cik": "0000923093", "name": "튜더 (Tudor Investment)", "style": "매크로"},
+)
+
+
+# ==============================================================================
 # 3. S&P 500 11개 섹터 ETF
 # ==============================================================================
 SECTOR_ETFS = {

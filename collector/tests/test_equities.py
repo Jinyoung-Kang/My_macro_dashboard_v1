@@ -314,3 +314,102 @@ def test_QA127_저장할_때_일부러_뺀_보유에는_이유를_적는다():
         ("APPLE INC", "COM", "AAPL", None),
     ]
     assert "tickerNote" not in quarters[0]["holdings"][0], "표시가 없는 보유에는 필드를 두지 않습니다"
+
+
+# ---------------------------------------------------------------- 모의 매매 트랙레코드 — CUSIP 매핑표(명세 D25)
+# 후보 기관 q30 저장본에만 CUSIP → 티커 표(equities_cusip.TRACK_RECORD_CUSIPS)를 붙입니다. 같은 증권을 기관마다 다른 이름으로
+# 적고('FACEBOOK INC'·'META PLATFORMS, INC., CLASS A'), 'ISHARES TR' 한 이름 아래 ETF가 수백 개라 이름 매핑표로는 커버리지가
+# 오르지 않았습니다(단계 0). 기존 13F 화면(q8, cusip_map 없음)은 예전 규칙 그대로여야 합니다.
+from app import equities_cusip  # noqa: E402
+
+
+def _cusip_row(name, cls, cusip, shares=100.0, **extra):
+    return {"name": name, "class": cls, "cusip": cusip, "value": 1.0, "shares": shares, "weight": 1.0, **extra}
+
+
+def test_CUSIP_매핑표는_이름이_달라도_같은_증권에_티커를_붙인다():
+    quarters = [{"holdings": [
+        _cusip_row("FACEBOOK INC", "CL A", "30303M102"),                 # 옛 이름 — 이름 매핑표에는 없음
+        _cusip_row("ISHARES TR", "CORE S&P500 ETF", "464287200"),         # 펀드 이름 규칙은 CUSIP 일치에 적용하지 않음
+        _cusip_row("AGCO CORP", "COM", "001084102"),                     # 이름 매핑표에 없는 회사
+        _cusip_row("APPLE INC", "COM", "037833100", tickerSource="cusip"),  # 표에 없음 → 이름 규칙, 옛 출처 표시는 지움
+        _cusip_row("SOME OBSCURE HOLDINGS LLC", "COM", "000000000"),     # 어디에도 없음 → 모른다
+    ]}]
+
+    found = equities.attach_tickers(quarters, cusip_map=equities_cusip.TRACK_RECORD_CUSIPS)
+
+    saved = [(h["name"], h["ticker"], h.get("tickerSource")) for h in quarters[0]["holdings"]]
+    assert saved == [
+        ("FACEBOOK INC", "META", "cusip"),
+        ("ISHARES TR", "IVV", "cusip"),
+        ("AGCO CORP", "AGCO", "cusip"),
+        ("APPLE INC", "AAPL", None),
+        ("SOME OBSCURE HOLDINGS LLC", None, None),
+    ]
+    assert found == 4
+    assert "tickerSource" not in quarters[0]["holdings"][3]
+
+
+def test_CUSIP_매핑표에_있어도_채권_우선주는_붙이지_않는다():
+    """채권(PRN·노트 클래스)·우선주 클래스는 CUSIP이 표에 있어도 주가로 덮지 않습니다 — classify_holding 규칙이 먼저입니다."""
+    quarters = [{"holdings": [
+        _cusip_row("ADOBE INC", "NOTE 1.000% 2/1", "00724F101", shares=None),  # 원금(PRN)
+        _cusip_row("ADOBE INC", "COM", "00724F101", shares=None),             # 클래스는 COM이어도 원금
+        _cusip_row("ADOBE INC", "PFD SER A", "00724F101"),                    # 우선주 클래스
+        _cusip_row("AGCO CORP", "7.25% CNV PFD", "001084102"),                # 이름 매핑표에 없는 회사의 우선주 — 종류 없이
+    ]}]
+
+    found = equities.attach_tickers(quarters, cusip_map=equities_cusip.TRACK_RECORD_CUSIPS)
+
+    saved = [(h["ticker"], h.get("tickerNote"), h.get("tickerSource")) for h in quarters[0]["holdings"]]
+    assert saved == [(None, "debt", None), (None, "debt", None), (None, "non_common", None), (None, None, None)]
+    assert found == 0
+
+
+def test_CUSIP은_소문자와_공백을_정리해_찾는다():
+    quarters = [{"holdings": [
+        _cusip_row("META PLATFORMS INC", "CL A", "30303m102"),
+        _cusip_row("META PLATFORMS INC", "CL A", " 30303M 102 "),
+    ]}]
+
+    equities.attach_tickers(quarters, cusip_map=equities_cusip.TRACK_RECORD_CUSIPS)
+
+    assert [(h["ticker"], h["tickerSource"]) for h in quarters[0]["holdings"]] == [("META", "cusip"), ("META", "cusip")]
+
+
+def test_CUSIP_매핑표가_없으면_예전과_똑같이_붙인다():
+    """기존 13F 화면(q8)은 cusip_map 없이 부릅니다 — 결과·필드가 예전 규칙과 완전히 같아야 합니다."""
+    import copy
+
+    holdings = [
+        _cusip_row("FACEBOOK INC", "CL A", "30303M102"),
+        _cusip_row("ISHARES TR", "CORE S&P500 ETF", "464287200"),
+        _cusip_row("APPLE INC", "COM", "037833100"),
+        _cusip_row("BOEING CO", "DEP CONV PFD A", "097023204"),
+        _cusip_row("FORD MTR CO", "COM", "345370CZ1"),
+    ]
+    with_none = [{"holdings": copy.deepcopy(holdings)}]
+    by_rule = [{"holdings": copy.deepcopy(holdings)}]
+
+    found = equities.attach_tickers(with_none, cusip_map=None)
+
+    for holding in by_rule[0]["holdings"]:
+        hit, note = equities.classify_holding(holding)
+        holding["ticker"] = hit[0] if hit else None
+        if note:
+            holding["tickerNote"] = note
+    assert with_none == by_rule
+    assert found == sum(h["ticker"] is not None for h in by_rule[0]["holdings"])
+    assert all("tickerSource" not in h for h in with_none[0]["holdings"])
+    assert with_none[0]["holdings"][1]["ticker"] is None, "q8에서는 'ISHARES TR'을 예전처럼 모른다로 둡니다"
+
+
+def test_CUSIP_매핑표는_9자_대문자_키와_야후_티커다():
+    """표의 키를 정규화하지 않고 바로 찾으므로 키 모양을 고정합니다. 원화 종가(.KS)가 달러 장부에 섞이면 안 됩니다."""
+    import re
+
+    table = equities_cusip.TRACK_RECORD_CUSIPS
+    assert len(table) == 498
+    assert all(re.fullmatch(r"[0-9A-Z]{9}", cusip) for cusip in table)
+    assert all(re.fullmatch(r"[A-Z0-9-]+", ticker) for ticker in table.values())
+    assert not [ticker for ticker in table.values() if ticker.endswith(".KS")]

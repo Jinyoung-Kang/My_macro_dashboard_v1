@@ -24,6 +24,7 @@ SEC 13F 공시에는 **종목코드(티커)가 없습니다.** 실제 저장본 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 # ==============================================================================
 # 매핑표
@@ -267,6 +268,8 @@ FUND_SECTOR = "ETF·펀드"
 # 수집기가 일부러 티커를 붙이지 않은 보유의 종류(저장본 ``tickerNote``). 백엔드 미커버 목록이 이유로 옮겨 적습니다.
 NOTE_DEBT = "debt"
 NOTE_NON_COMMON = "non_common"
+# CUSIP 매핑표(equities_cusip)로 붙인 티커의 표시(저장본 ``tickerSource``). 이름 매핑표로 붙인 티커에는 두지 않습니다.
+TICKER_SOURCE_CUSIP = "cusip"
 
 
 def normalize(name: str) -> str:
@@ -383,7 +386,7 @@ def _is_equity_cusip(cusip: object) -> bool:
     return issue.isascii() and issue.isdigit()
 
 
-def attach_tickers(quarters: list[dict]) -> int:
+def attach_tickers(quarters: list[dict], cusip_map: Mapping[str, str] | None = None) -> int:
     """
     13F 분기 목록의 보유마다 ``ticker``(모르면 None)를 붙입니다. 붙인(찾은) 수를 돌려줍니다.
 
@@ -393,20 +396,53 @@ def attach_tickers(quarters: list[dict]) -> int:
     모른다고 정한 것'(펀드·채권·우선주 등)과 '티커를 붙이기 전 옛 저장본'을 구분해, 옛 저장본만 이름으로 다시 찾습니다.
     회사 이름은 매핑표에 있는데 일부러 뺀 보유에는 ``tickerNote``(NOTE_DEBT·NOTE_NON_COMMON)를 적어, 백엔드 미커버 목록이
     '매핑표에 없음' 대신 그 이유를 보이게 합니다(QA-127). 이어받은 분기도 다시 붙이므로, 표시가 없어진 보유에서는 지웁니다.
+
+    ``cusip_map``(CUSIP → 티커, 모의 매매 트랙레코드의 q30 저장본만 — equities_cusip.TRACK_RECORD_CUSIPS)을 주면
+    _classify_with_cusips 규칙으로 CUSIP을 먼저 봅니다. None(기존 13F 화면의 q8)이면 위 규칙 그대로입니다.
     """
     found = 0
     for quarter in quarters:
         for holding in quarter.get("holdings") or []:
             if not isinstance(holding, dict):
                 continue
-            hit, note = classify_holding(holding)
-            holding["ticker"] = hit[0] if hit else None
+            if cusip_map is None:
+                hit, note = classify_holding(holding)
+                ticker = hit[0] if hit else None
+            else:
+                ticker, note, by_cusip = _classify_with_cusips(holding, cusip_map)
+                # 이어받은 분기도 다시 붙입니다 — 표에서 빠진 CUSIP의 옛 출처 표시가 남지 않게 지웁니다.
+                if by_cusip:
+                    holding["tickerSource"] = TICKER_SOURCE_CUSIP
+                else:
+                    holding.pop("tickerSource", None)
+            holding["ticker"] = ticker
             if note:
                 holding["tickerNote"] = note
             else:
                 holding.pop("tickerNote", None)
-            found += hit is not None
+            found += ticker is not None
     return found
+
+
+def _classify_with_cusips(holding: dict, cusip_map: Mapping[str, str]) -> tuple[str | None, str | None, bool]:
+    """
+    CUSIP 매핑표를 쓰는 분류 → (티커 또는 None, 일부러 뺀 종류 또는 None, CUSIP으로 찾았는지).
+
+    ① 채권(_is_debt)이거나 클래스가 보통주가 아닌 증권(_is_non_common_class)이면 classify_holding 그대로 — CUSIP이 표에
+       있어도 붙이지 않습니다. 표는 보통주·ADR·ETF 라인만 대조해 만들었지만, 공시의 클래스·CUSIP·수량 표기는 기관마다
+       어긋날 수 있어(사채를 'COM'으로 적은 행, QA-123) 주가로 덮지 않는 규칙을 표보다 먼저 봅니다.
+    ② CUSIP(대문자, 공백 제거)이 표에 있으면 그 티커. 펀드 이름 규칙(_FUND_TOKENS)은 적용하지 않습니다 — 'ISHARES TR' 한 이름
+       아래 ETF가 수백 개라 이름으로는 못 찾고, CUSIP은 그 ETF 하나를 가리킵니다(ADR 0015 결정 1).
+    ③ 아니면 classify_holding(이름 매핑표).
+    """
+    cusip = re.sub(r"\s+", "", str(holding.get("cusip") or "")).upper()
+    # 발행 번호 검사(_is_equity_cusip)도 정리한 CUSIP으로 — 가운데 공백이 7~8번째 글자 자리를 밀면 채권으로 읽힙니다.
+    if not (_is_debt({**holding, "cusip": cusip}) or _is_non_common_class(holding.get("class") or "")):
+        ticker = cusip_map.get(cusip)
+        if ticker:
+            return ticker, None, True
+    hit, note = classify_holding(holding)
+    return (hit[0] if hit else None), note, False
 
 
 def all_tickers() -> tuple[str, ...]:

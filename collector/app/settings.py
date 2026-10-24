@@ -114,6 +114,26 @@ def run_log_retention_days() -> int:
         return RUN_LOG_RETENTION_DAYS
 
 
+TRACK_RECORD_FETCH_BUDGET = 400
+
+
+def track_record_fetch_budget() -> int:
+    """
+    13F 트랙레코드 수집(task_sec_13f_track_record)이 한 번 실행에서 새로 내려받는 공시 수 상한. 기본 400, 1~2000으로 자릅니다.
+
+    후보 27곳 30분기는 약 810건(공시 하나 약 0.4초)이라 한 번에 다 받으면 weekly 시간 상한(30분)에 가깝고, 같은 SEC 한도를
+    기존 sec_13f와 나눠 씁니다. 예산 안에서 최신 공시부터 채우고 나머지는 다음 실행이 이어 받습니다(설계 §4-0 ②).
+    비었거나 숫자가 아니면 기본값 — 잘못 적은 값으로 수집을 멈추지(0) 않게 1 밑으로는 내리지 않습니다.
+    """
+    raw = (os.environ.get("TRACK_RECORD_FETCH_BUDGET") or "").strip()
+    if not raw:
+        return TRACK_RECORD_FETCH_BUDGET
+    try:
+        return min(2000, max(1, int(raw)))
+    except ValueError:
+        return TRACK_RECORD_FETCH_BUDGET
+
+
 # ==============================================================================
 # 외부 API 키 (없으면 빈 문자열)
 # ==============================================================================
