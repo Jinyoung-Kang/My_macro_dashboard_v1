@@ -2,14 +2,14 @@
  * 🧪 모의 매매 — Claude 재량 책(단계 3a). 서버 값을 그대로 보이고, 통과·거절·어긋남을 화면이 다시 판정하지 않는다.
  *
  *  - 결정 로그: Claude 책 목록에 목표 노출 칸, 상세는 판단(자세·목표 노출·어긋남 배지·확신도·요약·노출 근거)·제안 주문(근거·라벨·
- *    무효화)·검증(통과·거절·사유·설명)·사용량(모델·토큰)·임시 프레임 표시·입력 패킷(접힘). 규칙 책 표(신호·게이트)는 그리지 않는다
+ *    무효화)·검증(통과·거절·사유·설명)·사용량(모델·토큰)·프레임 판("임시 v0")·입력 패킷(접힘). 규칙 책 표(신호·게이트)는 그리지 않는다
  *  - 응답이 없으면(형식 오류) "응답 없음"과 오류, 모델 원문은 접어서. 건너뛴 기록(호출 상한·일시정지)은 "Claude를 부르지 않음 — 사유"
  *  - 결정 중 일시정지로 취소된 주문은 취소와 서버 사유로, 다른 결정이 돌고 있다는 서버 거절은 경고로
  *  - Claude 책의 '지금 결정 실행'은 비용 안내와 함께 확인 단계를 거친다
- *  - 개요: Claude 책이 시작 전이면 시작 카드(임시 프레임 안내·권고·비용), 미리보기·시작 모두 확인 단계 →
+ *  - 개요: Claude 책이 시작 전이면 시작 카드(지금 판 안내 — 임시 v0이면 OS 원문으로 v1을 만든 뒤 시작 권고·비용), 미리보기·시작 모두 확인 단계 →
  *    POST /api/paper/run/initial-decision {book:"claude", preview:true} / {book:"claude"}
  *  - 개요: Claude 노출 추이(목표 vs 실제, 0~100% 축), 기록이 없으면 그렇다고
- *  - 개요: Claude 호출 사용량(오늘 호출/상한·토큰, 이달 누적 — 상태 응답 그대로), 일시정지 중인 Claude 책은 수동 결정을 막음
+ *  - 개요: Claude 호출 사용량(오늘 호출/상한·추정 비용·토큰, 이달 누적 — 상태 응답 그대로), 일시정지 중인 Claude 책은 수동 결정을 막음
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -71,6 +71,7 @@ function decision(id: number, over: Record<string, unknown> = {}) {
 /** Claude 책 결정 기록 — 모델 응답(decision.schema.json) + 검증 결과(자바 record 그대로). */
 const RESPONSE = {
   schemaVersion: 2,
+  framework: { version: 0, status: "INTERIM", title: "임시 v0 — OS 원문 반영 전" },
   stance: "RISK_OFF",
   targetEquityExposurePct: 35,
   exposureRationale: "할인율·비용 물가 두 축이 압박",
@@ -156,7 +157,7 @@ describe("결정 로그 — Claude 책", () => {
     reads["/api/paper/decisions/21"] = () => Promise.resolve(DETAIL);
   });
 
-  it("목록에 목표 노출 칸, 상세는 판단·제안 주문·검증·사용량·임시 프레임 — 규칙 책 표는 없다", async () => {
+  it("목록에 목표 노출 칸, 상세는 판단·제안 주문·검증·사용량·프레임 판(임시 v0) — 규칙 책 표는 없다", async () => {
     await openClaudeDecisions();
 
     const row = await screen.findByRole("row", { name: "2026-10-26 정기" });
@@ -169,7 +170,8 @@ describe("결정 로그 — Claude 책", () => {
     expect(api.apiGetShared).toHaveBeenCalledWith("/api/paper/decisions/21", 0);
     const meta = (label: string) => within(detail).getByText(label).nextElementSibling?.textContent;
     expect(meta("모델")).toBe("claude-sonnet-5-5");
-    expect(meta("프레임 버전")).toBe("임시 — 프레임 v1 준비 전");
+    expect(meta("프레임 버전")).toBe("임시 v0");
+    expect(within(detail).getByText("프레임 버전").nextElementSibling?.getAttribute("title")).toBe("임시 v0 — OS 원문 반영 전");
     expect(meta("소요")).toBe("41.2초");
 
     const judgement = within(detail).getByRole("region", { name: "판단" });
@@ -348,14 +350,20 @@ describe("결정 로그 — 일시정지 중인 Claude 책", () => {
 });
 
 describe("개요 — Claude 호출 사용량(명세 C8)", () => {
-  it("상태 응답의 오늘 호출/상한·토큰과 이달 누적을 그대로 — 추정 비용은 내지 않는다는 안내", async () => {
+  it("상태 응답의 오늘 호출/상한·추정 비용·토큰과 이달 누적을 그대로 — 추정 비용은 '추정'과 추정한 호출 수를 함께", async () => {
     reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_ACTIVE));
     reads["/api/paper/status"] = () => Promise.resolve({
       available: true, schemaReady: true, initialized: true, enabled: true, jobs: [],
       apiUsage: {
-        today: { day: "2026-10-27", calls: 6, cap: 6, inputTokens: 45012, outputTokens: 6200, cacheReadTokens: 0, cacheWriteTokens: 0 },
-        month: { month: "2026-10", days: 3, calls: 9, inputTokens: 210000, outputTokens: 27000, cacheReadTokens: 7800, cacheWriteTokens: 8100 },
-        note: "호출 수는 성공·실패를 모두 셉니다. 토큰은 응답이 알려 준 값의 합이고, 추정 비용은 단가를 코드에 두지 않아 내지 않습니다.",
+        today: {
+          day: "2026-10-27", calls: 6, cap: 6, inputTokens: 45012, outputTokens: 6200, cacheReadTokens: 0, cacheWriteTokens: 0,
+          estCostUsd: 0.09, estimatedCalls: 1, isEstimated: true,
+        },
+        month: {
+          month: "2026-10", days: 3, calls: 9, inputTokens: 210000, outputTokens: 27000, cacheReadTokens: 7800, cacheWriteTokens: 8100,
+          estCostUsd: null, estimatedCalls: 0, isEstimated: true,
+        },
+        note: "호출 수는 성공·실패를 모두 셉니다. 토큰은 응답이 알려 준 값의 합입니다.",
       },
     });
     render(<PaperPage />);
@@ -367,8 +375,12 @@ describe("개요 — Claude 호출 사용량(명세 C8)", () => {
     const month = screen.getByRole("region", { name: "Claude 호출 사용량 이달(KST 2026-10)" });
     expect(within(month).getByText("호출").nextElementSibling?.textContent).toBe("9회");
     expect(within(month).getByText("출력 토큰").nextElementSibling?.textContent).toBe("27,000");
+    expect(within(today).getByText("추정 비용").nextElementSibling?.textContent).toBe("추정 $0.09 · 추정 1/6회");
+    // 추정한 호출이 없으면(단가 도입 전) 금액은 —, 0으로 채우지 않습니다.
+    expect(within(month).getByText("추정 비용").nextElementSibling?.textContent).toBe("—");
     expect(screen.getByText(/오늘 호출이 하루 상한에 닿았습니다/)).toBeTruthy();
-    expect(screen.getByText(/추정 비용은 단가를 코드에 두지 않아 내지 않습니다/)).toBeTruthy();
+    expect(screen.getByText(/청구액이 아닙니다/).textContent).toContain("추정에서 빠진 호출이 있습니다");
+    expect(screen.getByText("호출 수는 성공·실패를 모두 셉니다. 토큰은 응답이 알려 준 값의 합입니다.")).toBeTruthy();
   });
 
   it("상태 응답에 사용량이 없으면(구 서버) 카드를 그리지 않는다", async () => {
@@ -381,14 +393,29 @@ describe("개요 — Claude 호출 사용량(명세 C8)", () => {
   });
 });
 
+/** 지금 판(GET /api/paper/framework) — 임시 v0. */
+const FRAMEWORK_INTERIM = {
+  available: true,
+  current: {
+    version: 0, status: "INTERIM", title: "임시 v0 — OS 원문 반영 전", body: null, rendered: "# 투자 OS — v0", tokensEst: 4100,
+    overBudget: false, changelog: "임시 v0 — 사용자 OS 원문을 받기 전, 명세·설계의 지침으로 만든 판", createdAtKst: "2026-10-25 10:00",
+  },
+  versions: [],
+};
+
 describe("개요 — Claude 책 시작", () => {
-  it("시작 전이면 카드 — 임시 프레임 안내·OS 원문 적용 권고·비용, 버튼 둘", async () => {
+  beforeEach(() => {
+    reads["/api/paper/framework"] = () => Promise.resolve(FRAMEWORK_INTERIM);
+  });
+
+  it("시작 전이면 카드 — 지금 판이 임시 v0이면 OS 원문으로 v1을 만든 뒤 시작 권고·비용, 버튼 둘", async () => {
     reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_NOT_STARTED));
     render(<PaperPage />);
 
     expect(await screen.findByText(/Claude 재량 책은 아직 현금만 들고 있습니다/)).toBeTruthy();
-    expect(screen.getByText(/지금 판단 프레임은 임시입니다\(프레임 v1 준비 전\)/)).toBeTruthy();
-    expect(screen.getByText(/OS 원문을 적용한 뒤 시작하기를 권합니다/)).toBeTruthy();
+    const note = await screen.findByText(/지금 프레임은 임시 v0입니다 — OS 원문으로 v1을 만든 뒤 시작을 권합니다/);
+    expect(note.closest("div")?.className).toContain("text-warn");
+    expect(api.apiGetShared).toHaveBeenCalledWith("/api/paper/framework", 0);
     expect(screen.getByText(/비용: Sonnet 5\.5 호출 1회, 약 \$0\.1/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "미리보기" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Claude 재량 책 시작" })).toBeTruthy();
@@ -461,11 +488,13 @@ describe("개요 — Claude 책 시작", () => {
     });
     render(<PaperPage />);
 
+    // 확인 문구의 프레임 판은 지금 판을 읽은 뒤에 붙습니다.
+    await screen.findByText(/지금 프레임은 임시 v0입니다/);
     fireEvent.click(await screen.findByRole("button", { name: "Claude 재량 책 시작" }));
     expect(api.apiPost).not.toHaveBeenCalled();
     const confirm = screen.getByText(/정말 시작할까요\? Sonnet 5\.5 호출 1회/);
     expect(confirm.textContent).toContain("'책 초기화'");
-    expect(confirm.textContent).toContain("프레임은 아직 임시");
+    expect(confirm.textContent).toContain("프레임은 아직 임시 v0입니다");
     fireEvent.click(screen.getByRole("button", { name: "시작 확인" }));
 
     expect(api.apiPost).toHaveBeenCalledWith("/api/paper/run/initial-decision", { book: "claude" });

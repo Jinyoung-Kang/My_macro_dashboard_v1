@@ -14,6 +14,7 @@ import {
   type Badge,
   bookCard,
   claudeExposureChart,
+  frameworkBoundaryView,
   initialDecisionResultView,
   initPrompt,
   initResultText,
@@ -60,7 +61,8 @@ const SPARE_COLORS = ["#A371F7", "#39C5CF", "#DB6D28"];
 const EXPOSURE_COLORS: Record<string, string> = { target: SERIES_COLORS.orange, actual: SERIES_COLORS.blue };
 
 /**
- * 개요 탭 — 책 카드 네 개, 순자산 곡선, Claude 노출 추이(목표 vs 실제), Claude 호출 사용량(오늘·이달 — 상태 응답), 신호 기관(최근
+ * 개요 탭 — 책 카드 네 개, 순자산 곡선(프레임 판 경계 세로선), Claude 노출 추이(목표 vs 실제), Claude 호출 사용량(오늘·이달·추정 비용 —
+ * 상태 응답), 신호 기관(최근
  * 선정), OS 게이트 지표(참고), 장부 관측치 신선도, 작업 기록. 초기화 전이거나 벤치마크가 아직 사후 체결을 기다리면(pendingBackfill) "초기화" 버튼, 규칙 책이 시작 전이면
  * "규칙 책 시작" 버튼, Claude 책이 시작 전이면 "미리보기"·"Claude 재량 책 시작" 버튼(ClaudeStartSection).
  *
@@ -115,6 +117,8 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
   const exposure = claudeExposureChart(overview.claudeExposureSeries);
   const exposureSeries = exposure.series.map((line) => ({ ...line, color: EXPOSURE_COLORS[line.key] ?? SPARE_COLORS[0] }));
   const usage = status.data?.available ? apiUsageView(status.data.apiUsage) : null;
+  // 판 경계는 Claude 책에만 뜻이 있습니다(프레임은 규칙 책에 영향 없음, 명세 F5) — 그래도 네 책 곡선 위에 그려 같은 날 무엇이 바뀌었는지 봅니다.
+  const boundaries = frameworkBoundaryView(overview.frameworkBoundaries, overview.navSeries?.dates ?? []);
 
   return (
     <>
@@ -199,9 +203,10 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
       <Card
         title="순자산 곡선"
         subtitle="거래일별 순자산(달러). 그날 기록이 없는 책은 선을 끊어 그립니다 — 시작 전인 책은 선이 없습니다."
-        source={PAPER_SOURCES.ledger}
+        source={boundaries.text ? `${PAPER_SOURCES.ledger} · 프레임 경계는 ${PAPER_SOURCES.boundaries}` : PAPER_SOURCES.ledger}
       >
-        <MultiLineSeries data={chart.rows} series={series} precision={0} height={300} />
+        <MultiLineSeries data={chart.rows} series={series} precision={0} height={300} markers={boundaries.markers} />
+        {boundaries.text && <p className="mt-2 text-xs text-muted">{boundaries.text}</p>}
       </Card>
 
       {hasClaude && (
@@ -226,7 +231,7 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
       {hasClaude && usage && (
         <Card
           title="Claude 호출 사용량"
-          subtitle="결정·미리보기·시작·재시도의 호출 수와 토큰(KST 날짜 기준) — 하루 상한에 닿으면 그날은 Claude를 부르지 않습니다"
+          subtitle="결정·미리보기·시작·재시도·프레임 제안의 호출 수·토큰·추정 비용(KST 날짜 기준) — 하루 상한에 닿으면 그날은 Claude를 부르지 않습니다"
           source={PAPER_SOURCES.apiUsage}
         >
           <div className="grid gap-4 sm:grid-cols-2">
@@ -234,9 +239,10 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
             <UsageCells label={usage.monthLabel} cells={usage.month} />
           </div>
           {usage.capReached && (
-            <p className="mt-2 text-xs text-warn">오늘 호출이 하루 상한에 닿았습니다 — 오늘 남은 결정은 Claude를 부르지 않고 건너뜁니다.</p>
+            <p className="mt-2 text-xs text-warn">오늘 호출이 하루 상한에 닿았습니다 — 오늘 남은 결정은 Claude를 부르지 않고 건너뛰고, 미리보기·프레임 제안도 서버가 거절합니다.</p>
           )}
-          <p className="mt-2 text-xs text-muted">{usage.note}</p>
+          <p className="mt-2 text-xs text-muted">{usage.costNote}</p>
+          {usage.note && <p className="mt-1 text-xs text-muted">{usage.note}</p>}
         </Card>
       )}
 

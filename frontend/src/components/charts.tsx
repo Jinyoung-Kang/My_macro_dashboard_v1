@@ -279,6 +279,7 @@ export function MultiLineSeries({
   rightPrecision = 0,
   zeroLine = false,
   domain,
+  markers = [],
 }: {
   data: Record<string, unknown>[];
   series: MultiSeries[];
@@ -300,6 +301,11 @@ export function MultiLineSeries({
    * 넘었는지 눈으로 좇기 어렵습니다.
    */
   zeroLine?: boolean;
+  /**
+   * 세로 기준선 — x는 data의 date 값, label은 선 위에 적는 짧은 이름(예: 모의 매매 순자산 곡선의 "프레임 v1" — 그날부터 판단 프레임이
+   * 바뀜). 범주 축이라 data에 없는 날짜는 그려지지 않으므로, 부르는 쪽이 같은 내용을 글로도 적습니다(선만으로 뜻을 나르지 않음).
+   */
+  markers?: { x: string; label: string }[];
 }) {
   if (data.length === 0) {
     return <div className="py-10 text-center text-sm text-muted">표시할 시계열이 없습니다.</div>;
@@ -350,6 +356,18 @@ export function MultiLineSeries({
         />
         <Legend wrapperStyle={{ fontSize: 11, color: "#8B949E" }} />
         {zeroLine && <ReferenceLine yAxisId="left" y={0} stroke="#8B949E" strokeWidth={1} />}
+        {/* 경계선은 계열선보다 흐린 회색 점선 — 값이 아니라 "여기서 조건이 바뀜" 표시라 계열색과 겹치지 않게 합니다. */}
+        {markers.map((marker) => (
+          <ReferenceLine
+            key={`${marker.x}-${marker.label}`}
+            yAxisId="left"
+            x={marker.x}
+            stroke="#8B949E"
+            strokeDasharray="4 3"
+            strokeWidth={1}
+            label={{ value: marker.label, position: "insideTopLeft", fill: AXIS.stroke, fontSize: 10 }}
+          />
+        ))}
         {series.map((entry) => (
           <Line
             isAnimationActive={false}

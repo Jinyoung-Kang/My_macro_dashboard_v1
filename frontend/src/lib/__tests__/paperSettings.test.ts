@@ -220,8 +220,9 @@ describe("저장 결과·이력", () => {
     expect(settingsHistoryRows(undefined, undefined)).toEqual([]);
   });
 
-  it("탭 — 설정은 이제 내용이 있다(준비 중 아님), 프레임·메모는 아직 3b", () => {
+  it("탭 — 설정은 이제 내용이 있다(준비 중 아님), 프레임·메모도 단계 3b에서 열렸다", () => {
     expect(PAPER_TABS.find((tab) => tab.key === "settings")?.opensIn).toBeNull();
-    expect(PAPER_TABS.find((tab) => tab.key === "framework")?.opensIn).toBe("단계 3b");
+    expect(PAPER_TABS.find((tab) => tab.key === "framework")?.opensIn).toBeNull();
+    expect(PAPER_TABS.find((tab) => tab.key === "notes")?.opensIn).toBeNull();
   });
 });

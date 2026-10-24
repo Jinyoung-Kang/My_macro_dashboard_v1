@@ -13,14 +13,25 @@ import type {
   PaperClaudePreviewResult,
   PaperDecisionDetail,
   PaperDecisionSummary,
+  PaperFrameworkEngine,
+  PaperFrameworkPrinciple,
+  PaperFrameworkProposal,
+  PaperFrameworkSaveResult,
+  PaperFrameworkVersion,
+  PaperFrameworkVersionSummary,
   PaperGateIndicator,
   PaperGateThresholds,
   PaperInitialDecisionResult,
   PaperInitResult,
+  PaperNoteCreateResult,
+  PaperNoteKind,
+  PaperOkResult,
   PaperOrder,
   PaperOverviewResponse,
   PaperOverviewSelection,
   PaperPosition,
+  PaperProposalApproveResult,
+  PaperProposeResult,
   PaperQuotesSummary,
   PaperRerankResult,
   PaperRiskOutcome,
@@ -60,12 +71,18 @@ export const PAPER_SOURCES = {
   exposure: "대시보드 결정 기록 (PostgreSQL paper_decisions.target_exposure_pct — Claude 응답) · 대시보드 모의 장부 "
     + "(paper_nav_daily.exposure_pct)",
   settings: "대시보드 모의 매매 설정 (PostgreSQL paper_settings·paper_settings_history)",
-  apiUsage: "대시보드 Claude 호출 사용량 (PostgreSQL paper_api_usage — 토큰은 Anthropic API 응답의 usage)",
+  apiUsage: "대시보드 Claude 호출 사용량 (PostgreSQL paper_api_usage — 토큰은 Anthropic API 응답의 usage, 추정 비용은 설정 단가 pricing.* × 토큰)",
+  framework: "대시보드 프레임 기록 (PostgreSQL paper_framework_versions — 렌더링·토큰 어림은 대시보드 백엔드 계산)",
+  proposals: "대시보드 프레임 제안 (PostgreSQL paper_framework_proposals — 평가·변경 제안은 Claude 응답, Anthropic API)",
+  notes: "사용자가 쓴 메모 (PostgreSQL paper_notes)",
+  boundaries: "대시보드 결정 기록 (PostgreSQL paper_decisions.framework_version — Claude 책 결정이 판마다 처음 쓴 거래일)",
 } as const;
 
 /**
- * 탭 여섯(명세 U2). opensIn이 있는 탭은 아직 내용이 없고 "다음 단계에서 엽니다"만 보입니다.
- * 탭을 아예 숨기지 않는 이유 — 무엇이 올지 보여야 지금 화면이 전부가 아니라는 것을 압니다.
+ * 탭 — 명세 U2의 여섯 탭에서 "프레임·메모"를 "프레임"과 "메모" 둘로 나눴습니다(단계 3b). 프레임 탭은 판·제안·편집, 메모 탭은 시황·방법론
+ * 메모라 할 일이 달라, 한 탭에 두면 판 비교와 편집 폼 아래로 메모 목록이 밀려납니다. opensIn이 있는 탭은 아직 내용이 없고
+ * "다음 단계에서 엽니다"만 보입니다(지금은 없음 — 다음 단계 탭이 생기면 씀). 탭을 숨기지 않는 이유 — 무엇이 올지 보여야 지금 화면이
+ * 전부가 아니라는 것을 압니다.
  */
 export const PAPER_TABS = [
   { key: "overview", label: "개요", opensIn: null, upcoming: null },
@@ -73,10 +90,9 @@ export const PAPER_TABS = [
   { key: "holdings", label: "보유·체결", opensIn: null, upcoming: null },
   // 결정 로그는 단계 2에서 규칙 책 기록으로 엽니다. Claude 책 기록(패킷·응답·검증·노출)은 단계 3a에서 같은 탭에 더합니다.
   { key: "decisions", label: "결정 로그", opensIn: null, upcoming: null },
-  {
-    key: "framework", label: "프레임·메모", opensIn: "단계 3b",
-    upcoming: "Claude 책의 판단 프레임 버전(승인 전후)과 시장 메모",
-  },
+  // 프레임·메모는 단계 3b에서 엽니다 — 판(렌더링·토큰 어림)·판 비교·수동 편집·OS 원문 제안·승인, 시황·방법론 메모.
+  { key: "framework", label: "프레임", opensIn: null, upcoming: null },
+  { key: "notes", label: "메모", opensIn: null, upcoming: null },
   // 설정은 단계 3a에서 엽니다 — 키별 입력·저장(규칙 책 영향 키는 한 번 더 확인)·바꾼 기록(버전).
   { key: "settings", label: "설정", opensIn: null, upcoming: null },
 ] as const;
@@ -1161,6 +1177,28 @@ export interface DecisionMetaCell {
   key: string;
   label: string;
   value: string;
+  /** 마우스를 올리면 보이는 설명(예: 프레임 판 제목). */
+  title?: string;
+}
+
+/**
+ * 결정 상세의 프레임 칸 — 그 결정에 쓴 판(response.framework `{version, status, title}`, 없으면 목록의 frameworkVersion). 임시 판이면
+ * "임시 v0"처럼 상태를 붙이고(보충 계약 §7) 제목은 마우스를 올려 봅니다. 단계 3a 기록(판 번호를 두기 전의 임시 시스템 프롬프트)은 번호가
+ * 없어 그렇다고 적습니다 — 빈 칸이면 "프레임 없이"로 읽힙니다. 규칙 책은 프레임을 쓰지 않아(명세 F5) 칸이 없습니다.
+ */
+function decisionFrameworkCell(decision: PaperDecisionDetail): DecisionMetaCell | null {
+  const recorded = isRecord(decision.response) ? frameworkInfoOf(decision.response.framework) : null;
+  const version = recorded?.version ?? (isNumber(decision.frameworkVersion) ? decision.frameworkVersion : null);
+  if (version !== null) {
+    return {
+      key: "frameworkVersion",
+      label: "프레임 버전",
+      value: frameworkVersionLabel(version, recorded?.status ?? null),
+      title: recorded?.title ?? undefined,
+    };
+  }
+  if (decision.book !== "claude") return null;
+  return { key: "frameworkVersion", label: "프레임 버전", value: "임시 — 판 번호 없음(단계 3b 전 기록)" };
 }
 
 /**
@@ -1176,12 +1214,8 @@ export function decisionMeta(decision: PaperDecisionDetail): DecisionMetaCell[] 
     { key: "pricesFinal", label: "가격", value: pricesFinalText(decision.pricesFinal).label },
   ];
   if (decision.model) cells.push({ key: "model", label: "모델", value: decision.model });
-  if (isNumber(decision.frameworkVersion)) {
-    cells.push({ key: "frameworkVersion", label: "프레임 버전", value: `v${decision.frameworkVersion}` });
-  } else if (decision.book === "claude") {
-    // 프레임 v1(사용자 OS 원문, 단계 3b) 전에는 임시 시스템 프롬프트로 부르고 버전을 남기지 않습니다 — 빈 칸이면 "프레임 없이"로 읽힙니다.
-    cells.push({ key: "frameworkVersion", label: "프레임 버전", value: "임시 — 프레임 v1 준비 전" });
-  }
+  const framework = decisionFrameworkCell(decision);
+  if (framework) cells.push(framework);
   if (isNumber(decision.targetExposurePct)) {
     cells.push({ key: "targetExposurePct", label: "목표 주식 노출", value: formatWithUnit(decision.targetExposurePct, 1, "%") });
   }
@@ -2105,22 +2139,54 @@ export interface ClaudeStartPrompt {
   bookLabel: string;
   title: string;
   body: string;
-  /** 프레임이 아직 임시라는 안내와 권고(OS 원문 적용 뒤 시작). */
-  interim: string;
+  /** 지금 프레임 판 안내와 권고 — 임시 판이면 OS 원문으로 사용자 판을 만든 뒤 시작을 권합니다(경고색). */
+  framework: { tone: "warn" | "info"; text: string };
   cost: string;
   confirmPreview: string;
   confirmStart: string;
 }
 
 /**
+ * 지금 판 안내(보충 계약 §7). 임시 v0이면 계약 문장 그대로("OS 원문으로 v1을 만든 뒤"), 승인으로 임시 상태를 이어받은 판(임시 v1 이후)이면
+ * 그 번호로 같은 권고를, 사용자 판이면 그 판 번호를 적습니다. 판을 아직 읽지 못했으면(읽는 중·실패) 단정하지 않고 프레임 탭을 보라고 합니다.
+ */
+function startFrameworkNote(framework: FrameworkInfo | null): ClaudeStartPrompt["framework"] {
+  const version = framework?.version ?? null;
+  if (version === null) {
+    return {
+      tone: "warn",
+      text: "지금 프레임 판을 아직 읽지 못했습니다 — 프레임 탭에서 판과 상태(임시·사용자 판)를 확인한 뒤 시작하세요. 시작은 한 번뿐이라 "
+        + "임시 판이면 OS 원문으로 사용자 판을 만든 뒤 시작하기를 권합니다.",
+    };
+  }
+  const tail = " 시작은 한 번뿐입니다(되돌리려면 책 초기화). 프레임 탭의 'OS 원문으로 새 판 만들기'(Claude 제안 → 승인)나 '직접 고치기'"
+    + "(수동 편집 — 사용자 판)로 판을 만들 수 있고, 미리보기로 지금 판의 판단을 먼저 볼 수 있습니다.";
+  if (framework?.status === "INTERIM") {
+    const head = version === 0
+      ? "지금 프레임은 임시 v0입니다 — OS 원문으로 v1을 만든 뒤 시작을 권합니다."
+      : `지금 프레임은 임시 v${version}입니다 — OS 원문으로 사용자 판을 만든 뒤 시작을 권합니다.`;
+    return { tone: "warn", text: `${head} 임시 판은 사용자 OS 원문을 받기 전, 명세·설계의 지침으로 만든 판입니다.${tail}` };
+  }
+  const title = framework?.title ? ` (${framework.title})` : "";
+  return {
+    tone: "info",
+    text: `지금 프레임은 ${frameworkVersionLabel(version, framework?.status ?? null)}${title}입니다 — Claude는 이 판으로 판단합니다. `
+      + "시작은 한 번뿐이니 미리보기로 이 판의 판단을 먼저 볼 수 있습니다.",
+  };
+}
+
+/**
  * Claude 책 시작 카드 — Claude 책이 시작 전(NOT_STARTED)일 때만, 아니면 null.
  *
  * 시작은 한 번뿐이고 되돌리려면 책 초기화로 장부를 지워야 해서, 버튼은 확인 단계를 한 번 거칩니다. 미리보기도 Claude를 부르므로(비용·
- * 하루 상한) 같은 확인을 거칩니다. 지금 시스템 프롬프트는 임시 프레임(프레임 v1 — 사용자 OS 원문 적용은 단계 3b)이라, 카드는 OS 원문을
- * 적용한 뒤 시작하기를 권합니다(막지는 않음 — 사용자가 정함).
+ * 하루 상한) 같은 확인을 거칩니다. 지금 판이 임시면 카드는 OS 원문으로 사용자 판을 만든 뒤 시작하기를 권합니다(막지는 않음 — 사용자가
+ * 정함, 명세 L2).
+ *
+ * @param framework 지금 판(GET /api/paper/framework의 current). 아직 읽지 못했으면 null — 안내가 판을 단정하지 않습니다.
  */
 export function claudeStartPrompt(
   overview: Pick<PaperOverviewResponse, "initialized" | "startDate" | "books">,
+  framework: FrameworkInfo | null = null,
 ): ClaudeStartPrompt | null {
   if (overview.initialized === false) return null;
   const claude = (overview.books ?? []).find((book) => book.kind === "CLAUDE");
@@ -2128,6 +2194,12 @@ export function claudeStartPrompt(
   const start = overview.startDate ?? EMPTY;
   const label = claude.label;
   const object = `${label}${label.endsWith("책") ? "을" : "을(를)"}`;
+  const version = framework?.version ?? null;
+  const frameworkTail = version === null
+    ? ""
+    : framework?.status === "INTERIM"
+      ? ` 프레임은 아직 임시 v${version}입니다.`
+      : ` 판단 프레임은 ${frameworkVersionLabel(version, framework?.status ?? null)}입니다.`;
   return {
     bookCode: claude.code,
     bookLabel: label,
@@ -2136,15 +2208,13 @@ export function claudeStartPrompt(
       + "매크로 카드는 그날 이력이 없어 지금 수집본을 참고로 — 을 Claude에 한 번 보내 주문 목록과 목표 주식 노출을 받고, 검증기(하드 규칙)를 "
       + "통과한 주문만 출발일 종가에 사후 체결합니다. 현금 비중은 Claude가 정합니다 — 노출 0%도 100%도 거절 사유가 아닙니다. 응답 형식 "
       + "오류·모델 거절·API 오류면 주문 없이 결정 기록에 사유가 남습니다.",
-    interim: "지금 판단 프레임은 임시입니다(프레임 v1 준비 전) — 사용자의 투자 OS 원문을 프레임으로 적용하는 것은 다음 단계(3b)이고, 그 전까지 "
-      + "Claude는 임시 시스템 프롬프트로 판단합니다. 시작은 한 번뿐이라 OS 원문을 적용한 뒤 시작하기를 권합니다. 미리보기로 임시 프레임의 "
-      + "판단을 먼저 볼 수 있습니다.",
+    framework: startFrameworkNote(framework),
     cost: CLAUDE_COST_NOTE,
     confirmPreview: `미리보기를 부를까요? ${CLAUDE_COST_NOTE} 출발일 기준 패킷으로 호출·검증까지 하고, 장부·결정·주문 기록은 바꾸지 않습니다`
       + "(사용량과, 없을 때만 출발일 기관 선정·제안 종목의 출발일 종가를 남김 — 시작이 같은 값을 씀).",
     confirmStart: `정말 시작할까요? ${CLAUDE_COST_NOTE} 검증을 통과한 주문을 출발일(${start}) 종가로 사후 체결하고 ${object} '운용 중'으로 `
       + "바꿉니다. 미리보기와 같은 답이 나온다는 보장은 없습니다(다시 부름). 되돌리려면 보유·체결 탭의 '책 초기화'로 이 책의 장부를 모두 "
-      + "지워야 합니다. 프레임은 아직 임시(v1 준비 전)입니다.",
+      + `지워야 합니다.${frameworkTail}`,
   };
 }
 
@@ -2207,17 +2277,43 @@ export interface ApiUsageView {
   /** "이달(KST 2026-10)". */
   monthLabel: string;
   month: DecisionMetaCell[];
-  /** 오늘 호출이 상한에 닿았나 — 그날 남은 결정·미리보기·시작은 Claude를 부르지 않습니다. */
+  /** 오늘 호출이 상한에 닿았나 — 그날 남은 결정·미리보기·시작·프레임 제안은 Claude를 부르지 않습니다. */
   capReached: boolean;
-  /** 서버 안내(호출 수의 뜻·토큰 출처·추정 비용을 내지 않는 이유). 없으면 API_COST_NOT_SHOWN. */
-  note: string;
+  /** 서버 안내(호출 수의 뜻·토큰 출처). 보내지 않으면 null. */
+  note: string | null;
+  /** 추정 비용의 뜻과, 추정에서 빠진 호출이 있으면 그 사실. */
+  costNote: string;
 }
 
-/** 추정 비용을 보이지 않는 이유 — 단가를 코드에 적어 두면 바뀌어도 모르는 숫자가 됩니다(없는 숫자를 만들지 않음). */
-export const API_COST_NOT_SHOWN = "추정 비용은 보이지 않습니다 — 단가를 코드·설정에 두지 않아(바뀌면 모르는 숫자가 됨) 토큰만 셉니다.";
+/** 추정 비용의 뜻 — 설정 단가 × 토큰의 어림이고 청구액이 아닙니다(명세 C8, 보충 계약 §3). */
+export const API_COST_ESTIMATE_NOTE = "추정 비용은 설정 단가(pricing.* — 공식 가격표 기준 기본값)에 응답이 알려 준 토큰을 곱한 어림이고 "
+  + "청구액이 아닙니다. 단가가 있는 모델(Sonnet·Haiku)이고 토큰을 아는 호출만 셉니다(추정 n/m회).";
+
+/** 서버가 추정 비용 필드를 보내지 않을 때(단계 3b 전 백엔드) — 숫자를 지어내지 않고 토큰만 보입니다. */
+export const API_COST_NOT_SENT = "이 서버는 추정 비용을 보내지 않습니다 — 호출 수와 토큰만 셉니다.";
 
 /**
- * 상태 응답의 apiUsage → 사용량 카드. 숫자는 서버 값 그대로(호출 수·토큰 합)이고, 모르는 값은 "—"입니다(0으로 채우지 않음).
+ * 추정 금액 — 1센트 이상은 소수 2자리("$0.09"), 그보다 작으면 4자리("$0.0045" — Haiku 한 번이 "$0.00"으로 보이면 공짜로 읽힘).
+ * 모르면 "—".
+ */
+export function formatUsdEstimate(value: number | null | undefined): string {
+  if (!isNumber(value)) return EMPTY;
+  const digits = value !== 0 && Math.abs(value) < 0.01 ? 4 : 2;
+  return `$${formatNumber(value, digits)}`;
+}
+
+/**
+ * 추정 비용 칸 — "추정 $0.09 · 추정 1/2회"(추정한 호출 수 / 전체 호출 수). 서버가 추정한 호출이 없어 금액이 null이면 "—"(0으로 채우지
+ * 않음). 금액은 서버 값 그대로이고 화면이 토큰으로 다시 계산하지 않습니다.
+ */
+function usageCostText(row: Record<string, unknown> | null): string {
+  const cost = numberOf(row?.estCostUsd);
+  if (cost === null) return EMPTY;
+  return `추정 ${formatUsdEstimate(cost)} · 추정 ${formatNumber(numberOf(row?.estimatedCalls), 0)}/${formatNumber(numberOf(row?.calls), 0)}회`;
+}
+
+/**
+ * 상태 응답의 apiUsage → 사용량 카드. 숫자는 서버 값 그대로(호출 수·토큰 합·추정 비용)이고, 모르는 값은 "—"입니다(0으로 채우지 않음).
  * 응답에 사용량이 없으면(구 서버·테이블 없음) null — 화면은 카드를 그리지 않습니다.
  */
 export function apiUsageView(usage: unknown): ApiUsageView | null {
@@ -2232,22 +2328,38 @@ export function apiUsageView(usage: unknown): ApiUsageView | null {
     { key: "cacheReadTokens", label: "캐시 읽기 토큰", value: count(row?.cacheReadTokens) },
     { key: "cacheWriteTokens", label: "캐시 쓰기 토큰", value: count(row?.cacheWriteTokens) },
   ];
+  const cost = (row: Record<string, unknown> | null): DecisionMetaCell => ({ key: "estCost", label: "추정 비용", value: usageCostText(row) });
   const calls = numberOf(today?.calls);
   const cap = numberOf(today?.cap);
-  const serverNote = textOf(usage.note);
+  // 추정 필드를 하나라도 보내면 3b 백엔드입니다. 그때 추정에서 빠진 호출(단가 도입 전·토큰 모름)이 있으면 그 사실을 적습니다.
+  const rows = [today, month].filter((row): row is Record<string, unknown> => row !== null);
+  const sent = rows.some((row) => "estCostUsd" in row || "estimatedCalls" in row);
+  const partial = rows.some((row) => {
+    const estimated = numberOf(row.estimatedCalls);
+    const total = numberOf(row.calls);
+    return estimated !== null && total !== null && estimated < total;
+  });
+  const costNote = !sent
+    ? API_COST_NOT_SENT
+    : partial
+      ? `${API_COST_ESTIMATE_NOTE} 추정에서 빠진 호출이 있습니다 — 단가 도입 전 호출이나 토큰을 모르는 호출입니다.`
+      : API_COST_ESTIMATE_NOTE;
   return {
     todayLabel: `오늘(KST ${textOf(today?.day) ?? EMPTY})`,
     today: [
       { key: "calls", label: "호출 / 하루 상한", value: `${count(calls)} / ${count(cap)}회` },
+      ...(sent ? [cost(today)] : []),
       ...tokens(today),
     ],
     monthLabel: `이달(KST ${textOf(month?.month) ?? EMPTY})`,
     month: [
       { key: "calls", label: "호출", value: `${count(month?.calls)}회` },
+      ...(sent ? [cost(month)] : []),
       ...tokens(month),
     ],
     capReached: calls !== null && cap !== null && calls >= cap,
-    note: serverNote ?? API_COST_NOT_SHOWN,
+    note: textOf(usage.note),
+    costNote,
   };
 }
 
@@ -2545,4 +2657,872 @@ export function settingsHistoryRows(history: unknown, keys: readonly PaperSettin
       rulesAffected: changed.some((key) => affects.has(key)),
     }];
   });
+}
+
+// ---------------------------------------------------------------- 프레임(투자 OS)·메모(단계 3b, 명세 F1~F7·D14·D15)
+
+/**
+ * 판 길이 한도(계약 A·E) — 원칙·규칙 300자, 지침 2,000자, 시황 메모 본문 4,000자, 엔진 8개. 서버가 저장할 때 다시 검사하고(틀리면 400 문구를
+ * 그대로 보임), 화면은 입력 중에 글자 수를 보이고 넘으면 저장 버튼을 막으려고만 씁니다. 글자 수는 서버(FrameworkService.codePoints)와 같은
+ * 코드 포인트 단위입니다 — .length(UTF-16)로 세면 이모지 하나가 2자가 되어 서버보다 먼저 막습니다.
+ */
+export const FRAMEWORK_TEXT_LIMIT = 300;
+export const FRAMEWORK_GUIDANCE_LIMIT = 2000;
+export const FRAMEWORK_ENGINE_COUNT = 8;
+export const NOTE_MARKET_BODY_LIMIT = 4000;
+
+/** 글자 수(코드 포인트) — 서버의 String.codePointCount와 같은 셈. */
+export function textLength(text: string): number {
+  return Array.from(text).length;
+}
+
+/** 글자 수 표기 — "123/300자"와 넘었는지. */
+export function charCount(text: string, limit: number): { text: string; over: boolean } {
+  const length = textLength(text);
+  return { text: `${formatNumber(length, 0)}/${formatNumber(limit, 0)}자`, over: length > limit };
+}
+
+/** 프레임 판 표시에 쓰는 세 값 — 판 번호·상태(INTERIM·USER)·제목. 모르면 null. */
+export interface FrameworkInfo {
+  version: number | null;
+  status: string | null;
+  title: string | null;
+}
+
+/**
+ * 판 정보 읽기 — 지금 판(current)·결정 기록의 response.framework·판 경계 어느 것이든 `{version, status, title}`. 단계 3a 결정 기록은
+ * `{version:null, interim:true, label}` 모양이라 interim을 INTERIM으로, label을 제목으로 읽습니다. 객체가 아니면 null.
+ */
+export function frameworkInfoOf(value: unknown): FrameworkInfo | null {
+  if (!isRecord(value)) return null;
+  return {
+    version: numberOf(value.version),
+    status: textOf(value.status) ?? (value.interim === true ? "INTERIM" : null),
+    title: textOf(value.title) ?? textOf(value.label),
+  };
+}
+
+/** 판 이름 — 임시 판은 "임시 v0", 그 밖은 "v1". 번호를 모르면 "—". */
+export function frameworkVersionLabel(version: number | null | undefined, status: string | null | undefined): string {
+  if (!isNumber(version)) return EMPTY;
+  return status === "INTERIM" ? `임시 v${version}` : `v${version}`;
+}
+
+/** 임시 판의 뜻(배지 설명·안내). */
+export const INTERIM_FRAMEWORK_NOTE = "임시 판 — 사용자 OS 원문을 받기 전, 명세·설계의 지침으로 만든 판입니다.";
+
+/** 판 상태 배지 — "임시 v0"(경고색) · "v1 · 사용자 판". 모르는 상태는 받은 글자 그대로. */
+export function frameworkStatusBadge(status: string | null | undefined, version: number | null | undefined): Badge {
+  const name = frameworkVersionLabel(version, status);
+  if (status === "INTERIM") return { key: "framework-INTERIM", label: name, className: TONE.warn, title: INTERIM_FRAMEWORK_NOTE };
+  if (status === "USER") {
+    return { key: "framework-USER", label: `${name} · 사용자 판`, className: TONE.ok, title: "사용자가 만든 판(OS 원문·수동 편집·그 뒤 승인)입니다." };
+  }
+  return { key: `framework-${status ?? "unknown"}`, label: status ? `${name} · ${status}` : name, className: TONE.muted };
+}
+
+/** 지금 판 카드에 적을 값(표시 문자열). */
+export interface FrameworkCurrentView {
+  version: number | null;
+  title: string;
+  badge: Badge;
+  /** 임시 판 안내와 권고. 임시 판이 아니면 null. */
+  interimNote: string | null;
+  createdAt: string;
+  changelog: string;
+  /** "추정 7,812토큰 / 예산 8,000토큰". 어림을 모르면 "—". */
+  tokens: string;
+  /** 예산 초과 경고(서버 판정 overBudget). 넘지 않았거나 모르면 null. */
+  overBudget: string | null;
+  rendered: string | null;
+  /** "원칙 5 · 엔진 8 · 규칙 17". 본문이 없으면 null. */
+  counts: string | null;
+}
+
+/**
+ * 렌더링 예산(설정 frameworkTokenBudget, F4) — 판 응답 맨 위의 tokenBudget(서버가 지금 설정에서 읽은 값)이 있으면 그것, 없으면 설정 본문.
+ * 둘 다 모르면 null(예산 없이 어림만 보임).
+ */
+export function frameworkBudgetFrom(response: { tokenBudget?: unknown } | null | undefined, settingsBody: unknown): number | null {
+  return numberOf(response?.tokenBudget) ?? numberOf(settingValueAt(settingsBody, "frameworkTokenBudget"));
+}
+
+/**
+ * 지금 판 카드. 토큰은 서버의 문자 수 어림(tokensEst) 그대로, 예산은 판 응답에 있으면 그것, 없으면 설정의 frameworkTokenBudget —
+ * 화면이 렌더링 글자를 다시 세지 않습니다. 예산을 넘었는지도 서버 판정(overBudget)만 씁니다(F4 — 막지는 않음).
+ */
+export function frameworkCurrentView(
+  current: PaperFrameworkVersion | null | undefined,
+  budgetFallback: number | null = null,
+): FrameworkCurrentView | null {
+  if (!current || !isRecord(current)) return null;
+  const version = numberOf(current.version);
+  const status = textOf(current.status);
+  const body = isRecord(current.body) ? current.body : null;
+  const budget = isNumber(current.tokenBudget) ? current.tokenBudget : budgetFallback;
+  const estimate = numberOf(current.tokensEst);
+  const tokens = estimate === null
+    ? EMPTY
+    : `추정 ${formatNumber(estimate, 0)}토큰${budget === null ? "" : ` / 예산 ${formatNumber(budget, 0)}토큰`}`;
+  const engines = listOf(body?.engines).filter(isRecord);
+  const rules = engines.reduce((sum, engine) => sum + listOf(engine.rules).length, 0);
+  return {
+    version,
+    title: textOf(current.title) ?? textOf(body?.title) ?? EMPTY,
+    badge: frameworkStatusBadge(status, version),
+    interimNote: status === "INTERIM"
+      ? `지금 판은 ${frameworkVersionLabel(version, status)}입니다 — 사용자 OS 원문을 받기 전, 명세·설계의 지침으로 만든 판입니다. 'OS 원문으로 `
+        + "새 판 만들기'(원문 → 방법론 메모 → Claude 제안 → 승인)나 '직접 고치기'(수동 편집 — 사용자 판)로 새 판을 만든 뒤 Claude 책을 시작하기를 "
+        + "권합니다. 제안을 승인한 판은 기준 판의 상태를 이어받아 임시로 남습니다 — 사용자 판으로 확정하는 것은 '직접 고치기'의 저장입니다."
+      : null,
+    createdAt: formatKst(textOf(current.createdAtKst)),
+    changelog: textOf(current.changelog) ?? EMPTY,
+    tokens,
+    overBudget: current.overBudget === true
+      ? `렌더링이 예산을 넘습니다(${tokens}) — 막지는 않지만 시스템 프롬프트가 길어져 비용·캐시에 부담이 됩니다. 규칙을 줄이거나 합치세요`
+        + "(예산은 설정 frameworkTokenBudget, 명세 F4)."
+      : null,
+    rendered: typeof current.rendered === "string" && current.rendered ? current.rendered : null,
+    counts: body
+      ? `원칙 ${formatNumber(listOf(body.principles).length, 0)} · 엔진 ${formatNumber(engines.length, 0)} · 규칙 ${formatNumber(rules, 0)}`
+      : null,
+  };
+}
+
+/** 판 목록 한 줄(표시 문자열). */
+export interface FrameworkVersionRow {
+  key: string;
+  versionNumber: number;
+  version: string;
+  title: string;
+  changelog: string;
+  createdAt: string;
+  /** 어떻게 생긴 판인가 — "제안 #3 승인" · "처음 시드(임시)" · "수동 편집". */
+  source: string;
+  current: boolean;
+}
+
+/**
+ * 판 목록(서버 순서 그대로)을 표 줄로. 출처는 sourceProposalId가 있으면 그 제안의 승인, 없으면 수동 편집 — v0만은 테이블이 비었을 때
+ * 서버가 시드한 임시 판입니다(보충 계약 §1).
+ */
+export function frameworkVersionRows(versions: unknown, currentVersion: number | null | undefined): FrameworkVersionRow[] {
+  return listOf(versions).filter(isRecord).flatMap((entry, index) => {
+    const version = numberOf(entry.version);
+    if (version === null) return [];
+    const proposal = numberOf(entry.sourceProposalId);
+    const status = textOf(entry.status);
+    return [{
+      key: `${index}-${version}`,
+      versionNumber: version,
+      version: status ? frameworkVersionLabel(version, status) : `v${version}`,
+      title: textOf(entry.title) ?? EMPTY,
+      changelog: textOf(entry.changelog) ?? EMPTY,
+      createdAt: formatKst(textOf(entry.createdAtKst)),
+      source: proposal !== null ? `제안 #${proposal} 승인` : version === 0 ? "처음 시드(임시)" : "수동 편집",
+      current: isNumber(currentVersion) && version === currentVersion,
+    }];
+  });
+}
+
+/** 비교할 두 판의 선택지 — "v1 — 제목"(서버 순서). */
+export function frameworkCompareOptions(versions: readonly PaperFrameworkVersionSummary[] | null | undefined) {
+  return (versions ?? []).filter((entry) => isNumber(entry.version)).map((entry) => ({
+    value: String(entry.version),
+    label: `v${entry.version}${entry.title ? ` — ${entry.title}` : ""}`,
+  }));
+}
+
+/** 비교 기본값 — 오른쪽은 지금 판(없으면 가장 큰 번호), 왼쪽은 그 바로 앞 판. 판이 하나뿐이면 왼쪽은 null. */
+export function frameworkCompareDefaults(
+  versions: readonly PaperFrameworkVersionSummary[] | null | undefined,
+  currentVersion: number | null | undefined,
+): { left: number | null; right: number | null } {
+  const numbers = (versions ?? []).map((entry) => entry.version).filter(isNumber);
+  const right = isNumber(currentVersion) ? currentVersion : numbers.length > 0 ? Math.max(...numbers) : null;
+  const earlier = right === null ? [] : numbers.filter((version) => version < right);
+  return { left: earlier.length > 0 ? Math.max(...earlier) : null, right };
+}
+
+/** 나란히 비교의 한 줄 — 다른 쪽 렌더링에 같은 줄이 없으면 changed. */
+export interface CompareLine {
+  key: string;
+  text: string;
+  changed: boolean;
+}
+
+/**
+ * 두 판의 렌더링(서버가 준 글 그대로)을 줄로 나눠 나란히 — 다른 쪽에 똑같은 줄이 없는 줄에 표시만 합니다(빈 줄은 표시하지 않음). 줄 순서를
+ * 맞추는 diff가 아니라 "이 줄은 저쪽에 없다"는 표시라, 순서만 바뀐 줄은 표시되지 않습니다.
+ */
+export function renderedCompare(left: string | null | undefined, right: string | null | undefined): {
+  left: CompareLine[];
+  right: CompareLine[];
+  changedLeft: number;
+  changedRight: number;
+} {
+  const leftLines = typeof left === "string" ? left.split("\n") : [];
+  const rightLines = typeof right === "string" ? right.split("\n") : [];
+  const mark = (lines: string[], other: Set<string>) =>
+    lines.map((text, index) => ({ key: `${index}`, text, changed: text.trim() !== "" && !other.has(text) }));
+  const leftRows = mark(leftLines, new Set(rightLines));
+  const rightRows = mark(rightLines, new Set(leftLines));
+  return {
+    left: leftRows,
+    right: rightRows,
+    changedLeft: leftRows.filter((line) => line.changed).length,
+    changedRight: rightRows.filter((line) => line.changed).length,
+  };
+}
+
+// ---- 수동 편집(F3)
+
+/**
+ * 편집 중인 판. 기준 판 본문을 복사해 시작하고, 저장하면 새 판(사용자 판)이 됩니다. usedIds는 기준 판에 있던 원칙·규칙 id —
+ * 새 원칙·규칙의 번호가 지운 id를 다시 쓰지 않게 합니다(같은 id가 판마다 다른 글이면 addedIn·근거 메모 이력을 읽기 어려움).
+ */
+export interface FrameworkDraft {
+  baseVersion: number | null;
+  baseStatus: string | null;
+  schemaVersion: number;
+  title: string;
+  principles: PaperFrameworkPrinciple[];
+  engines: PaperFrameworkEngine[];
+  guidance: string;
+  changelog: string;
+  usedIds: string[];
+}
+
+/** 편집 동작 하나 — 엔진은 8개로 고정이라(F1) 엔진 추가·삭제는 없습니다. */
+export type FrameworkDraftEdit =
+  | { type: "title"; value: string }
+  | { type: "principle"; index: number; text: string }
+  | { type: "addPrinciple" }
+  | { type: "removePrinciple"; index: number }
+  | { type: "engineName"; engine: number; value: string }
+  | { type: "rule"; engine: number; index: number; text: string }
+  | { type: "addRule"; engine: number }
+  | { type: "removeRule"; engine: number; index: number }
+  | { type: "guidance"; value: string }
+  | { type: "changelog"; value: string };
+
+const stringOf = (value: unknown): string => (typeof value === "string" ? value : "");
+
+/** 판 본문의 원칙·엔진을 편집할 수 있는 모양으로 — 모양이 다른 줄은 빈 글자로(서버가 저장할 때 다시 검사). */
+function bodyParts(body: Record<string, unknown> | null) {
+  const principles = listOf(body?.principles).filter(isRecord).map((entry) => ({ id: stringOf(entry.id), text: stringOf(entry.text) }));
+  const engines = listOf(body?.engines).filter(isRecord).map((engine) => ({
+    id: stringOf(engine.id),
+    name: stringOf(engine.name),
+    rules: listOf(engine.rules).filter(isRecord).map((rule) => ({
+      id: stringOf(rule.id),
+      text: stringOf(rule.text),
+      addedIn: numberOf(rule.addedIn),
+      sourceNoteId: numberOf(rule.sourceNoteId),
+    })),
+  }));
+  return { principles, engines, guidance: stringOf(body?.guidance) };
+}
+
+/** 지금 판에서 편집을 시작합니다. 본문이 없으면(모양이 다름) null — 화면은 편집 버튼을 막습니다. */
+export function frameworkDraftFrom(current: PaperFrameworkVersion | null | undefined): FrameworkDraft | null {
+  if (!current || !isRecord(current.body)) return null;
+  const body = current.body as unknown as Record<string, unknown>;
+  const parts = bodyParts(body);
+  return {
+    baseVersion: numberOf(current.version),
+    baseStatus: textOf(current.status) ?? textOf(body.status),
+    schemaVersion: numberOf(body.schemaVersion) ?? 1,
+    title: textOf(body.title) ?? textOf(current.title) ?? "",
+    ...parts,
+    changelog: "",
+    usedIds: [...parts.principles.map((entry) => entry.id), ...parts.engines.flatMap((engine) => engine.rules.map((rule) => rule.id))],
+  };
+}
+
+/** prefix 뒤 번호의 최댓값(예: "E2-R" → E2-R3이면 3). 없으면 0. */
+function maxSuffix(ids: readonly string[], prefix: string): number {
+  return ids.reduce((max, id) => {
+    if (!id.startsWith(prefix)) return max;
+    const rest = id.slice(prefix.length);
+    return /^\d+$/.test(rest) ? Math.max(max, Number(rest)) : max;
+  }, 0);
+}
+
+/**
+ * 편집 동작을 적용한 새 판(불변 — 원래 객체는 그대로). 새 원칙은 "P{다음 번호}", 새 규칙은 "{엔진}-R{다음 번호}"(지금 편집본과 기준 판의
+ * id 모두에서 다음 번호)입니다. 새 규칙의 addedIn은 비워 보냅니다(null) — 판 번호는 저장할 때 서버가 정하고, 비운 addedIn을 그 새 판
+ * 번호로 채웁니다(화면이 "기준 판 + 1"을 짐작해 넣지 않음).
+ */
+export function editFrameworkDraft(draft: FrameworkDraft, edit: FrameworkDraftEdit): FrameworkDraft {
+  const engineAt = (index: number, change: (engine: PaperFrameworkEngine) => PaperFrameworkEngine) =>
+    draft.engines.map((engine, position) => (position === index ? change(engine) : engine));
+  switch (edit.type) {
+    case "title":
+      return { ...draft, title: edit.value };
+    case "guidance":
+      return { ...draft, guidance: edit.value };
+    case "changelog":
+      return { ...draft, changelog: edit.value };
+    case "principle":
+      return {
+        ...draft,
+        principles: draft.principles.map((entry, index) => (index === edit.index ? { ...entry, text: edit.text } : entry)),
+      };
+    case "addPrinciple": {
+      const ids = [...draft.usedIds, ...draft.principles.map((entry) => entry.id)];
+      return { ...draft, principles: [...draft.principles, { id: `P${maxSuffix(ids, "P") + 1}`, text: "" }] };
+    }
+    case "removePrinciple":
+      return { ...draft, principles: draft.principles.filter((_, index) => index !== edit.index) };
+    case "engineName":
+      return { ...draft, engines: engineAt(edit.engine, (engine) => ({ ...engine, name: edit.value })) };
+    case "rule":
+      return {
+        ...draft,
+        engines: engineAt(edit.engine, (engine) => ({
+          ...engine,
+          rules: engine.rules.map((rule, index) => (index === edit.index ? { ...rule, text: edit.text } : rule)),
+        })),
+      };
+    case "addRule":
+      return {
+        ...draft,
+        engines: engineAt(edit.engine, (engine) => {
+          const prefix = `${engine.id}-R`;
+          const ids = [...draft.usedIds, ...engine.rules.map((rule) => rule.id)];
+          return {
+            ...engine,
+            rules: [...engine.rules, { id: `${prefix}${maxSuffix(ids, prefix) + 1}`, text: "", addedIn: null, sourceNoteId: null }],
+          };
+        }),
+      };
+    case "removeRule":
+      return {
+        ...draft,
+        engines: engineAt(edit.engine, (engine) => ({ ...engine, rules: engine.rules.filter((_, index) => index !== edit.index) })),
+      };
+    default:
+      return draft;
+  }
+}
+
+/** 저장할 본문의 내용 부분(비교용) — 앞뒤 공백을 뗀 값. */
+function draftContent(draft: Pick<FrameworkDraft, "title" | "principles" | "engines" | "guidance">) {
+  return {
+    title: draft.title.trim(),
+    principles: draft.principles.map((entry) => ({ id: entry.id, text: entry.text.trim() })),
+    engines: draft.engines.map((engine) => ({
+      id: engine.id,
+      name: engine.name.trim(),
+      rules: engine.rules.map((rule) => ({ id: rule.id, text: rule.text.trim(), addedIn: rule.addedIn, sourceNoteId: rule.sourceNoteId })),
+    })),
+    guidance: draft.guidance.trim(),
+  };
+}
+
+/** 편집본 검사 결과 — 저장을 막는 사유(서버 검사와 같은 항목)와 바뀐 것이 있는지. */
+export interface FrameworkDraftCheck {
+  errors: string[];
+  /** 기준 판과 내용이 다르거나, 기준 판이 사용자 판이 아닌가(임시 판을 그대로 사용자 판으로 확정하는 저장도 새 판). */
+  changed: boolean;
+  canSave: boolean;
+}
+
+/**
+ * 저장 전 검사 — 제목·원칙·엔진 이름·규칙이 비었는지, 300자·지침 2,000자를 넘는지, 엔진이 8개인지, id가 겹치는지, 바꾼 내용(changelog)을
+ * 적었는지. 서버가 같은 검사를 다시 하고(틀리면 400 문구를 그대로 보임), 화면은 저장 버튼을 막고 이유를 보이려고만 씁니다.
+ */
+export function frameworkDraftCheck(draft: FrameworkDraft, current: PaperFrameworkVersion | null | undefined): FrameworkDraftCheck {
+  const errors: string[] = [];
+  const content = draftContent(draft);
+  if (!content.title) errors.push("제목을 넣으세요.");
+  if (content.engines.length !== FRAMEWORK_ENGINE_COUNT) {
+    errors.push(`엔진은 ${FRAMEWORK_ENGINE_COUNT}개여야 합니다(지금 ${content.engines.length}개).`);
+  }
+  if (content.principles.length === 0) errors.push("원칙이 하나도 없습니다.");
+  for (const entry of content.principles) {
+    if (!entry.text) errors.push(`원칙 ${entry.id}: 본문이 비었습니다.`);
+    else if (textLength(entry.text) > FRAMEWORK_TEXT_LIMIT) {
+      errors.push(`원칙 ${entry.id}: ${FRAMEWORK_TEXT_LIMIT}자를 넘습니다(${textLength(entry.text)}자).`);
+    }
+  }
+  for (const engine of content.engines) {
+    if (!engine.name) errors.push(`엔진 ${engine.id}: 이름이 비었습니다.`);
+    for (const rule of engine.rules) {
+      if (!rule.text) errors.push(`규칙 ${rule.id}: 본문이 비었습니다.`);
+      else if (textLength(rule.text) > FRAMEWORK_TEXT_LIMIT) {
+        errors.push(`규칙 ${rule.id}: ${FRAMEWORK_TEXT_LIMIT}자를 넘습니다(${textLength(rule.text)}자).`);
+      }
+    }
+  }
+  if (textLength(content.guidance) > FRAMEWORK_GUIDANCE_LIMIT) {
+    errors.push(`지침이 ${formatNumber(FRAMEWORK_GUIDANCE_LIMIT, 0)}자를 넘습니다(${formatNumber(textLength(content.guidance), 0)}자).`);
+  }
+  const ids = [...content.principles.map((entry) => entry.id), ...content.engines.flatMap((engine) => [engine.id, ...engine.rules.map((rule) => rule.id)])];
+  const duplicated = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+  if (duplicated.length > 0) errors.push(`id가 겹칩니다: ${duplicated.join(", ")}`);
+  if (!draft.changelog.trim()) errors.push("바꾼 내용(changelog)을 적으세요 — 판 목록에 남습니다.");
+
+  const base = current && isRecord(current.body) ? bodyParts(current.body as unknown as Record<string, unknown>) : null;
+  const baseTitle = current && isRecord(current.body) ? textOf((current.body as unknown as Record<string, unknown>).title) ?? "" : "";
+  const sameContent = base !== null
+    && JSON.stringify(content) === JSON.stringify(draftContent({ title: baseTitle, ...base }));
+  const changed = !sameContent || draft.baseStatus !== "USER";
+  if (!changed) errors.push("기준 판과 바뀐 내용이 없습니다.");
+  return { errors, changed, canSave: errors.length === 0 };
+}
+
+/**
+ * 저장 본문 `{body, changelog}` — 수동 편집으로 저장한 판은 사용자 판(status USER, 보충 계약 §1 — OS 원문을 옮긴 판이 v1)입니다.
+ * 글은 앞뒤 공백을 뗍니다(렌더링이 끝 공백을 남기지 않음 — 같은 글이 공백 하나로 다른 판이 되지 않게).
+ */
+export function frameworkSavePayload(draft: FrameworkDraft): { body: Record<string, unknown>; changelog: string } {
+  const content = draftContent(draft);
+  return {
+    body: {
+      schemaVersion: draft.schemaVersion,
+      title: content.title,
+      status: "USER",
+      principles: content.principles,
+      engines: content.engines,
+      guidance: content.guidance,
+    },
+    changelog: draft.changelog.trim(),
+  };
+}
+
+/** 수동 편집 저장 결과 — 배너 색과 한 줄, 서버 경고(렌더링 예산 초과 — 저장은 함, F4). */
+export function frameworkSaveResultView(
+  result: PaperFrameworkSaveResult,
+): { tone: "warn" | "info"; text: string; warning: string | null } {
+  if (result.ok === false) return { tone: "warn", text: result.message ?? "판을 저장하지 못했습니다.", warning: null };
+  const version = isNumber(result.version) ? `v${result.version}` : EMPTY;
+  return {
+    tone: "info",
+    text: `새 판 ${version}(사용자 판)을 저장했습니다 — 다음 Claude 결정부터 이 판으로 판단합니다(규칙 책은 프레임을 쓰지 않음).`,
+    warning: textOf(result.warning),
+  };
+}
+
+// ---- 제안 → 승인(F2·F7)
+
+/**
+ * 제안 요청의 비용 안내 — 기본 모델(Sonnet 5.5) 한 번. 입력은 붙인 글과 지금 판 렌더링이라 글 길이에 따라 다르고, 화면이 단가로 다시
+ * 계산하지 않아 결정 1회 어림(설계 §5-9 약 $0.1)과 같은 규모라고만 적습니다. 결정·미리보기와 같은 하루 상한을 씁니다(F7).
+ */
+export const PROPOSAL_COST_NOTE = "Sonnet 5.5 호출 1회 — 기본 모델 기준(설정 탭에서 모델을 바꿨으면 그 모델). 비용은 붙인 글 길이에 따라 "
+  + "다르고 결정 1회(약 $0.1)와 같은 규모로 어림합니다. 하루 호출 상한(설정 apiDailyCallCap)을 결정·미리보기와 함께 씁니다.";
+
+/** 승인·거절은 Claude를 부르지 않습니다. */
+export const APPROVE_COST_NOTE = "승인·거절은 Claude를 부르지 않습니다(비용 없음) — 서버가 제안의 변경을 지금 판에 적용할 뿐입니다.";
+
+const PROPOSAL_STATUS: Record<string, { label: string; tone: BadgeTone }> = {
+  PENDING: { label: "승인 대기", tone: "info" },
+  APPROVED: { label: "승인", tone: "ok" },
+  REJECTED: { label: "거절", tone: "muted" },
+  FAILED: { label: "실패", tone: "warn" },
+};
+
+/** 제안 상태 배지. 모르는 상태는 받은 글자 그대로. */
+export function proposalStatusBadge(status: string | null | undefined): Badge {
+  const known = status ? PROPOSAL_STATUS[status] : undefined;
+  return { key: `proposal-${status ?? "unknown"}`, label: known?.label ?? status ?? EMPTY, className: TONE[known?.tone ?? "muted"] };
+}
+
+/** OS 절차 B 평가의 색 — 일치는 그대로, 보완은 더할 것, 수정 필요·모순은 고칠 것. */
+const VERDICT: Record<string, BadgeTone> = { 일치: "ok", 보완: "info", "수정 필요": "warn", 모순: "warn" };
+
+export function verdictBadge(verdict: unknown): Badge {
+  const label = textOf(verdict) ?? EMPTY;
+  return { key: `verdict-${label}`, label, className: TONE[VERDICT[label] ?? "muted"] };
+}
+
+const PROPOSAL_OP: Record<string, string> = {
+  ADD_RULE: "규칙 추가",
+  UPDATE_RULE: "규칙 수정",
+  DELETE_RULE: "규칙 삭제",
+  ADD_PRINCIPLE: "원칙 추가",
+  UPDATE_PRINCIPLE: "원칙 수정",
+  DELETE_PRINCIPLE: "원칙 삭제",
+};
+
+export const proposalOpLabel = (op: string | null | undefined) => labelOf(PROPOSAL_OP, op);
+
+/** 평가 표 한 줄. */
+export interface ProposalAssessmentRow {
+  key: string;
+  point: string;
+  verdict: Badge;
+  reason: string;
+}
+
+/** 변경 표 한 줄 — 지금 판의 글(before)과 바꿀 글(after). */
+export interface ProposalOperationRow {
+  key: string;
+  op: string;
+  target: string;
+  before: string;
+  after: string;
+  why: string;
+  /** 승인하면 서버가 거절할 모양(대상 없음·본문 없음·300자 초과). 없으면 null. */
+  warning: string | null;
+}
+
+/** 제안 한 건을 그릴 모양. */
+export interface ProposalView {
+  id: number;
+  title: string;
+  status: Badge;
+  /** 승인·거절할 수 있는가(대기 중). */
+  pending: boolean;
+  meta: DecisionMetaCell[];
+  summary: string | null;
+  assessment: ProposalAssessmentRow[];
+  operations: ProposalOperationRow[];
+  beforeAfter: string | null;
+  error: string | null;
+  /** 기준 판이 지금 판과 다르면 그 안내(승인하면 서버가 거절 — 다시 제안). 같거나 모르면 null. */
+  staleBase: string | null;
+  confirmApprove: string;
+  confirmReject: string;
+}
+
+/** 지금 판 본문에서 원칙·규칙·엔진 찾기(제안 변경의 '지금 글' 칸). */
+function frameworkLookup(body: unknown) {
+  const parts = bodyParts(isRecord(body) ? body : null);
+  return {
+    principle: (id: string) => parts.principles.find((entry) => entry.id === id) ?? null,
+    rule: (id: string) => parts.engines.flatMap((engine) => engine.rules).find((rule) => rule.id === id) ?? null,
+    engine: (id: string) => parts.engines.find((engine) => engine.id === id) ?? null,
+  };
+}
+
+/**
+ * 제안 한 건 — 평가(OS 절차 B)·변경·전후 비교는 Claude 응답 그대로, 변경마다 지금 판의 글을 옆에 붙입니다(대상 id로 찾기만 하고 적용하지
+ * 않음 — 적용은 승인할 때 서버가 함). 대상이 지금 판에 없거나 새 본문이 없거나 300자를 넘으면 그 줄에 경고를 붙입니다(승인하면 서버가
+ * 400으로 거절하고 아무것도 바꾸지 않음). 기준 판이 지금 판과 다르면 승인할 수 없다고 적습니다(다른 판이 먼저 승인됨).
+ */
+export function proposalView(proposal: PaperFrameworkProposal, current: PaperFrameworkVersion | null | undefined): ProposalView {
+  const status = textOf(proposal.status);
+  const pending = status === "PENDING";
+  const currentVersion = isNumber(current?.version) ? current.version : null;
+  const currentStatus = textOf(current?.status);
+  const base = numberOf(proposal.baseVersion);
+  const lookup = frameworkLookup(current?.body);
+
+  const meta: DecisionMetaCell[] = [
+    { key: "createdAt", label: "요청 시각", value: formatKst(textOf(proposal.createdAtKst)) },
+  ];
+  if (proposal.decidedAtKst) meta.push({ key: "decidedAt", label: "승인·거절 시각", value: formatKst(proposal.decidedAtKst) });
+  if (proposal.model) meta.push({ key: "model", label: "모델", value: proposal.model });
+  if (isNumber(proposal.noteId)) meta.push({ key: "noteId", label: "근거 메모", value: `#${proposal.noteId}` });
+  meta.push({ key: "baseVersion", label: "기준 판", value: base === null ? EMPTY : `v${base}` });
+  if (isNumber(proposal.resultVersion)) meta.push({ key: "resultVersion", label: "만든 판", value: `v${proposal.resultVersion}` });
+
+  const assessment = listOf(proposal.assessment).filter(isRecord).map((entry, index) => ({
+    key: `${index}`,
+    point: textOf(entry.point) ?? EMPTY,
+    verdict: verdictBadge(entry.verdict),
+    reason: textOf(entry.reason) ?? EMPTY,
+  }));
+
+  const operations = listOf(proposal.operations).filter(isRecord).map((entry, index) => {
+    const op = textOf(entry.op) ?? "";
+    const target = textOf(entry.target) ?? "";
+    const text = textOf(entry.text);
+    const deleting = op === "DELETE_RULE" || op === "DELETE_PRINCIPLE";
+    let before: string = EMPTY;
+    let missing = false;
+    if (op === "ADD_RULE") {
+      const engine = lookup.engine(target);
+      before = engine ? `${engine.id}. ${engine.name} — 새 규칙` : EMPTY;
+      missing = engine === null;
+    } else if (op === "UPDATE_RULE" || op === "DELETE_RULE") {
+      const rule = lookup.rule(target);
+      before = rule?.text || EMPTY;
+      missing = rule === null;
+    } else if (op === "UPDATE_PRINCIPLE" || op === "DELETE_PRINCIPLE") {
+      const principle = lookup.principle(target);
+      before = principle?.text || EMPTY;
+      missing = principle === null;
+    } else if (op === "ADD_PRINCIPLE") {
+      before = "(새 원칙)";
+    }
+    const warnings = [
+      // 지금 판 본문을 모르면(읽기 실패) 대상이 없다고 단정하지 않습니다.
+      missing && current?.body ? "지금 판에 대상이 없습니다" : null,
+      !deleting && !text ? "새 본문이 없습니다" : null,
+      text && textLength(text) > FRAMEWORK_TEXT_LIMIT ? `${FRAMEWORK_TEXT_LIMIT}자를 넘습니다(${textLength(text)}자)` : null,
+    ].filter((warning): warning is string => warning !== null);
+    return {
+      key: `${index}`,
+      op: proposalOpLabel(op || null),
+      target: op === "ADD_PRINCIPLE" ? "(새 번호)" : target || EMPTY,
+      before,
+      after: deleting ? "(삭제)" : text ?? EMPTY,
+      why: textOf(entry.why) ?? EMPTY,
+      warning: warnings.length > 0 ? `${warnings.join(" · ")} — 승인하면 서버가 거절합니다(아무것도 바꾸지 않음).` : null,
+    };
+  });
+
+  const staleBase = pending && base !== null && currentVersion !== null && base !== currentVersion
+    ? `이 제안의 기준 판(v${base})이 지금 판(${frameworkVersionLabel(currentVersion, currentStatus)})과 다릅니다 — 다른 판이 먼저 생겼습니다. `
+      + "승인하면 서버가 거절하니 다시 제안하세요."
+    : null;
+  const currentName = currentVersion === null ? "지금 판" : `지금 판(${frameworkVersionLabel(currentVersion, currentStatus)})`;
+  const inherit = currentStatus === "INTERIM"
+    ? " 새 판은 기준 판의 상태(임시)를 이어받습니다 — 사용자 판으로 확정하려면 승인 뒤 '직접 고치기'에서 저장하세요."
+    : "";
+  return {
+    id: proposal.id,
+    title: `제안 #${proposal.id}`,
+    status: proposalStatusBadge(status),
+    pending,
+    meta,
+    summary: textOf(proposal.summary),
+    assessment,
+    operations,
+    beforeAfter: textOf(proposal.beforeAfter),
+    error: textOf(proposal.error),
+    staleBase,
+    confirmApprove: `이 제안(#${proposal.id})을 승인할까요? 변경 ${formatNumber(operations.length, 0)}건을 ${currentName}에 적용해 새 판을 `
+      + `만들고, 다음 Claude 결정부터 새 판으로 판단합니다. ${APPROVE_COST_NOTE}${inherit}`,
+    confirmReject: `이 제안(#${proposal.id})을 거절할까요? 판은 바뀌지 않고 제안은 거절로 남습니다. ${APPROVE_COST_NOTE}`,
+  };
+}
+
+/** 제안 요청 결과 — 실패(FAILED 행)는 경고색과 서버 사유, 대기 제안은 승인·거절 안내. */
+export function proposeResultView(result: PaperProposeResult): { tone: "warn" | "info"; text: string } {
+  // 실패한 호출도 FAILED 행으로 남아 ok:false와 함께 그 행이 옵니다 — 행이 있으면 행의 사유를, 없으면 서버 문구를 씁니다.
+  const proposal = result.proposal ?? null;
+  if (!proposal) {
+    return { tone: "warn", text: result.message ?? (result.ok === false ? "제안을 받지 못했습니다." : "제안 기록을 받지 못했습니다.") };
+  }
+  if (proposal.status === "FAILED" || result.ok === false) {
+    return {
+      tone: "warn",
+      text: `제안 요청이 실패했습니다(#${proposal.id}) — ${proposal.error ?? "서버가 사유를 남기지 않았습니다"}. 판은 바뀌지 않았습니다. `
+        + "다시 요청하면 Claude를 한 번 더 부릅니다.",
+    };
+  }
+  return {
+    tone: "info",
+    text: `제안(#${proposal.id})을 받았습니다 — 평가와 변경을 보고 승인하거나 거절하세요. 자동 반영은 없습니다(승인해야 새 판).`,
+  };
+}
+
+/** 승인 결과 — 새 판 번호와 서버 경고(새 판 렌더링이 예산을 넘음 — 승인은 함, F4. 수동 편집 저장과 같은 문구). */
+export function approveResultView(
+  result: PaperProposalApproveResult,
+): { tone: "warn" | "info"; text: string; warning: string | null } {
+  if (result.ok === false) return { tone: "warn", text: result.message ?? "승인하지 못했습니다.", warning: null };
+  const version = isNumber(result.version) ? `v${result.version}` : EMPTY;
+  return {
+    tone: "info",
+    text: `승인했습니다 — 새 판 ${version}. 다음 Claude 결정부터 이 판으로 판단합니다.`,
+    warning: textOf(result.warning),
+  };
+}
+
+/** 거절 결과. */
+export function rejectResultView(result: PaperOkResult): { tone: "warn" | "info"; text: string } {
+  if (result.ok === false) return { tone: "warn", text: result.message ?? "거절하지 못했습니다." };
+  return { tone: "info", text: "거절했습니다 — 판은 그대로입니다." };
+}
+
+/** OS 원문을 방법론 메모로 저장할 본문 — 제목을 비우면 "투자 OS 원문". */
+export function insightNotePayload(title: string, body: string): { kind: "INSIGHT"; title: string; body: string } {
+  return { kind: "INSIGHT", title: title.trim() || "투자 OS 원문", body: body.trim() };
+}
+
+// ---- 시황·방법론 메모(F6·D14)
+
+const NOTE_KIND: Record<string, { label: string; tone: BadgeTone; title: string }> = {
+  MARKET: { label: "시황", tone: "info", title: "시황 메모 — 기준일~만료일 사이 Claude 결정 패킷(섹션 11)에 자료로 실립니다." },
+  INSIGHT: { label: "방법론", tone: "muted", title: "방법론 메모(INSIGHT) — 결정 패킷에 싣지 않고 프레임 제안에만 씁니다." },
+};
+
+/** 메모 종류 배지. 모르는 종류는 받은 글자 그대로. */
+export function noteKindBadge(kind: string | null | undefined): Badge {
+  const known = kind ? NOTE_KIND[kind] : undefined;
+  return { key: `note-kind-${kind ?? "unknown"}`, label: known?.label ?? kind ?? EMPTY, className: TONE[known?.tone ?? "muted"], title: known?.title };
+}
+
+/**
+ * 메모 상태 배지 — 보관 · 프레임 제안용(방법론) · 유효(패킷에 실음) · 패킷 밖(만료·기준일 전). 유효한지는 서버 판정(active)이고 화면이 날짜를
+ * 다시 비교하지 않습니다. 유효해도 패킷에는 최신부터 합계 글자 수 상한(설정 notesMaxCharsInPacket)까지만 실립니다.
+ */
+export function noteStateBadge(note: { kind?: unknown; archived?: unknown; active?: unknown }): Badge {
+  if (note.archived === true) {
+    return { key: "note-archived", label: "보관", className: TONE.muted, title: "지우지 않고 보관했습니다 — 패킷에 싣지 않습니다." };
+  }
+  if (note.kind === "INSIGHT") {
+    return { key: "note-insight", label: "프레임 제안용", className: TONE.muted, title: NOTE_KIND.INSIGHT.title };
+  }
+  if (note.active === true) {
+    return {
+      key: "note-active", label: "유효 — 패킷에 실음", className: TONE.ok,
+      title: "기준일~만료일 안이라 다음 Claude 결정 패킷에 자료로 실립니다(최신부터 합계 글자 수 상한 — 설정 notesMaxCharsInPacket — 까지).",
+    };
+  }
+  return { key: "note-inactive", label: "패킷 밖 — 만료·기준일 전", className: TONE.muted };
+}
+
+/** 메모 목록 한 줄(표시 문자열). */
+export interface NoteRow {
+  key: string;
+  id: number;
+  idText: string;
+  kind: Badge;
+  state: Badge;
+  asOf: string;
+  expires: string;
+  title: string;
+  body: string;
+  /** "1,234자". */
+  length: string;
+  createdAt: string;
+  archived: boolean;
+}
+
+/** 메모 목록(서버 순서 그대로)을 표 줄로. 방법론 메모는 만료가 없습니다. 번호가 없는 줄은 뺍니다(보관할 수 없음). */
+export function noteRows(notes: unknown): NoteRow[] {
+  return listOf(notes).filter(isRecord).flatMap((note, index) => {
+    const id = numberOf(note.id);
+    if (id === null) return [];
+    const body = stringOf(note.body);
+    return [{
+      key: `${index}-${id}`,
+      id,
+      idText: `#${id}`,
+      kind: noteKindBadge(textOf(note.kind)),
+      state: noteStateBadge(note),
+      asOf: textOf(note.asOfDate) ?? EMPTY,
+      expires: note.kind === "INSIGHT" ? "만료 없음" : textOf(note.expiresOn) ?? EMPTY,
+      title: textOf(note.title) ?? EMPTY,
+      body,
+      length: `${formatNumber(textLength(body), 0)}자`,
+      createdAt: formatKst(textOf(note.createdAtKst)),
+      archived: note.archived === true,
+    }];
+  });
+}
+
+/** 메모 쓰기 입력(날짜는 YYYY-MM-DD, 비우면 서버 기본값). */
+export interface NoteDraft {
+  kind: PaperNoteKind;
+  asOfDate: string;
+  expiresOn: string;
+  title: string;
+  body: string;
+}
+
+export const EMPTY_NOTE_DRAFT: NoteDraft = { kind: "MARKET", asOfDate: "", expiresOn: "", title: "", body: "" };
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * 메모 입력 검사 — 제목·본문이 있는지, 시황 메모 본문이 4,000자 이내인지, 날짜 형식(YYYY-MM-DD)과 만료일 ≥ 기준일. 서버가 다시 검사합니다.
+ * 방법론 메모 본문은 화면이 한도를 두지 않습니다(계약의 4,000자는 시황 메모 — OS 원문은 더 길 수 있음; 서버 한도에 걸리면 그 400 문구를 보임).
+ */
+export function noteDraftCheck(draft: NoteDraft): { errors: string[]; canSave: boolean; bodyCount: { text: string; over: boolean } } {
+  const errors: string[] = [];
+  const market = draft.kind === "MARKET";
+  const body = draft.body.trim();
+  const bodyCount = market
+    ? charCount(body, NOTE_MARKET_BODY_LIMIT)
+    : { text: `${formatNumber(textLength(body), 0)}자`, over: false };
+  if (!draft.title.trim()) errors.push("제목을 넣으세요.");
+  if (!body) errors.push("본문을 넣으세요.");
+  if (bodyCount.over) {
+    errors.push(`시황 메모 본문은 ${formatNumber(NOTE_MARKET_BODY_LIMIT, 0)}자 이내입니다(지금 ${formatNumber(textLength(body), 0)}자).`);
+  }
+  const asOf = draft.asOfDate.trim();
+  const expires = market ? draft.expiresOn.trim() : "";
+  if (asOf && !DATE_PATTERN.test(asOf)) errors.push("기준일은 YYYY-MM-DD 형식입니다.");
+  if (expires && !DATE_PATTERN.test(expires)) errors.push("만료일은 YYYY-MM-DD 형식입니다.");
+  // ISO 날짜는 글자 순서가 날짜 순서입니다.
+  if (asOf && expires && DATE_PATTERN.test(asOf) && DATE_PATTERN.test(expires) && expires < asOf) {
+    errors.push("만료일이 기준일보다 이릅니다.");
+  }
+  return { errors, canSave: errors.length === 0, bodyCount };
+}
+
+/** 저장 본문 — 비운 날짜는 보내지 않습니다(서버 기본값). 방법론 메모는 만료일을 보내지 않습니다(만료 없음). */
+export function notePayload(draft: NoteDraft): Record<string, unknown> {
+  const payload: Record<string, unknown> = { kind: draft.kind, title: draft.title.trim(), body: draft.body.trim() };
+  if (draft.asOfDate.trim()) payload.asOfDate = draft.asOfDate.trim();
+  if (draft.kind === "MARKET" && draft.expiresOn.trim()) payload.expiresOn = draft.expiresOn.trim();
+  return payload;
+}
+
+/**
+ * 만료일 칸의 안내 — 비우면 기준일 + 설정 notesDefaultExpiryTradingDays 거래일(기본 3). 설정을 읽었으면 지금 값, 못 읽었으면 기본값이라고
+ * 적습니다(지금 설정과 다를 수 있음).
+ */
+export function noteExpiryHint(settingsBody: unknown): string {
+  const days = numberOf(settingValueAt(settingsBody, "notesDefaultExpiryTradingDays"));
+  return days === null
+    ? "비우면 기본 +3거래일(기준일부터 — 설정 notesDefaultExpiryTradingDays의 기본값)"
+    : `비우면 기본 +${formatNumber(days, 0)}거래일(기준일부터 — 설정 notesDefaultExpiryTradingDays)`;
+}
+
+/** 메모 탭 머리의 설명 — 메모는 자료일 뿐 지시가 아니고, 시작(초기 결정) 패킷에는 출발일 이하 기준일 메모만 실립니다(PIT). */
+export function notesIntro(startDate: string | null | undefined): string {
+  return "시황 메모(MARKET)는 기준일~만료일 사이 Claude 결정 패킷(섹션 11)에 구분자로 감싼 자료로 실립니다 — 지시가 아니고, 메모의 숫자보다 "
+    + "패킷의 숫자가 우선합니다. 유효한 메모는 최신부터 합계 글자 수 상한(설정 notesMaxCharsInPacket)까지 싣습니다. 방법론 메모(INSIGHT)는 "
+    + "패킷에 싣지 않고 프레임 제안에만 씁니다. "
+    + `Claude 책 시작(초기 결정) 패킷에는 기준일이 출발일(${startDate ?? EMPTY}) 이하인 메모만 실립니다. 규칙 책은 메모를 읽지 않습니다.`;
+}
+
+/** 메모 저장 결과 — 서버가 채운 기준일·만료일을 그대로 적습니다. */
+export function noteCreateResultView(result: PaperNoteCreateResult): { tone: "warn" | "info"; text: string } {
+  if (result.ok === false) return { tone: "warn", text: result.message ?? "메모를 저장하지 못했습니다." };
+  const note = result.note ?? null;
+  if (!note) return { tone: "warn", text: result.message ?? "저장한 메모를 받지 못했습니다." };
+  if (note.kind === "INSIGHT") {
+    return { tone: "info", text: `방법론 메모(#${note.id})를 저장했습니다 — 결정 패킷에는 싣지 않고 프레임 제안에만 씁니다.` };
+  }
+  return {
+    tone: "info",
+    text: `시황 메모(#${note.id})를 저장했습니다 — 기준일 ${note.asOfDate ?? EMPTY} · 만료 ${note.expiresOn ?? EMPTY}. `
+      + "유효한 동안 Claude 결정 패킷에 자료로 실립니다.",
+  };
+}
+
+/** 메모 보관 확인 문구. */
+export function noteArchiveConfirm(row: Pick<NoteRow, "id" | "title">): string {
+  return `이 메모(#${row.id} ${row.title})를 보관할까요? 지우지 않고 보관으로 표시해 더는 패킷·제안에 쓰지 않습니다. 이미 이 메모를 쓴 결정 `
+    + "기록(참조 메모)은 그대로 남습니다.";
+}
+
+// ---- 성과 화면의 판 경계(F5)
+
+/** 순자산 곡선의 판 경계 — 세로 기준선과 한 줄. */
+export interface FrameworkBoundaryView {
+  /** 차트 세로선(x = 거래일). 순자산 기록이 있는 날만 — 범주 축이라 없는 날은 그릴 자리가 없습니다. */
+  markers: { x: string; label: string }[];
+  /** "프레임 경계 — 2026-10-23부터 임시 v0 · 2026-11-03부터 v1". 경계가 없으면 null. */
+  text: string | null;
+}
+
+/**
+ * 개요 frameworkBoundaries(서버 순서 — 날짜 순)를 차트 세로선과 한 줄로. 선 이름은 "프레임 vN"(보충 계약 §4), 한 줄에는 임시 여부까지
+ * 적습니다. 순자산 기록이 없는 날의 경계는 선 없이 글에만 남기고 그렇다고 적습니다.
+ */
+export function frameworkBoundaryView(boundaries: unknown, dates: readonly string[]): FrameworkBoundaryView {
+  const known = new Set(dates);
+  const entries = listOf(boundaries).filter(isRecord).flatMap((entry) => {
+    const date = textOf(entry.tradingDate);
+    const version = numberOf(entry.version);
+    return date && version !== null ? [{ date, version, status: textOf(entry.status) }] : [];
+  });
+  if (entries.length === 0) return { markers: [], text: null };
+  const parts = entries.map((entry) => `${entry.date}부터 ${frameworkVersionLabel(entry.version, entry.status)}`
+    + (known.has(entry.date) ? "" : "(그날 순자산 기록 없음 — 선 없음)"));
+  return {
+    markers: entries.filter((entry) => known.has(entry.date)).map((entry) => ({ x: entry.date, label: `프레임 v${entry.version}` })),
+    text: `프레임 경계(Claude 책 결정이 그 판을 처음 쓴 거래일) — ${parts.join(" · ")}`,
+  };
 }

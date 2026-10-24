@@ -196,7 +196,7 @@ describe("초기화 전", () => {
     expect(screen.getByRole("button", { name: "리스크 지금 실행" })).toBeTruthy();
   });
 
-  it("보유·체결 탭은 책이 없다고 안내하고, 아직 준비 중인 탭은 '다음 단계에서 엽니다'", async () => {
+  it("보유·체결 탭은 책이 없다고 안내하고, 준비 중인 탭은 이제 없다(프레임·메모는 단계 3b에서 열림)", async () => {
     reads["/api/paper/overview"] = () =>
       Promise.resolve({ available: true, initialized: false, startDate: "2026-10-23", limits: LIMITS, books: [], jobs: [] });
 
@@ -205,9 +205,13 @@ describe("초기화 전", () => {
     expect(screen.getByText(/아직 책이 없습니다/)).toBeTruthy();
     expect(screen.getByRole("tab", { name: "보유·체결" }).getAttribute("aria-selected")).toBe("true");
 
-    // 결정 로그는 단계 2에서 열렸습니다 — 아직 준비 중인 탭(프레임·메모)으로 자리 문구를 봅니다.
-    fireEvent.click(screen.getByRole("tab", { name: /프레임·메모/ }));
-    expect(screen.getByText(/탭은 다음 단계에서 엽니다/)).toBeTruthy();
+    // 프레임·메모 탭은 단계 3b에서 열렸습니다 — 자리 문구도 '(준비 중)' 표시도 없습니다.
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "개요", "기관 선정", "보유·체결", "결정 로그", "프레임", "메모", "설정",
+    ]);
+    fireEvent.click(screen.getByRole("tab", { name: "프레임" }));
+    expect(screen.getByRole("tab", { name: "프레임" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByText(/탭은 다음 단계에서 엽니다/)).toBeNull();
   });
 });
 

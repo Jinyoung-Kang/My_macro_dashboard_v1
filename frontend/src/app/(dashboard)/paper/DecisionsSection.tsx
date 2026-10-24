@@ -315,7 +315,7 @@ function DecisionDetail({ id }: { id: number }) {
         {decisionMeta(decision).map((cell) => (
           <div key={cell.key}>
             <dt className="text-muted">{cell.label}</dt>
-            <dd className="tabular-nums font-semibold text-bright">{cell.value}</dd>
+            <dd className="tabular-nums font-semibold text-bright" title={cell.title}>{cell.value}</dd>
           </div>
         ))}
       </dl>

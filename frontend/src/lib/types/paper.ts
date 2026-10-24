@@ -116,6 +116,18 @@ export interface PaperOverviewResponse {
    * 이 필드를 아직 보내지 않는 백엔드에서는 없습니다(화면은 "기록 없음"으로 봅니다).
    */
   claudeExposureSeries?: PaperClaudeExposurePoint[] | null;
+  /**
+   * 프레임 판 경계(명세 F5) — Claude 책 결정 중 판마다 그 판을 처음 쓴 거래일(날짜 순). 결정이 없으면 빈 목록이고, 이 필드를 아직
+   * 보내지 않는 백엔드에서는 없습니다(화면은 경계선을 그리지 않음).
+   */
+  frameworkBoundaries?: PaperFrameworkBoundary[] | null;
+}
+
+/** 프레임 판 경계 하나 — 그 판(version, status)을 Claude 책 결정이 처음 쓴 거래일. */
+export interface PaperFrameworkBoundary {
+  tradingDate: string;
+  version: number;
+  status: PaperFrameworkStatus | string;
 }
 
 /**
@@ -237,12 +249,26 @@ export interface PaperStatusResponse {
   settingsVersion?: number | null;
   /** 설정 행에서 키가 없거나 값이 틀려 기본값으로 대신 읽은 키(예: "slippageBp", "gate.brentMax"). 비어 있으면 모두 설정대로. */
   settingsFallbacks?: string[];
-  /** Claude 호출 사용량(명세 C8) — 오늘(KST)의 호출 수·상한·토큰과 이달(KST) 누적. 추정 비용은 서버가 내지 않습니다. */
+  /**
+   * Claude 호출 사용량(명세 C8) — 오늘(KST)의 호출 수·상한·토큰·추정 비용과 이달(KST) 누적. 결정·미리보기·시작·프레임 제안이
+   * 같은 하루 상한을 씁니다.
+   */
   apiUsage?: PaperApiUsage | null;
 }
 
+/**
+ * 추정 비용(명세 C8, 단계 3b) — 설정 단가(pricing.*)로 토큰을 곱한 **어림**이고 청구액이 아닙니다. 단가가 있는 모델(sonnet·haiku)이고
+ * 토큰을 아는 호출만 셉니다 — estimatedCalls가 calls보다 작으면 나머지 호출(단가 도입 전·토큰 모름)은 추정에서 빠진 것입니다.
+ * 추정한 호출이 없으면 estCostUsd가 null입니다(0으로 채우지 않음). 이 필드를 아직 보내지 않는 백엔드에서는 없습니다.
+ */
+export interface PaperApiUsageCost {
+  estCostUsd?: number | null;
+  estimatedCalls?: number | null;
+  isEstimated?: boolean;
+}
+
 /** Claude 호출 사용량 — 하루(KST) 한 줄. 토큰은 응답이 알려 준 값의 합입니다. */
-export interface PaperApiUsageDay {
+export interface PaperApiUsageDay extends PaperApiUsageCost {
   /** KST 날짜(YYYY-MM-DD). */
   day: string;
   /** 호출 수 — 성공·실패를 모두 셉니다(키가 없어 보내지 않은 호출은 빼고). */
@@ -256,7 +282,7 @@ export interface PaperApiUsageDay {
 }
 
 /** Claude 호출 사용량 — 이달(KST) 누적. */
-export interface PaperApiUsageMonth {
+export interface PaperApiUsageMonth extends PaperApiUsageCost {
   /** KST 달(YYYY-MM). */
   month: string;
   /** 사용량이 남은 날 수. */
@@ -649,6 +675,7 @@ export type PaperDecisionStatus = "OK" | "NO_TRADE" | "REFUSED" | "FORMAT_ERROR"
 
 /**
  * 결정 한 건의 요약(목록 한 줄). model·frameworkVersion·targetExposurePct는 Claude 책만 채우고 규칙 책은 null입니다.
+ * frameworkVersion은 그 결정에 쓴 프레임 판 번호입니다(임시 판 v0 포함 — 단계 3b 전 기록은 null).
  * orderCount·rejectedCount는 그 결정이 낸 주문 수·검증에서 거절된 수(개수).
  */
 export interface PaperDecisionSummary {
@@ -785,6 +812,21 @@ export interface PaperClaudeDecisionRecord {
   confidence?: number | null;
   validation?: PaperValidationVerdict[];
   exposureMismatch?: boolean | null;
+  /**
+   * 그 결정에 쓴 프레임 판(단계 3b) — `{version, status, title}`. 단계 3a 기록은 `{version:null, interim:true, label}` 모양입니다
+   * (판 번호를 두기 전 임시 시스템 프롬프트) — 화면은 두 모양을 다 읽습니다.
+   */
+  framework?: PaperDecisionFramework | null;
+}
+
+/** 결정 기록의 프레임 판 표시(response.framework). */
+export interface PaperDecisionFramework {
+  version: number | null;
+  status?: PaperFrameworkStatus | string | null;
+  title?: string | null;
+  /** 단계 3a 기록만. */
+  interim?: boolean | null;
+  label?: string | null;
 }
 
 /**
@@ -994,4 +1036,224 @@ export interface PaperSettingsHistoryResponse {
   available: boolean;
   message?: string;
   history?: PaperSettingsHistoryEntry[];
+}
+
+// ---------------------------------------------------------------- 프레임(투자 OS)·메모(단계 3b, 명세 F1~F7·D14·D15)
+
+/**
+ * 판의 상태 — INTERIM은 사용자 OS 원문을 받기 전 명세·설계의 지침으로 만든 임시 판(v0), USER는 사용자가 만든 판(OS 원문을 옮긴 v1부터).
+ * 제안을 승인해 만든 판은 기준 판의 상태를 이어받습니다(백엔드 계약).
+ */
+export type PaperFrameworkStatus = "INTERIM" | "USER";
+
+/** 원칙 하나 — id는 "P1"처럼, 본문은 300자 이내(F4). */
+export interface PaperFrameworkPrinciple {
+  id: string;
+  text: string;
+}
+
+/** 엔진의 규칙 하나 — id는 "E2-R1"처럼, 본문 300자 이내. addedIn은 그 규칙을 더한 판, sourceNoteId는 근거 메모(없으면 null). */
+export interface PaperFrameworkRule {
+  id: string;
+  text: string;
+  addedIn: number | null;
+  sourceNoteId: number | null;
+}
+
+/** 엔진 하나(F1 — 판마다 8개, "E1"~"E8"). */
+export interface PaperFrameworkEngine {
+  id: string;
+  name: string;
+  rules: PaperFrameworkRule[];
+}
+
+/** 판 본문(paper_framework_versions.body, 계약 A). guidance는 엔진 밖 자유 지침(2,000자 이내). */
+export interface PaperFrameworkBody {
+  schemaVersion: number;
+  title: string;
+  status: PaperFrameworkStatus | string;
+  principles: PaperFrameworkPrinciple[];
+  engines: PaperFrameworkEngine[];
+  guidance: string;
+}
+
+/**
+ * 판 하나의 전체(지금 판·판 하나 읽기). rendered는 그 판을 만들 때의 렌더링(화면용 — 결정의 시스템 프롬프트는 결정 시점 설정으로
+ * 다시 렌더링), tokensEst는 문자 수 기반 어림(한글 1자 ≈ 1토큰, ASCII 4자 ≈ 1토큰), overBudget은 그 어림이 설정
+ * frameworkTokenBudget을 넘는지(서버 판정 — 막지는 않음, F4).
+ */
+export interface PaperFrameworkVersion {
+  version: number;
+  status: PaperFrameworkStatus | string;
+  title: string | null;
+  body: PaperFrameworkBody | null;
+  rendered: string | null;
+  tokensEst: number | null;
+  overBudget: boolean | null;
+  changelog: string | null;
+  createdAtKst: string | null;
+  /** 이 판을 만든 제안 번호(수동 편집·시드는 null). 계약의 current 모양에는 없어 보내는 백엔드에서만 있습니다. */
+  sourceProposalId?: number | null;
+  /** 예산(설정 frameworkTokenBudget). 판마다 오지 않으면 응답 맨 위의 tokenBudget, 그것도 없으면 설정 응답에서 읽습니다. */
+  tokenBudget?: number | null;
+}
+
+/** 판 목록 한 줄. */
+export interface PaperFrameworkVersionSummary {
+  version: number;
+  title: string | null;
+  changelog: string | null;
+  createdAtKst: string | null;
+  sourceProposalId: number | null;
+  /** 계약 밖 — 보내면 판 이름에 씁니다("임시 v0"). */
+  status?: PaperFrameworkStatus | string | null;
+  /** 계약 밖 — 그 판 렌더링의 토큰 어림. */
+  tokensEst?: number | null;
+}
+
+/** GET /api/paper/framework — 지금 판과 판 목록. */
+export interface PaperFrameworkResponse {
+  available: boolean;
+  message?: string;
+  current?: PaperFrameworkVersion | null;
+  versions?: PaperFrameworkVersionSummary[];
+  /** 렌더링 예산(서버가 지금 설정에서 읽은 frameworkTokenBudget). 계약 밖 — 없으면 화면이 설정 응답에서 읽습니다. */
+  tokenBudget?: number | null;
+}
+
+/** GET /api/paper/framework/versions/{version} */
+export interface PaperFrameworkVersionResponse {
+  available: boolean;
+  message?: string;
+  version?: PaperFrameworkVersion | null;
+}
+
+/**
+ * POST /api/paper/framework `{body, changelog}`(수동 편집, F3) → 새 판 번호. 형식이 틀리면 400(서버 문구). 렌더링이 예산을 넘으면
+ * 저장은 하고 warning을 붙입니다(F4 — 막지 않음).
+ */
+export interface PaperFrameworkSaveResult {
+  ok: boolean;
+  version?: number | null;
+  tokensEst?: number | null;
+  overBudget?: boolean | null;
+  warning?: string | null;
+  message?: string;
+}
+
+/** 제안 상태 — 대기(승인·거절 전) · 승인(새 판) · 거절 · 실패(호출·형식 오류 — 자동 반영 없음). */
+export type PaperProposalStatus = "PENDING" | "APPROVED" | "REJECTED" | "FAILED";
+
+/** OS 절차 B의 평가(proposal.schema.json assessment[].verdict). */
+export type PaperProposalVerdict = "일치" | "보완" | "수정 필요" | "모순";
+
+/** 제안 연산(proposal.schema.json operations[].op). */
+export type PaperProposalOp =
+  | "ADD_RULE" | "UPDATE_RULE" | "DELETE_RULE" | "ADD_PRINCIPLE" | "UPDATE_PRINCIPLE" | "DELETE_PRINCIPLE";
+
+/** 글의 주장 하나와 지금 프레임의 대조. */
+export interface PaperProposalAssessment {
+  point: string;
+  verdict: PaperProposalVerdict | string;
+  reason: string;
+}
+
+/**
+ * 연산 하나 — target은 ADD_RULE이면 엔진 id("E2"), 규칙 수정·삭제면 규칙 id("E2-R1"), 원칙 수정·삭제면 원칙 id("P3"), 원칙 추가는
+ * 무시. text는 추가·수정의 새 본문(300자 이내), 삭제는 null.
+ */
+export interface PaperProposalOperation {
+  op: PaperProposalOp | string;
+  target: string;
+  text: string | null;
+  why: string;
+}
+
+/** 프레임 제안 한 건(paper_framework_proposals). 실패면 summary·operations가 없고 error에 사유가 있습니다. */
+export interface PaperFrameworkProposal {
+  id: number;
+  status: PaperProposalStatus | string;
+  noteId: number | null;
+  model: string | null;
+  summary: string | null;
+  operations: PaperProposalOperation[] | null;
+  assessment: PaperProposalAssessment[] | null;
+  beforeAfter: string | null;
+  error: string | null;
+  createdAtKst: string | null;
+  decidedAtKst: string | null;
+  /** 승인해 만든 판(승인 전·거절·실패는 null). */
+  resultVersion: number | null;
+  /** 제안할 때 대조한 판. 승인할 때 지금 판과 다르면 서버가 400("다른 판이 먼저 승인됐습니다 — 다시 제안하세요"). */
+  baseVersion: number | null;
+  /** 그 호출의 토큰·추정 비용(계약 밖, JSON 그대로). */
+  usage?: unknown;
+}
+
+/** GET /api/paper/framework/proposals — 최근 순. */
+export interface PaperProposalsResponse {
+  available: boolean;
+  message?: string;
+  proposals?: PaperFrameworkProposal[];
+}
+
+/**
+ * POST /api/paper/framework/proposals `{noteId?, text?}` — Claude를 한 번 부릅니다(하루 상한 공유, F7). 호출·형식이 실패해도 FAILED 행이
+ * 남고 `ok:false`와 그 행이 옵니다(사유는 proposal.error). 상한·다른 요청 진행 중·없는 메모는 400·429(서버 문구).
+ */
+export interface PaperProposeResult {
+  ok: boolean;
+  proposal?: PaperFrameworkProposal | null;
+  message?: string;
+}
+
+/**
+ * POST /api/paper/framework/proposals/{id}/approve → 새 판 번호. 대기 아닌 제안·기준 판 불일치·대상 없음은 400. 저장과 같이 새 판의
+ * 렌더링 어림(tokensEst)과 예산 초과(overBudget·warning — 승인은 함, F4)도 옵니다.
+ */
+export interface PaperProposalApproveResult {
+  ok: boolean;
+  version?: number | null;
+  tokensEst?: number | null;
+  overBudget?: boolean | null;
+  warning?: string | null;
+  message?: string;
+}
+
+/** POST …/reject, DELETE /api/paper/notes/{id} — 성공 여부만. */
+export interface PaperOkResult {
+  ok: boolean;
+  message?: string;
+}
+
+/** 메모 종류 — 시황 메모(기준일·만료일, 유효하면 결정 패킷에 자료로) · 방법론 메모(만료 없음, 프레임 제안에만). */
+export type PaperNoteKind = "MARKET" | "INSIGHT";
+
+/** 메모 한 건(paper_notes). active는 서버 판정 — 보관 아님이고 기준일·만료일 안이면(오늘 기준) 참. */
+export interface PaperNote {
+  id: number;
+  kind: PaperNoteKind | string;
+  asOfDate: string | null;
+  expiresOn: string | null;
+  title: string;
+  body: string;
+  archived: boolean;
+  active: boolean;
+  createdAtKst: string | null;
+}
+
+/** GET /api/paper/notes?includeExpired= */
+export interface PaperNotesResponse {
+  available: boolean;
+  message?: string;
+  /** 유효(active) 판정의 기준일(서버 — 계약 밖). */
+  referenceDate?: string | null;
+  notes?: PaperNote[];
+}
+
+/** POST /api/paper/notes `{kind, asOfDate?, expiresOn?, title, body}` — 기준일·만료일을 비우면 서버가 기본값으로 채웁니다. */
+export interface PaperNoteCreateResult {
+  ok: boolean;
+  note?: PaperNote | null;
+  message?: string;
 }

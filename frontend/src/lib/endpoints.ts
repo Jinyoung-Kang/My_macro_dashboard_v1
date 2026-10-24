@@ -201,6 +201,25 @@ export const endpoints = {
     settingsHistory: "/api/paper/settings/history",
     /** 설정 저장 — POST, 본문은 바꿀 키만 담은 patch(`{"키": 값}`). 읽기와 같은 경로입니다. */
     saveSettings: "/api/paper/settings",
+    /** 프레임(투자 OS) — 지금 판(렌더링·토큰 어림)과 판 목록. */
+    framework: "/api/paper/framework",
+    /** 판 하나(전후 비교용 렌더링 포함). */
+    frameworkVersion: (version: number) => `/api/paper/framework/versions/${segment(String(version))}`,
+    /** 수동 편집 — POST `{body, changelog}`, 새 판. 읽기와 같은 경로입니다. */
+    saveFramework: "/api/paper/framework",
+    /** 프레임 제안 목록(최근 순). */
+    proposals: "/api/paper/framework/proposals",
+    /** 제안 요청 — POST `{noteId?, text?}`. Claude를 한 번 부릅니다(하루 상한 공유). 목록과 같은 경로입니다. */
+    propose: "/api/paper/framework/proposals",
+    /** 제안 승인(새 판) — Claude를 부르지 않습니다. */
+    approveProposal: (id: number) => `/api/paper/framework/proposals/${segment(String(id))}/approve`,
+    rejectProposal: (id: number) => `/api/paper/framework/proposals/${segment(String(id))}/reject`,
+    /** 메모 목록 — includeExpired면 만료한 메모도. */
+    notes: (includeExpired: boolean) => withQuery("/api/paper/notes", { includeExpired }),
+    /** 메모 쓰기 — POST `{kind, asOfDate?, expiresOn?, title, body}`. */
+    createNote: "/api/paper/notes",
+    /** 메모 보관 — DELETE(지우지 않고 archived). */
+    archiveNote: (id: number) => `/api/paper/notes/${segment(String(id))}`,
   },
 
   // 🔌 토스증권 연결 테스트 (경로는 /api/ai/toss 이지만 AI와 관계없음)

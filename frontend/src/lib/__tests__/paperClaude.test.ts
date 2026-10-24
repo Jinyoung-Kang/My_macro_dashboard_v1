@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  API_COST_NOT_SHOWN,
+  API_COST_ESTIMATE_NOTE,
+  API_COST_NOT_SENT,
   apiUsageView,
   CLAUDE_COST_NOTE,
   claimLabelBadges,
@@ -225,41 +226,82 @@ describe("Claude 결정 상세", () => {
     expect(claudeDecisionView({ response: { targetEquityExposurePct: 50 } }).recognized).toBe(true);
   });
 
-  it("상세 머리 — Claude 책인데 프레임 버전이 없으면 '임시 — 프레임 v1 준비 전'(빈 칸이면 프레임 없이로 읽힘)", () => {
+  it("상세 머리 — 프레임 칸은 response.framework의 판 번호·상태(임시면 '임시 v0'), 제목은 마우스를 올려 본다", () => {
     const detail: PaperDecisionDetail = {
       id: 3, book: "claude", asOfTradingDate: "2026-10-26", kind: "SCHEDULED", status: "OK", decidedAtKst: "2026-10-27 07:41",
-      model: "claude-sonnet-5-5", frameworkVersion: null, settingsVersion: 2, selectionAsOf: null, targetExposurePct: 35,
+      model: "claude-sonnet-5-5", frameworkVersion: 0, settingsVersion: 2, selectionAsOf: null, targetExposurePct: 35,
       summary: null, orderCount: 3, rejectedCount: 2, pricesFinal: true, error: null,
-      packet: {}, packetHash: null, response: RESPONSE, usage: null, noteIds: null, latencyMs: null, retryCount: 0,
+      packet: {}, packetHash: null,
+      response: { ...RESPONSE, framework: { version: 0, status: "INTERIM", title: "임시 v0 — OS 원문 반영 전" } },
+      usage: null, noteIds: null, latencyMs: null, retryCount: 0,
     };
     expect(decisionMeta(detail).map((cell) => [cell.label, cell.value]).slice(4)).toEqual([
       ["모델", "claude-sonnet-5-5"],
-      ["프레임 버전", "임시 — 프레임 v1 준비 전"],
+      ["프레임 버전", "임시 v0"],
       ["목표 주식 노출", "35.0%"],
     ]);
-    expect(decisionMeta({ ...detail, frameworkVersion: 1 }).find((cell) => cell.key === "frameworkVersion")?.value).toBe("v1");
+    expect(decisionMeta(detail).find((cell) => cell.key === "frameworkVersion")?.title).toBe("임시 v0 — OS 원문 반영 전");
+    // 사용자 판은 번호만, response.framework가 없으면 목록의 frameworkVersion(상태 모름 — 번호만)
+    const user = { ...detail, frameworkVersion: 1, response: { ...RESPONSE, framework: { version: 1, status: "USER", title: "투자 OS" } } };
+    expect(decisionMeta(user).find((cell) => cell.key === "frameworkVersion")?.value).toBe("v1");
+    expect(decisionMeta({ ...detail, frameworkVersion: 2, response: RESPONSE }).find((cell) => cell.key === "frameworkVersion")?.value)
+      .toBe("v2");
+  });
+
+  it("상세 머리 — 단계 3a 기록(판 번호 전 임시 프롬프트, {version:null, interim:true})은 '판 번호 없음', 규칙 책은 칸이 없다", () => {
+    const old: PaperDecisionDetail = {
+      id: 4, book: "claude", asOfTradingDate: "2026-10-26", kind: "MANUAL", status: "OK", decidedAtKst: null,
+      model: "claude-sonnet-5-5", frameworkVersion: null, settingsVersion: 2, selectionAsOf: null, targetExposurePct: null,
+      summary: null, orderCount: 0, rejectedCount: 0, pricesFinal: true, error: null,
+      packet: {}, packetHash: null,
+      response: { ...RESPONSE, framework: { version: null, interim: true, label: "프레임 v1 준비 전 임시" } },
+      usage: null, noteIds: null, latencyMs: null, retryCount: 0,
+    };
+    expect(decisionMeta(old).find((cell) => cell.key === "frameworkVersion")?.value).toBe("임시 — 판 번호 없음(단계 3b 전 기록)");
+    expect(decisionMeta({ ...old, book: "rules", model: null, response: {} }).find((cell) => cell.key === "frameworkVersion"))
+      .toBeUndefined();
   });
 });
 
 describe("Claude 책 시작 카드", () => {
   const BOOKS = [book("rules", { kind: "RULES", label: "규칙 책" }), CLAUDE_NOT_STARTED];
 
-  it("시작 전이면 카드 — 출발일 패킷·검증·사후 체결·노출은 Claude가, 임시 프레임과 권고, 비용 안내", () => {
-    const prompt = claudeStartPrompt({ initialized: true, startDate: "2026-10-23", books: BOOKS });
+  it("시작 전이면 카드 — 출발일 패킷·검증·사후 체결·노출은 Claude가, 임시 v0이면 OS 원문으로 v1을 만든 뒤 시작 권고, 비용 안내", () => {
+    const prompt = claudeStartPrompt(
+      { initialized: true, startDate: "2026-10-23", books: BOOKS },
+      { version: 0, status: "INTERIM", title: "임시 v0 — OS 원문 반영 전" },
+    );
     expect(prompt?.bookCode).toBe("claude");
     expect(prompt?.title).toBe("Claude 재량 책 시작");
     expect(prompt?.body).toContain("출발일(2026-10-23) 기준 입력 패킷");
     expect(prompt?.body).toContain("검증기(하드 규칙)를 통과한 주문만 출발일 종가에 사후 체결");
     expect(prompt?.body).toContain("노출 0%도 100%도 거절 사유가 아닙니다");
-    expect(prompt?.interim).toContain("프레임 v1 준비 전");
-    expect(prompt?.interim).toContain("다음 단계(3b)");
-    expect(prompt?.interim).toContain("OS 원문을 적용한 뒤 시작하기를 권합니다");
+    expect(prompt?.framework.tone).toBe("warn");
+    expect(prompt?.framework.text).toContain("지금 프레임은 임시 v0입니다 — OS 원문으로 v1을 만든 뒤 시작을 권합니다");
+    expect(prompt?.framework.text).toContain("'OS 원문으로 새 판 만들기'");
     expect(prompt?.cost).toContain("Sonnet 5.5 호출 1회, 약 $0.1");
     expect(prompt?.confirmPreview).toContain("장부·결정·주문 기록은 바꾸지 않습니다(사용량과, 없을 때만 출발일 기관 선정");
     expect(prompt?.confirmPreview).toContain(CLAUDE_COST_NOTE);
     expect(prompt?.confirmStart).toContain("정말 시작할까요?");
     expect(prompt?.confirmStart).toContain("'책 초기화'");
     expect(prompt?.confirmStart).toContain("미리보기와 같은 답이 나온다는 보장은 없습니다");
+    expect(prompt?.confirmStart).toContain("프레임은 아직 임시 v0입니다.");
+  });
+
+  it("프레임 안내 — 사용자 판이면 그 판 번호(정보색), 승인으로 임시를 이어받은 판은 그 번호로 권고, 판을 모르면 단정하지 않는다", () => {
+    const base = { initialized: true, startDate: "2026-10-23", books: BOOKS };
+    const user = claudeStartPrompt(base, { version: 1, status: "USER", title: "투자 OS 2026-10" });
+    expect(user?.framework).toEqual({
+      tone: "info",
+      text: "지금 프레임은 v1 (투자 OS 2026-10)입니다 — Claude는 이 판으로 판단합니다. 시작은 한 번뿐이니 미리보기로 이 판의 판단을 먼저 볼 수 있습니다.",
+    });
+    expect(user?.confirmStart).toContain("판단 프레임은 v1입니다.");
+    const inherited = claudeStartPrompt(base, { version: 2, status: "INTERIM", title: null });
+    expect(inherited?.framework.text).toContain("지금 프레임은 임시 v2입니다 — OS 원문으로 사용자 판을 만든 뒤 시작을 권합니다.");
+    const unknown = claudeStartPrompt(base);
+    expect(unknown?.framework.tone).toBe("warn");
+    expect(unknown?.framework.text).toContain("지금 프레임 판을 아직 읽지 못했습니다");
+    expect(unknown?.confirmStart).not.toContain("프레임");
   });
 
   it("이미 시작했거나·초기화 전이거나·Claude 책이 없으면 카드 없음", () => {
@@ -329,33 +371,55 @@ describe("Claude 노출 추이", () => {
 
 describe("Claude 호출 사용량(명세 C8)", () => {
   const USAGE = {
-    today: { day: "2026-10-27", calls: 2, cap: 6, inputTokens: 45012, outputTokens: 6200, cacheReadTokens: 7800, cacheWriteTokens: 0 },
-    month: { month: "2026-10", days: 3, calls: 5, inputTokens: 120034, outputTokens: 15500, cacheReadTokens: 23400, cacheWriteTokens: 8100 },
-    note: "호출 수는 성공·실패를 모두 셉니다. 토큰은 응답이 알려 준 값의 합이고, 추정 비용은 단가를 코드에 두지 않아 내지 않습니다.",
+    today: {
+      day: "2026-10-27", calls: 2, cap: 6, inputTokens: 45012, outputTokens: 6200, cacheReadTokens: 7800, cacheWriteTokens: 0,
+      estCostUsd: 0.0912, estimatedCalls: 1, isEstimated: true,
+    },
+    month: {
+      month: "2026-10", days: 3, calls: 5, inputTokens: 120034, outputTokens: 15500, cacheReadTokens: 23400, cacheWriteTokens: 8100,
+      estCostUsd: 0.3104, estimatedCalls: 4, isEstimated: true,
+    },
+    note: "호출 수는 성공·실패를 모두 셉니다. 토큰은 응답이 알려 준 값의 합입니다.",
   };
 
-  it("오늘(호출/상한·토큰)과 이달 누적 — 서버 값 그대로, 안내는 서버 문구", () => {
+  it("오늘(호출/상한·추정 비용·토큰)과 이달 누적 — 서버 값 그대로, 추정 비용은 '추정'과 추정한 호출 수를 함께", () => {
     const view = apiUsageView(USAGE);
     expect(view?.todayLabel).toBe("오늘(KST 2026-10-27)");
     expect(view?.today.map((cell) => [cell.label, cell.value])).toEqual([
-      ["호출 / 하루 상한", "2 / 6회"], ["입력 토큰", "45,012"], ["출력 토큰", "6,200"], ["캐시 읽기 토큰", "7,800"], ["캐시 쓰기 토큰", "0"],
+      ["호출 / 하루 상한", "2 / 6회"], ["추정 비용", "추정 $0.09 · 추정 1/2회"],
+      ["입력 토큰", "45,012"], ["출력 토큰", "6,200"], ["캐시 읽기 토큰", "7,800"], ["캐시 쓰기 토큰", "0"],
     ]);
     expect(view?.monthLabel).toBe("이달(KST 2026-10)");
     expect(view?.month.map((cell) => [cell.label, cell.value])).toEqual([
-      ["호출", "5회"], ["입력 토큰", "120,034"], ["출력 토큰", "15,500"], ["캐시 읽기 토큰", "23,400"], ["캐시 쓰기 토큰", "8,100"],
+      ["호출", "5회"], ["추정 비용", "추정 $0.31 · 추정 4/5회"],
+      ["입력 토큰", "120,034"], ["출력 토큰", "15,500"], ["캐시 읽기 토큰", "23,400"], ["캐시 쓰기 토큰", "8,100"],
     ]);
     expect(view?.capReached).toBe(false);
-    expect(view?.note).toContain("추정 비용은");
+    expect(view?.note).toBe(USAGE.note);
+    // 추정한 호출이 전체보다 적으면 빠진 호출이 있다고 적습니다(단가 도입 전·토큰 모름).
+    expect(view?.costNote).toContain(API_COST_ESTIMATE_NOTE);
+    expect(view?.costNote).toContain("추정에서 빠진 호출이 있습니다");
   });
 
-  it("상한에 닿으면 표시, 모르는 값은 —(0으로 채우지 않음), 사용량이 없으면 null", () => {
+  it("추정 금액이 null이면 '—'(0으로 채우지 않음), 1센트 미만은 4자리 — Haiku 한 번이 $0.00으로 보이지 않게", () => {
+    const none = apiUsageView({ ...USAGE, today: { ...USAGE.today, estCostUsd: null, estimatedCalls: 0 } });
+    expect(none?.today[1]).toEqual({ key: "estCost", label: "추정 비용", value: "—" });
+    const haiku = apiUsageView({ ...USAGE, today: { ...USAGE.today, calls: 1, estCostUsd: 0.0045, estimatedCalls: 1 } });
+    expect(haiku?.today[1].value).toBe("추정 $0.0045 · 추정 1/1회");
+    const all = apiUsageView({ ...USAGE, month: { ...USAGE.month, estimatedCalls: 5 }, today: { ...USAGE.today, estimatedCalls: 2 } });
+    expect(all?.costNote).toBe(API_COST_ESTIMATE_NOTE);
+  });
+
+  it("상한에 닿으면 표시, 모르는 값은 —(0으로 채우지 않음), 추정 필드를 보내지 않는 서버는 비용 칸 없이 그렇다고, 사용량이 없으면 null", () => {
     expect(apiUsageView({ ...USAGE, today: { ...USAGE.today, calls: 6 } })?.capReached).toBe(true);
     const partial = apiUsageView({ today: { day: "2026-10-27", calls: 1, cap: null }, month: {} });
     expect(partial?.today[0].value).toBe("1 / —회");
     expect(partial?.today[1].value).toBe("—");
+    expect(partial?.today.some((cell) => cell.key === "estCost")).toBe(false);
     expect(partial?.month[0].value).toBe("—회");
     expect(partial?.monthLabel).toBe("이달(KST —)");
-    expect(partial?.note).toBe(API_COST_NOT_SHOWN);
+    expect(partial?.note).toBeNull();
+    expect(partial?.costNote).toBe(API_COST_NOT_SENT);
     expect(apiUsageView(undefined)).toBeNull();
     expect(apiUsageView({ note: "x" })).toBeNull();
   });

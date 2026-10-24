@@ -116,6 +116,15 @@ const CASES: Case[] = [
   })),
   { name: "paper.decisions", before: "/api/paper/decisions?book=rules&limit=50", after: endpoints.paper.decisions("rules", 50) },
   { name: "paper.decision", before: `/api/paper/decisions/${12}`, after: endpoints.paper.decision(12) },
+  { name: "paper.frameworkVersion", before: `/api/paper/framework/versions/${0}`, after: endpoints.paper.frameworkVersion(0) },
+  { name: "paper.approveProposal", before: `/api/paper/framework/proposals/${5}/approve`, after: endpoints.paper.approveProposal(5) },
+  { name: "paper.rejectProposal", before: `/api/paper/framework/proposals/${5}/reject`, after: endpoints.paper.rejectProposal(5) },
+  ...[true, false].map((includeExpired) => ({
+    name: `paper.notes includeExpired=${includeExpired}`,
+    before: `/api/paper/notes?includeExpired=${includeExpired}`,
+    after: endpoints.paper.notes(includeExpired),
+  })),
+  { name: "paper.archiveNote", before: `/api/paper/notes/${9}`, after: endpoints.paper.archiveNote(9) },
 ];
 
 describe("API 경로 — 예전 조립식과 서버가 받는 값이 같다", () => {
@@ -145,6 +154,18 @@ describe("모의 매매 설정 경로", () => {
   });
 });
 
+describe("모의 매매 프레임·메모 경로", () => {
+  it("수동 편집·제안 요청·메모 쓰기는 읽기와 같은 경로에 POST, 승인·거절·보관은 번호 아래", () => {
+    expect(endpoints.paper.saveFramework).toBe(endpoints.paper.framework);
+    expect(endpoints.paper.framework).toBe("/api/paper/framework");
+    expect(endpoints.paper.propose).toBe(endpoints.paper.proposals);
+    expect(endpoints.paper.proposals).toBe("/api/paper/framework/proposals");
+    expect(endpoints.paper.createNote).toBe("/api/paper/notes");
+    expect(endpoints.paper.archiveNote(12)).toBe("/api/paper/notes/12");
+    expect(endpoints.paper.approveProposal(12)).toBe("/api/paper/framework/proposals/12/approve");
+  });
+});
+
 /** endpoints의 잎(문자열 경로·경로를 만드는 함수)을 모읍니다. */
 function leaves(value: unknown, out = { strings: [] as string[], functions: 0 }) {
   if (typeof value === "string") out.strings.push(value);
@@ -160,7 +181,10 @@ const documentedForm = (url: string) => new URL(url, "http://backend").pathname
   .replace(/^\/api\/admin\/users\/[^/]+$/, "/api/admin/users/{id}")
   .replace(/^\/api\/alerts\/rules\/[^/]+$/, "/api/alerts/rules/{id}")
   .replace(/^\/api\/paper\/books\/[^/]+\/(positions|orders|fills|nav|status|reset)$/, "/api/paper/books/{code}/$1")
-  .replace(/^\/api\/paper\/decisions\/[^/]+$/, "/api/paper/decisions/{id}");
+  .replace(/^\/api\/paper\/decisions\/[^/]+$/, "/api/paper/decisions/{id}")
+  .replace(/^\/api\/paper\/framework\/versions\/[^/]+$/, "/api/paper/framework/versions/{version}")
+  .replace(/^\/api\/paper\/framework\/proposals\/[^/]+\/(approve|reject)$/, "/api/paper/framework/proposals/{id}/$1")
+  .replace(/^\/api\/paper\/notes\/[^/]+$/, "/api/paper/notes/{id}");
 
 describe("docs/API.md 백엔드 표와 대조", () => {
   it("화면이 부르는 경로는 모두 문서(= 백엔드 경로 목록 테스트가 대조하는 표)에 있다", () => {
@@ -173,6 +197,6 @@ describe("docs/API.md 백엔드 표와 대조", () => {
     const paths = [...strings, ...CASES.map(({ after }) => after)].map(documentedForm);
     expect(paths.filter((path) => !documented.has(path))).toEqual([]);
     // 경로를 만드는 함수는 모두 위 CASES에 한 줄 이상 있습니다. 새 함수를 만들었다면 CASES에 추가하고 이 숫자를 고치세요.
-    expect(functions).toBe(47);
+    expect(functions).toBe(52);
   });
 });

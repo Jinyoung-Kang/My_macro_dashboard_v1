@@ -7,7 +7,9 @@ import { endpoints } from "@/lib/endpoints";
 import { PAPER_SOURCES, PAPER_TABS, type PaperTabKey } from "@/lib/paper";
 import type { PaperOverviewResponse } from "@/lib/types";
 import { DecisionsSection } from "./DecisionsSection";
+import { FrameworkSection } from "./FrameworkSection";
 import { HoldingsSection } from "./HoldingsSection";
+import { NotesSection } from "./NotesSection";
 import { OverviewSection } from "./OverviewSection";
 import { SelectionSection } from "./SelectionSection";
 import { SettingsSection } from "./SettingsSection";
@@ -20,7 +22,8 @@ import { SettingsSection } from "./SettingsSection";
  *
  * <p>개요 응답 하나를 이 파일이 읽어 섹션에 나눠 줍니다 — 보유·체결 탭과 결정 로그 탭의 책 목록도 개요의 책 목록입니다
  * (탭마다 따로 읽으면 탭들이 서로 다른 시점의 책 상태를 보일 수 있음). 기관 선정 탭은 책 상태와 관계없는 트랙레코드 응답을
- * 그 탭이 열릴 때 스스로 읽습니다(설정 탭도 같음 — 설정은 책 상태와 따로 읽고 씁니다). 한계 문구는 어느 탭에서든 맨 위에 둡니다.
+ * 그 탭이 열릴 때 스스로 읽습니다(프레임·메모·설정 탭도 같음 — 책 상태와 따로 읽고 씁니다). 메모 탭에는 출발일만 넘깁니다(시작 패킷에
+ * 실리는 메모의 기준일 안내). 한계 문구는 어느 탭에서든 맨 위에 둡니다.
  */
 export default function PaperPage() {
   const [tab, setTab] = useState<PaperTabKey>("overview");
@@ -86,6 +89,8 @@ export default function PaperPage() {
             {current.key === "selection" && <SelectionSection />}
             {current.key === "holdings" && <HoldingsSection books={data.books ?? []} onChanged={reload} />}
             {current.key === "decisions" && <DecisionsSection books={data.books ?? []} onChanged={reload} />}
+            {current.key === "framework" && <FrameworkSection />}
+            {current.key === "notes" && <NotesSection startDate={data.startDate ?? null} />}
             {current.key === "settings" && <SettingsSection />}
             {current.opensIn && (
               <Banner tone="info">

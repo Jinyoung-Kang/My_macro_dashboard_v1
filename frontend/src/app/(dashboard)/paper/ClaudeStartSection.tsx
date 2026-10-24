@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Banner, Button, Card } from "@/components/ui";
+import { useApi } from "@/hooks/useApi";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
 import { useElapsedSeconds } from "@/hooks/useElapsedSeconds";
 import { apiPost } from "@/lib/api";
@@ -10,11 +11,12 @@ import {
   claudeDecisionView,
   claudePreviewResultView,
   claudeStartPrompt,
+  frameworkInfoOf,
   initialDecisionResultView,
   PAPER_SOURCES,
   prettyJson,
 } from "@/lib/paper";
-import type { PaperClaudePreviewResult, PaperInitialDecisionResult, PaperOverviewResponse } from "@/lib/types";
+import type { PaperClaudePreviewResult, PaperFrameworkResponse, PaperInitialDecisionResult, PaperOverviewResponse } from "@/lib/types";
 import { ClaudeDecisionBody } from "./ClaudeDecisionBody";
 
 /** 확인 단계 — 어느 버튼의 확인을 열었는지. */
@@ -28,9 +30,14 @@ type Confirming = "preview" | "start" | null;
  * 통과한 주문을 출발일 종가로 사후 체결하고 책을 운용 중으로 바꿉니다(성공하면 onChanged로 개요를 다시 읽어 카드가 사라짐).
  *
  * 이 컴포넌트는 카드가 사라진 뒤에도 그려져 있어야 시작 결과가 남습니다 — 그래서 시작 전이 아니면 결과만 그리고 끝냅니다.
+ *
+ * 카드의 프레임 안내(임시 판이면 OS 원문으로 사용자 판을 만든 뒤 시작을 권함)는 지금 판을 읽어 씁니다 — 개요 응답에 지금 판이 없어
+ * 카드를 보일 때만 GET /api/paper/framework를 한 번 읽습니다(읽는 중·실패면 안내가 판을 단정하지 않음).
  */
 export function ClaudeStartSection({ overview, onChanged }: { overview: PaperOverviewResponse; onChanged: () => void }) {
-  const prompt = claudeStartPrompt(overview);
+  const showing = claudeStartPrompt(overview) !== null;
+  const framework = useApi<PaperFrameworkResponse>(showing ? endpoints.paper.framework : null);
+  const prompt = claudeStartPrompt(overview, framework.data?.available ? frameworkInfoOf(framework.data.current) : null);
   const [confirming, setConfirming] = useState<Confirming>(null);
   const preview = useAsyncAction(
     (book: string) => apiPost<PaperClaudePreviewResult>(endpoints.paper.runInitialDecision, { book, preview: true }),
@@ -80,7 +87,7 @@ export function ClaudeStartSection({ overview, onChanged }: { overview: PaperOve
     <Card title={prompt.title} subtitle="초기 결정 — 출발일 기준 입력 패킷 · 출발일 종가 사후 체결" source={PAPER_SOURCES.decisions}>
       <p className="text-sm leading-relaxed text-body">{prompt.body}</p>
       <div className="mt-3">
-        <Banner tone="warn">{prompt.interim}</Banner>
+        <Banner tone={prompt.framework.tone}>{prompt.framework.text}</Banner>
       </div>
       <p className="mt-2 text-xs text-muted">비용: {prompt.cost}</p>
 
