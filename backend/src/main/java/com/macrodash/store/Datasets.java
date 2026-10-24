@@ -39,12 +39,24 @@ public final class Datasets {
      * 확정 종가인지는 봉 날짜와 수집 시각(마감 + 15분)으로 가립니다.
      */
     public static final String SNAP_PAPER_QUOTES = "paper.quotes";
+    /**
+     * 모의 매매 트랙레코드 후보 기관 목록과 기관별 수집 진행률(저장 분기 수·완료 여부). 기관마다의 공시는
+     * {@code sec13f(cik, TRACK_RECORD_QUARTERS)}에 있고, 이 저장본은 "누가 후보이고 어디까지 받았나"만 담습니다.
+     */
+    public static final String SNAP_TRACK_RECORD_INDEX = "sec.13f.track_record_index";
 
     /** 변동성 지수는 가장 긴 기간으로 한 번 저장하고 짧은 기간은 잘라 씁니다. */
     public static final String VOLATILITY_STORE_PERIOD = "5y";
 
     /** 수집기가 저장하는 최대 분기 수. q1은 q8의 앞부분입니다. */
     public static final int MAX_TRACKED_QUARTERS = 8;
+
+    /**
+     * 모의 매매 트랙레코드 후보 기관의 13F 분기 수(저장 이름 {@code sec13f(cik, 30)}). 7년 창(28분기)에 공시 지연 여유를 더한
+     * 값입니다 — 재선정일에는 최신 분기 공시가 아직 없을 수 있고, 창의 첫 구간은 창 시작 전에 낸 공시로 시작합니다.
+     * 기존 13F 화면(q8)과 따로 받습니다.
+     */
+    public static final int TRACK_RECORD_QUARTERS = 30;
 
     /** Daum 선물 수급 조회 기간 (수집기와 동일해야 합니다). */
     public static final int DAUM_TREND_LOOKBACK = 25;

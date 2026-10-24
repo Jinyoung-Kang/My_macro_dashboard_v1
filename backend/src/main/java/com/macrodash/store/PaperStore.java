@@ -99,6 +99,30 @@ public class PaperStore {
     public record StartPrice(String ticker, LocalDate tradingDate, double close, String source, Instant capturedAt) {
     }
 
+    /**
+     * 기준일 하나·기관 하나의 13F 트랙레코드(설계 §4-0 ④, {@code paper_track_record}). 수치는 {@code TrackRecord13F.Result}
+     * 그대로(%는 ×100, 커버리지는 0~1 비율)이고 표본이 없으면 null입니다. {@code rank}는 자격 있는 기관만(1부터), 없으면 null.
+     * {@code periods}는 구간 목록 JSON 배열(null이면 {@code []}), {@code computedAt}은 넣을 때 null이면 DB가 지금으로 채웁니다.
+     */
+    public record TrackRecordRow(LocalDate asOfDate, String cik, int windowYears, String metric, int periodsUsed,
+                                 int periodsTotal, LocalDate firstFilingDate, LocalDate lastFilingDate,
+                                 Double cumReturnPct, Double cagrPct, Double volPct, Double mddPct, Double sharpe,
+                                 Double excessVsSpyPct, Double coverageMin, Double coverageAvg, boolean eligible,
+                                 String ineligibleReason, Integer rank, JsonNode periods, int settingsVersion,
+                                 Instant computedAt) {
+    }
+
+    /**
+     * 기준일 하나의 기관 선정({@code paper_selection_log}). {@code selectedCiks}는 선정 순위 순, {@code ranking}은 그때의 순위표
+     * JSON(null이면 {@code []}). {@code createdAt}은 넣을 때 쓰지 않고 DB가 채웁니다.
+     */
+    public record Selection(LocalDate asOfDate, List<String> selectedCiks, JsonNode ranking, int settingsVersion,
+                            Instant createdAt) {
+        public Selection {
+            selectedCiks = selectedCiks == null ? List.of() : List.copyOf(selectedCiks);
+        }
+    }
+
     private static final String BOOK_COLUMNS = "code, kind, label, initial_cash, started_on, status, created_at";
     private static final String STATE_COLUMNS = "book_code, cash, nav, equity_value, exposure_pct, last_observed_at, "
             + "last_processed_collected_at, last_nav_trading_date, updated_at";
@@ -114,6 +138,12 @@ public class PaperStore {
             + "prices_final";
     private static final String JOB_COLUMNS = "id, job, started_at, finished_at, outcome, detail::text AS detail";
     private static final String START_PRICE_COLUMNS = "ticker, trading_date, close, source, captured_at";
+    private static final String TRACK_RECORD_COLUMNS = "as_of_date, cik, window_years, metric, periods_used, "
+            + "periods_total, first_filing_date, last_filing_date, cum_return_pct, cagr_pct, vol_pct, mdd_pct, sharpe, "
+            + "excess_vs_spy_pct, coverage_min, coverage_avg, eligible, ineligible_reason, rank, periods::text AS periods, "
+            + "settings_version, computed_at";
+    private static final String SELECTION_COLUMNS = "as_of_date, selected_ciks, ranking::text AS ranking, "
+            + "settings_version, created_at";
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -558,6 +588,128 @@ public class PaperStore {
         });
     }
 
+    /**
+     * 그 버전의 설정 본문(변경 이력 {@code paper_settings_history}) — "이 트랙레코드는 어떤 자격 기준으로 계산했나"를 그때의
+     * 값으로 보이려고. {@code updatedAt}에는 그 버전을 남긴 시각이 들어갑니다. 없으면 empty.
+     */
+    public Optional<SettingsRow> settingsAt(int version) {
+        return jdbc.query("SELECT version, body::text AS body, created_at FROM paper_settings_history WHERE version = ?",
+                (rs, rowNum) -> new SettingsRow(rs.getInt("version"), json(rs, "body"), instant(rs, "created_at")),
+                version).stream().findFirst();
+    }
+
+    // ------------------------------------------------------------------ 트랙레코드·선정
+    /**
+     * 트랙레코드 한 행을 넣거나 통째로 바꿉니다({@code (as_of_date, cik)} 충돌 시 갱신 — 같은 기준일의 수동 재계산이 덮어씀).
+     * 수치가 NaN·무한대이면 저장하지 않고 {@link IllegalArgumentException}(DOUBLE PRECISION은 NaN을 받아 주므로 여기서 막음).
+     */
+    public void upsertTrackRecord(TrackRecordRow r) {
+        String periodsJson = r.periods() == null ? null : mapper.writeValueAsString(r.periods());
+        jdbc.update("INSERT INTO paper_track_record (as_of_date, cik, window_years, metric, periods_used, periods_total, "
+                        + "first_filing_date, last_filing_date, cum_return_pct, cagr_pct, vol_pct, mdd_pct, sharpe, "
+                        + "excess_vs_spy_pct, coverage_min, coverage_avg, eligible, ineligible_reason, rank, periods, "
+                        + "settings_version, computed_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                        + "COALESCE(CAST(? AS jsonb), '[]'::jsonb), ?, COALESCE(CAST(? AS timestamptz), now())) "
+                        + "ON CONFLICT (as_of_date, cik) DO UPDATE SET window_years = EXCLUDED.window_years, "
+                        + "metric = EXCLUDED.metric, periods_used = EXCLUDED.periods_used, "
+                        + "periods_total = EXCLUDED.periods_total, first_filing_date = EXCLUDED.first_filing_date, "
+                        + "last_filing_date = EXCLUDED.last_filing_date, cum_return_pct = EXCLUDED.cum_return_pct, "
+                        + "cagr_pct = EXCLUDED.cagr_pct, vol_pct = EXCLUDED.vol_pct, mdd_pct = EXCLUDED.mdd_pct, "
+                        + "sharpe = EXCLUDED.sharpe, excess_vs_spy_pct = EXCLUDED.excess_vs_spy_pct, "
+                        + "coverage_min = EXCLUDED.coverage_min, coverage_avg = EXCLUDED.coverage_avg, "
+                        + "eligible = EXCLUDED.eligible, ineligible_reason = EXCLUDED.ineligible_reason, "
+                        + "rank = EXCLUDED.rank, periods = EXCLUDED.periods, "
+                        + "settings_version = EXCLUDED.settings_version, computed_at = EXCLUDED.computed_at",
+                ps -> {
+                    setDate(ps, 1, r.asOfDate());
+                    ps.setString(2, r.cik());
+                    ps.setInt(3, r.windowYears());
+                    ps.setString(4, r.metric());
+                    ps.setInt(5, r.periodsUsed());
+                    ps.setInt(6, r.periodsTotal());
+                    setDate(ps, 7, r.firstFilingDate());
+                    setDate(ps, 8, r.lastFilingDate());
+                    setStat(ps, 9, r.cumReturnPct(), "cum_return_pct");
+                    setStat(ps, 10, r.cagrPct(), "cagr_pct");
+                    setStat(ps, 11, r.volPct(), "vol_pct");
+                    setStat(ps, 12, r.mddPct(), "mdd_pct");
+                    setStat(ps, 13, r.sharpe(), "sharpe");
+                    setStat(ps, 14, r.excessVsSpyPct(), "excess_vs_spy_pct");
+                    setStat(ps, 15, r.coverageMin(), "coverage_min");
+                    setStat(ps, 16, r.coverageAvg(), "coverage_avg");
+                    ps.setBoolean(17, r.eligible());
+                    ps.setString(18, r.ineligibleReason());
+                    setInteger(ps, 19, r.rank());
+                    ps.setString(20, periodsJson);
+                    ps.setInt(21, r.settingsVersion());
+                    setInstant(ps, 22, r.computedAt());
+                });
+    }
+
+    /**
+     * 그 기준일의 트랙레코드를 모두 지웁니다 — 다시 계산할 때 후보 목록이 줄었으면 빠진 기관의 옛 행이 남지 않게,
+     * {@link #atomically} 안에서 지우고 새로 넣습니다.
+     *
+     * @return 지운 행 수
+     */
+    public int deleteTrackRecords(LocalDate asOf) {
+        return jdbc.update("DELETE FROM paper_track_record WHERE as_of_date = ?", Date.valueOf(asOf));
+    }
+
+    /** 그 기준일의 트랙레코드, 순위 순(자격 없는 기관은 뒤, CIK 순). 계산한 적 없으면 빈 목록. */
+    public List<TrackRecordRow> trackRecords(LocalDate asOf) {
+        return jdbc.query("SELECT " + TRACK_RECORD_COLUMNS + " FROM paper_track_record WHERE as_of_date = ? "
+                        + "ORDER BY rank NULLS LAST, cik",
+                (rs, rowNum) -> new TrackRecordRow(date(rs, "as_of_date"), rs.getString("cik"),
+                        rs.getInt("window_years"), rs.getString("metric"), rs.getInt("periods_used"),
+                        rs.getInt("periods_total"), date(rs, "first_filing_date"), date(rs, "last_filing_date"),
+                        stat(rs, "cum_return_pct"), stat(rs, "cagr_pct"), stat(rs, "vol_pct"), stat(rs, "mdd_pct"),
+                        stat(rs, "sharpe"), stat(rs, "excess_vs_spy_pct"), stat(rs, "coverage_min"),
+                        stat(rs, "coverage_avg"), rs.getBoolean("eligible"), rs.getString("ineligible_reason"),
+                        rs.getObject("rank", Integer.class), json(rs, "periods"), rs.getInt("settings_version"),
+                        instant(rs, "computed_at")),
+                Date.valueOf(asOf));
+    }
+
+    /** 트랙레코드를 계산한 가장 늦은 기준일. 한 번도 없으면 empty. */
+    public Optional<LocalDate> latestTrackRecordAsOf() {
+        List<LocalDate> rows = jdbc.query("SELECT max(as_of_date) AS as_of_date FROM paper_track_record",
+                (rs, rowNum) -> date(rs, "as_of_date"));
+        return rows.isEmpty() ? Optional.empty() : Optional.ofNullable(rows.get(0));
+    }
+
+    /**
+     * 선정이 그 기준일에 아직 없을 때만 넣습니다({@code ON CONFLICT DO NOTHING}). 선정은 재선정일·초기 선정 때 한 번이고,
+     * 같은 기준일을 다시 계산해도(수동 재계산) 바꾸지 않습니다 — 그 선정으로 낸 주문 기록과 어긋나지 않게(설계 §4-0 ⑤).
+     *
+     * @return 이번에 넣었으면 true, 이미 있었으면 false(기존 선정 그대로)
+     */
+    public boolean insertSelectionIfAbsent(Selection s) {
+        String rankingJson = s.ranking() == null ? null : mapper.writeValueAsString(s.ranking());
+        String[] ciks = s.selectedCiks().toArray(new String[0]);
+        return jdbc.update("INSERT INTO paper_selection_log (as_of_date, selected_ciks, ranking, settings_version) "
+                        + "VALUES (?, ?, COALESCE(CAST(? AS jsonb), '[]'::jsonb), ?) ON CONFLICT (as_of_date) DO NOTHING",
+                ps -> {
+                    setDate(ps, 1, s.asOfDate());
+                    ps.setArray(2, ps.getConnection().createArrayOf("text", ciks));
+                    ps.setString(3, rankingJson);
+                    ps.setInt(4, s.settingsVersion());
+                }) == 1;
+    }
+
+    /** 모든 선정, 최근 기준일 순. */
+    public List<Selection> selections() {
+        return jdbc.query("SELECT " + SELECTION_COLUMNS + " FROM paper_selection_log ORDER BY as_of_date DESC",
+                selectionMapper());
+    }
+
+    /** 그날(포함) 이전의 가장 최근 선정 — 그날 유효한 선정. 없으면 empty. */
+    public Optional<Selection> selectionOnOrBefore(LocalDate date) {
+        return jdbc.query("SELECT " + SELECTION_COLUMNS + " FROM paper_selection_log WHERE as_of_date <= ? "
+                + "ORDER BY as_of_date DESC LIMIT 1", selectionMapper(), Date.valueOf(date)).stream().findFirst();
+    }
+
     // ------------------------------------------------------------------ 출발일 종가
     /** 얼려 둔 출발일 종가 하나. 없으면 empty(그 거래일이 맞는지는 부르는 쪽이 봅니다). */
     public Optional<StartPrice> startPrice(String ticker) {
@@ -632,6 +784,15 @@ public class PaperStore {
                 rs.getString("source"), instant(rs, "captured_at"));
     }
 
+    private RowMapper<Selection> selectionMapper() {
+        return (rs, rowNum) -> {
+            java.sql.Array array = rs.getArray("selected_ciks");
+            List<String> ciks = array == null ? List.of() : List.of((String[]) array.getArray());
+            return new Selection(date(rs, "as_of_date"), ciks, json(rs, "ranking"), rs.getInt("settings_version"),
+                    instant(rs, "created_at"));
+        };
+    }
+
     private static RowMapper<NavRow> navMapper() {
         return (rs, rowNum) -> new NavRow(rs.getString("book_code"), date(rs, "trading_date"), rs.getDouble("nav"),
                 rs.getDouble("cash"), rs.getDouble("equity_value"), rs.getDouble("exposure_pct"),
@@ -656,6 +817,23 @@ public class PaperStore {
     private static Double nullableDouble(ResultSet rs, String column) throws SQLException {
         BigDecimal value = rs.getBigDecimal(column);
         return value == null ? null : value.doubleValue();
+    }
+
+    /** DOUBLE PRECISION 열(트랙레코드 수치). NULL은 null — 0으로 읽지 않습니다. */
+    private static Double stat(ResultSet rs, String column) throws SQLException {
+        double value = rs.getDouble(column);
+        return rs.wasNull() ? null : value;
+    }
+
+    /** 트랙레코드 수치. null은 NULL, NaN·무한대는 계산 오류라 저장하지 않습니다(DOUBLE PRECISION은 NaN을 받아 주므로). */
+    private static void setStat(PreparedStatement ps, int index, Double value, String column) throws SQLException {
+        if (value == null) {
+            ps.setNull(index, Types.DOUBLE);
+        } else if (!Double.isFinite(value)) {
+            throw new IllegalArgumentException(column + " 값이 유한한 수가 아닙니다: " + value);
+        } else {
+            ps.setDouble(index, value);
+        }
     }
 
     /** NUMERIC 열에 넣을 값. NaN·무한대는 계산 오류라 저장하지 않습니다(NUMERIC은 NaN을 받아 주므로 여기서 막음). */

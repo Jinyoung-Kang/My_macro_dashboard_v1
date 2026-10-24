@@ -69,6 +69,19 @@ class DatasetsParityTest {
         assertThat(constant(source, "SNAP_TOSS_RADAR_UNIVERSE")).isEqualTo(Datasets.SNAP_TOSS_RADAR_UNIVERSE);
         assertThat(constant(source, "SNAP_PAPER_QUOTES")).isEqualTo(Datasets.SNAP_PAPER_QUOTES);
         assertThat(constant(source, "TS_EQUITY_CLOSE")).isEqualTo(Datasets.TS_EQUITY_CLOSE);
+        assertThat(constant(source, "SNAP_TRACK_RECORD_INDEX")).isEqualTo(Datasets.SNAP_TRACK_RECORD_INDEX);
+    }
+
+    @Test
+    @DisplayName("트랙레코드 분기 수가 catalog.py와 일치한다 — 어긋나면 백엔드가 없는 저장본(q30이 아닌 이름)을 찾는다")
+    void trackRecordQuartersMatch() throws IOException {
+        assumeTrue(Files.exists(CATALOG), "collector/app/catalog.py를 찾을 수 없습니다");
+        String source = Files.readString(CATALOG);
+
+        // 저장 이름이 sec.13f.{cik}.q{N}이라 숫자 하나가 다르면 수집은 되는데 기관 선정 탭은 '수집 전'으로 보입니다.
+        assertThat(numericConstant(source, "TRACK_RECORD_QUARTERS")).isEqualTo(Datasets.TRACK_RECORD_QUARTERS);
+        assertThat(Datasets.sec13f("0001067983", Datasets.TRACK_RECORD_QUARTERS))
+                .isEqualTo("sec.13f.0001067983.q30");
     }
 
     @Test

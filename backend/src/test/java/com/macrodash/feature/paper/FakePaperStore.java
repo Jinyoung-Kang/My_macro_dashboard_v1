@@ -42,7 +42,11 @@ class FakePaperStore extends PaperStore {
     Map<String, TreeMap<LocalDate, NavRow>> nav = new HashMap<>();
     List<JobRun> jobRuns = new ArrayList<>();
     Map<String, StartPrice> startPrices = new TreeMap<>();
+    /** 트랙레코드: 기준일 → (CIK → 행). */
+    TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> trackRecords = new TreeMap<>();
+    TreeMap<LocalDate, Selection> selections = new TreeMap<>();
     SettingsRow settings;
+    Map<Integer, SettingsRow> settingsHistory = new TreeMap<>();
     long sequence;
     private int depth;
 
@@ -326,7 +330,72 @@ class FakePaperStore extends PaperStore {
             return false;
         }
         settings = new SettingsRow(1, body, dbNow);
+        settingsHistory.put(1, settings);
         return true;
+    }
+
+    @Override
+    public Optional<SettingsRow> settingsAt(int version) {
+        return Optional.ofNullable(settingsHistory.get(version));
+    }
+
+    // ------------------------------------------------------------------ 트랙레코드·선정
+    /** (기준일, CIK) 충돌 시 통째로 바꿉니다. 비유한 수치는 실제 저장소처럼 거절합니다. */
+    @Override
+    public void upsertTrackRecord(TrackRecordRow r) {
+        for (Double value : java.util.Arrays.asList(r.cumReturnPct(), r.cagrPct(), r.volPct(), r.mddPct(), r.sharpe(),
+                r.excessVsSpyPct(), r.coverageMin(), r.coverageAvg())) {
+            if (value != null && !Double.isFinite(value)) {
+                throw new IllegalArgumentException("유한하지 않은 수치: " + r);
+            }
+        }
+        trackRecords.computeIfAbsent(r.asOfDate(), k -> new TreeMap<>()).put(r.cik(),
+                new TrackRecordRow(r.asOfDate(), r.cik(), r.windowYears(), r.metric(), r.periodsUsed(),
+                        r.periodsTotal(), r.firstFilingDate(), r.lastFilingDate(), r.cumReturnPct(), r.cagrPct(),
+                        r.volPct(), r.mddPct(), r.sharpe(), r.excessVsSpyPct(), r.coverageMin(), r.coverageAvg(),
+                        r.eligible(), r.ineligibleReason(), r.rank(), r.periods(), r.settingsVersion(),
+                        r.computedAt() == null ? dbNow : r.computedAt()));
+    }
+
+    @Override
+    public int deleteTrackRecords(LocalDate asOf) {
+        TreeMap<String, TrackRecordRow> removed = trackRecords.remove(asOf);
+        return removed == null ? 0 : removed.size();
+    }
+
+    /** 순위 순(없는 것은 뒤), CIK 순. */
+    @Override
+    public List<TrackRecordRow> trackRecords(LocalDate asOf) {
+        return trackRecords.getOrDefault(asOf, new TreeMap<>()).values().stream()
+                .sorted(Comparator.comparing(TrackRecordRow::rank, Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(TrackRecordRow::cik))
+                .toList();
+    }
+
+    @Override
+    public Optional<LocalDate> latestTrackRecordAsOf() {
+        return trackRecords.isEmpty() ? Optional.empty() : Optional.of(trackRecords.lastKey());
+    }
+
+    @Override
+    public boolean insertSelectionIfAbsent(Selection s) {
+        if (selections.containsKey(s.asOfDate())) {
+            return false;
+        }
+        selections.put(s.asOfDate(), new Selection(s.asOfDate(), s.selectedCiks(),
+                s.ranking() == null ? new ObjectMapper().createArrayNode() : s.ranking(), s.settingsVersion(), dbNow));
+        return true;
+    }
+
+    /** 최근 기준일 순. */
+    @Override
+    public List<Selection> selections() {
+        return new ArrayList<>(selections.descendingMap().values());
+    }
+
+    @Override
+    public Optional<Selection> selectionOnOrBefore(LocalDate date) {
+        return Optional.ofNullable(selections.floorEntry(date)).map(Map.Entry::getValue);
     }
 
     @Override
@@ -344,11 +413,13 @@ class FakePaperStore extends PaperStore {
                             Map<String, TreeMap<String, Position>> positions,
                             Map<String, TreeMap<String, Lockout>> lockouts, TreeMap<Long, Order> orders,
                             TreeMap<Long, Fill> fills, Map<String, TreeMap<LocalDate, NavRow>> nav,
-                            List<JobRun> jobRuns, Map<String, StartPrice> startPrices, SettingsRow settings) {
+                            List<JobRun> jobRuns, Map<String, StartPrice> startPrices, SettingsRow settings,
+                            TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> trackRecords,
+                            TreeMap<LocalDate, Selection> selections) {
         Snapshot(FakePaperStore s) {
             this(new TreeMap<>(s.books), new TreeMap<>(s.states), deep(s.positions), deep(s.lockouts),
                     new TreeMap<>(s.orders), new TreeMap<>(s.fills), deep(s.nav), new ArrayList<>(s.jobRuns),
-                    new TreeMap<>(s.startPrices), s.settings);
+                    new TreeMap<>(s.startPrices), s.settings, deepDates(s.trackRecords), new TreeMap<>(s.selections));
         }
 
         void restore(FakePaperStore s) {
@@ -362,6 +433,15 @@ class FakePaperStore extends PaperStore {
             s.jobRuns = jobRuns;
             s.startPrices = startPrices;
             s.settings = settings;
+            s.trackRecords = trackRecords;
+            s.selections = selections;
+        }
+
+        private static TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> deepDates(
+                TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> in) {
+            TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> out = new TreeMap<>();
+            in.forEach((k, v) -> out.put(k, new TreeMap<>(v)));
+            return out;
         }
 
         private static <K, X> Map<String, TreeMap<K, X>> deep(Map<String, TreeMap<K, X>> in) {

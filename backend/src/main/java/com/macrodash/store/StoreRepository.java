@@ -145,6 +145,45 @@ public class StoreRepository {
         );
     }
 
+    /**
+     * 저장본 본문에서 최상위 키 하나를 뺀 나머지(작은 메타 정보)와 신선도 — 큰 배열을 내려받거나 파싱하지 않습니다.
+     *
+     * <p>{@link #readSnapshot}은 32KB가 넘는 저장본의 파싱 결과를 이름별로 계속 들고 있습니다. 모의 매매 트랙레코드는 후보 27곳의
+     * 30분기 13F(보유 수천 줄 × 30)를 읽는데, 그 트리를 다 캐시하면 백엔드 힙(약 700MB)을 위협합니다(단계 1b 검토). 그래서 메타와
+     * 보유 열({@link #readQuarterHoldings})을 따로, 캐시 없이 읽습니다. DB 장애는 그대로 올립니다.
+     *
+     * @return 저장본이 없으면 empty
+     */
+    public Optional<Snapshot> readSnapshotMeta(String name, String droppedKey) {
+        return jdbc.query(
+                "SELECT name, payload - ? AS payload, kind, status, error, collected_at FROM snapshots WHERE name = ?",
+                snapshotMapper(), droppedKey, name).stream().findFirst();
+    }
+
+    /**
+     * 13F 형식 저장본({@code quarters[].holdings[]})의 분기·보유에서 필요한 열만, JSONB를 DB에서 풀어 읽습니다(캐시 없음 —
+     * {@link #readSnapshotMeta}의 이유). 분기 순서는 저장본 그대로(quarterIndex 0부터)이고, 보유가 없는 분기도 한 줄(보유 열은 null)로
+     * 나옵니다. 평가액·주식 수가 숫자가 아니면 null입니다(0으로 채우지 않음). 배열이 아닌 자리는 빈 배열로 봅니다.
+     */
+    public List<HoldingRow> readQuarterHoldings(String name) {
+        return jdbc.query("""
+                SELECT q.ord - 1 AS quarter_index,
+                       q.value->>'filingDate' AS filing_date, q.value->>'reportDate' AS report_date,
+                       q.value->>'filerCik' AS filer_cik, h.value->>'cusip' AS cusip, h.value->>'ticker' AS ticker,
+                       CASE WHEN jsonb_typeof(h.value->'value') = 'number' THEN (h.value->>'value')::float8 END AS value,
+                       CASE WHEN jsonb_typeof(h.value->'shares') = 'number' THEN (h.value->>'shares')::float8 END AS shares
+                FROM snapshots s
+                CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(s.payload->'quarters') = 'array'
+                        THEN s.payload->'quarters' ELSE '[]'::jsonb END) WITH ORDINALITY AS q(value, ord)
+                LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(q.value->'holdings') = 'array'
+                        THEN q.value->'holdings' ELSE '[]'::jsonb END) AS h(value) ON true
+                WHERE s.name = ?
+                ORDER BY q.ord
+                """, (rs, rowNum) -> new HoldingRow(rs.getInt("quarter_index"), rs.getString("filing_date"),
+                rs.getString("report_date"), rs.getString("filer_cik"), rs.getString("cusip"), rs.getString("ticker"),
+                (Double) rs.getObject("value"), (Double) rs.getObject("shares")), name);
+    }
+
     private RowMapper<Snapshot> snapshotMapper() {
         return (ResultSet rs, int rowNum) -> new Snapshot(
                 rs.getString("name"),
@@ -558,6 +597,15 @@ public class StoreRepository {
 
     /** 시계열 1점. */
     public record TimeseriesPoint(LocalDate date, Double value) {
+    }
+
+    /**
+     * 13F 저장본의 보유 한 줄({@link #readQuarterHoldings}). 보유가 없는 분기는 cusip·ticker·value·shares가 모두 null인 한 줄입니다.
+     *
+     * @param quarterIndex 저장본의 분기 순서(0 = 첫 항목, 보통 최신)
+     */
+    public record HoldingRow(int quarterIndex, String filingDate, String reportDate, String filerCik, String cusip,
+                             String ticker, Double value, Double shares) {
     }
 
     /**

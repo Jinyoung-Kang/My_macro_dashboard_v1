@@ -25,6 +25,8 @@ import java.util.Map;
  *  POST /api/paper/books/{code}/status            {"status":"ACTIVE"|"PAUSED"}
  *  POST /api/paper/books/{code}/reset             {"confirm":"<code>"}
  *  POST /api/paper/run/risk                       리스크 점검 한 번(설정과 상관없이)
+ *  GET  /api/paper/track-record?asOf=             13F 트랙레코드·순위·선정·수집 진행률(없으면 가장 최근 계산)
+ *  POST /api/paper/run/rerank                     {"asOf"?} 트랙레코드 수동 재계산(선정은 그대로)
  * </pre>
  *
  * <p>모든 경로는 운영자만 부릅니다(AccessPolicy). 테이블이 없으면 500이 아니라 {@code available:false}(+ POST는 {@code ok:false})입니다.
@@ -36,17 +38,24 @@ public class PaperController {
     private final PaperQueryService query;
     private final PaperAdminService admin;
     private final PaperRiskJob risk;
+    private final PaperSelectionService selection;
 
-    public PaperController(PaperQueryService query, PaperAdminService admin, PaperRiskJob risk) {
+    public PaperController(PaperQueryService query, PaperAdminService admin, PaperRiskJob risk,
+                           PaperSelectionService selection) {
         this.query = query;
         this.admin = admin;
         this.risk = risk;
+        this.selection = selection;
     }
 
     public record StatusRequest(String status) {
     }
 
     public record ResetRequest(String confirm) {
+    }
+
+    /** 수동 재계산의 기준일(yyyy-MM-dd). 없으면 마지막 완료 세션. */
+    public record RerankRequest(String asOf) {
     }
 
     @GetMapping("/overview")
@@ -133,6 +142,19 @@ public class PaperController {
         out.put("ok", outcome.errors().isEmpty());
         out.put("outcome", outcome);
         return out;
+    }
+
+    @GetMapping("/track-record")
+    public Map<String, Object> trackRecord(@RequestParam(required = false) String asOf) {
+        return selection.trackRecord(asOf);
+    }
+
+    @PostMapping("/run/rerank")
+    public Map<String, Object> rerank(@RequestBody(required = false) RerankRequest body) {
+        if (!query.ready()) {
+            return notReady();
+        }
+        return selection.rerank(body == null ? null : body.asOf());
     }
 
     private Map<String, Object> notReady() {

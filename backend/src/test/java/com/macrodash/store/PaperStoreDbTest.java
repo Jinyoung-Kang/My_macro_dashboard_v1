@@ -496,6 +496,98 @@ class PaperStoreDbTest {
         })).isInstanceOf(Rollback.class);
     }
 
+    private static PaperStore.TrackRecordRow trackRow(LocalDate asOf, String cik, Integer rank, Double cagr,
+                                                      JsonNode periods) {
+        boolean eligible = rank != null;
+        return new PaperStore.TrackRecordRow(asOf, cik, 7, "CAGR", eligible ? 26 : 0, eligible ? 27 : 0,
+                eligible ? LocalDate.of(2019, 8, 14) : null, eligible ? LocalDate.of(2026, 8, 14) : null,
+                cagr == null ? null : cagr * 2, cagr, eligible ? 18.5 : null, eligible ? -22.25 : null,
+                eligible ? 0.71 : null, eligible ? 3.5 : null, eligible ? 0.62 : null, eligible ? 0.81 : null,
+                eligible, eligible ? null : "수집 중(저장 분기 0/30); 공시 없음", rank, periods, 1, null);
+    }
+
+    @Test
+    @DisplayName("트랙레코드·선정: (기준일, CIK) 덮어쓰기, 없는 수치는 NULL 그대로, 순위 순, 선정은 한 번 — 시험 뒤 되돌림")
+    void trackRecordAndSelection() {
+        // 선정은 기준일이 키이고 '가장 최근 기준일'을 묻는 메서드가 있어, 다른 테스트의 행과 섞이지 않도록 지운 뒤
+        // 되돌리는 트랜잭션 안에서만 시험합니다(설정 시험과 같은 방식).
+        class Rollback extends RuntimeException {
+        }
+        LocalDate first = LocalDate.of(2026, 8, 17);
+        LocalDate second = LocalDate.of(2026, 11, 17);
+        assertThatThrownBy(() -> store.atomically(() -> {
+            jdbc.update("DELETE FROM paper_selection_log");
+            jdbc.update("DELETE FROM paper_track_record");
+            assertThat(store.latestTrackRecordAsOf()).isEmpty();
+            assertThat(store.selections()).isEmpty();
+
+            JsonNode periods = MAPPER.readTree("[{\"filingDate\":\"2026-08-14\",\"start\":\"2026-08-17\","
+                    + "\"returnPct\":1.5,\"spyReturnPct\":null,\"coverage\":0.8,\"coveredTickers\":12}]");
+            store.upsertTrackRecord(trackRow(first, "t_b", 2, 10.0, periods));
+            store.upsertTrackRecord(trackRow(first, "t_a", 1, 99.0, null));
+            store.upsertTrackRecord(trackRow(first, "t_c", null, null, null));
+            store.upsertTrackRecord(trackRow(first, "t_a", 1, 12.0, null));   // 같은 기준일 재계산 → 덮어씀
+
+            List<PaperStore.TrackRecordRow> rows = store.trackRecords(first);
+            assertThat(rows).extracting(PaperStore.TrackRecordRow::cik).as("순위 순, 순위 없는 기관은 뒤")
+                    .containsExactly("t_a", "t_b", "t_c");
+            assertThat(rows.get(0).cagrPct()).isEqualTo(12.0);
+            assertThat(rows.get(0).cumReturnPct()).isEqualTo(24.0);
+            assertThat(rows.get(0).mddPct()).isEqualTo(-22.25);
+            assertThat(rows.get(0).periods().isArray() && rows.get(0).periods().isEmpty()).as("null → []").isTrue();
+            assertThat(rows.get(0).computedAt()).as("비우면 DB가 채움").isNotNull();
+            assertThat(rows.get(1).periods().get(0).path("coverage").asDouble()).isEqualTo(0.8);
+            assertThat(rows.get(1).periods().get(0).path("spyReturnPct").isNull()).isTrue();
+            PaperStore.TrackRecordRow c = rows.get(2);
+            assertThat(c.rank()).isNull();
+            assertThat(c.eligible()).isFalse();
+            assertThat(c.cagrPct()).as("0이 아니라 NULL").isNull();
+            assertThat(c.coverageMin()).isNull();
+            assertThat(c.firstFilingDate()).isNull();
+            assertThat(c.ineligibleReason()).isEqualTo("수집 중(저장 분기 0/30); 공시 없음");
+
+            store.upsertTrackRecord(trackRow(second, "t_a", 1, 11.0, null));
+            assertThat(store.latestTrackRecordAsOf()).contains(second);
+            assertThat(store.deleteTrackRecords(first)).isEqualTo(3);
+            assertThat(store.trackRecords(first)).isEmpty();
+            assertThat(store.trackRecords(second)).hasSize(1);
+            assertThatThrownBy(() -> store.upsertTrackRecord(trackRow(second, "t_d", 2, Double.POSITIVE_INFINITY,
+                    null))).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("유한한 수가 아닙니다");
+
+            JsonNode ranking = MAPPER.readTree("[{\"cik\":\"t_b\",\"rank\":1},{\"cik\":\"t_a\",\"rank\":2}]");
+            assertThat(store.insertSelectionIfAbsent(new PaperStore.Selection(first, List.of("t_b", "t_a"), ranking,
+                    1, null))).isTrue();
+            assertThat(store.insertSelectionIfAbsent(new PaperStore.Selection(first, List.of("t_c"), null, 2, null)))
+                    .as("같은 기준일의 선정은 바꾸지 않음").isFalse();
+            assertThat(store.insertSelectionIfAbsent(new PaperStore.Selection(second, List.of(), null, 1, null)))
+                    .as("자격 기관 0곳 = 빈 선정").isTrue();
+
+            assertThat(store.selections()).extracting(PaperStore.Selection::asOfDate).containsExactly(second, first);
+            PaperStore.Selection saved = store.selectionOnOrBefore(second.minusDays(1)).orElseThrow();
+            assertThat(saved.asOfDate()).isEqualTo(first);
+            assertThat(saved.selectedCiks()).as("선정 순위 순 그대로").containsExactly("t_b", "t_a");
+            assertThat(saved.ranking().get(0).path("cik").asString()).isEqualTo("t_b");
+            assertThat(saved.settingsVersion()).isEqualTo(1);
+            assertThat(saved.createdAt()).isNotNull();
+            assertThat(store.selectionOnOrBefore(second).orElseThrow().selectedCiks()).isEmpty();
+            assertThat(store.selectionOnOrBefore(second).orElseThrow().ranking().isArray()).isTrue();
+            assertThat(store.selectionOnOrBefore(first.minusDays(1))).isEmpty();
+
+            // 설정 이력 — 그 버전의 본문(트랙레코드가 어떤 기준으로 계산됐나).
+            jdbc.update("DELETE FROM paper_settings_history");
+            jdbc.update("DELETE FROM paper_settings");
+            store.initSettingsIfAbsent(MAPPER.valueToTree(Map.of("trackRecord", Map.of("windowYears", 7))));
+            store.saveSettings(MAPPER.valueToTree(Map.of("trackRecord", Map.of("windowYears", 5))),
+                    List.of("trackRecord.windowYears"));
+            assertThat(store.settingsAt(1).orElseThrow().body().path("trackRecord").path("windowYears").asInt())
+                    .isEqualTo(7);
+            assertThat(store.settingsAt(2).orElseThrow().body().path("trackRecord").path("windowYears").asInt())
+                    .isEqualTo(5);
+            assertThat(store.settingsAt(3)).isEmpty();
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+    }
+
     private void insertPoint(String seriesId, String date, Double value) {
         jdbc.update("INSERT INTO timeseries (dataset, series_id, obs_date, value) VALUES (?, ?, ?::date, ?)",
                 TS_DATASET, seriesId, date, value);

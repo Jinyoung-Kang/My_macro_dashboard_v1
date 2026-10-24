@@ -16,9 +16,11 @@ import com.macrodash.store.PaperStore.NavRow;
 import com.macrodash.store.PaperStore.Order;
 import com.macrodash.store.PaperStore.Position;
 import com.macrodash.support.InvalidRequestException;
+import com.macrodash.support.Json;
 import com.macrodash.support.Params;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -137,6 +139,7 @@ public class PaperQueryService {
         out.put("books", summaries);
         out.put("navSeries", navSeries(books, navByBook));
         out.put("quotes", quotesSummary());
+        out.put("selection", latestSelection());
         out.put("limits", limits());
         out.put("jobs", jobs(OVERVIEW_JOBS));
         return out;
@@ -439,6 +442,39 @@ public class PaperQueryService {
         out.put("staleTickers", quotes.staleTickers());
         out.put("stale", age > QUOTES_LATE.getSeconds());
         return out;
+    }
+
+    /**
+     * 가장 최근 기관 선정의 요지 {@code {asOfDate, selected:[{cik, name, rank}]}}(단계 2 계약의 모양 — 자세한 것은
+     * GET /track-record). 이름·순위는 선정 때 남긴 순위표({@code ranking})의 값이고, 순위표에 없는 CIK면 null. 선정이 없으면
+     * null — 선정은 1년에 몇 줄뿐이라 싸게 읽습니다.
+     */
+    private Map<String, Object> latestSelection() {
+        return store.selections().stream().findFirst().map(selection -> {
+            Map<String, JsonNode> ranking = new HashMap<>();
+            if (selection.ranking() != null && selection.ranking().isArray()) {
+                for (JsonNode entry : selection.ranking()) {
+                    String cik = Json.asText(entry, "cik");
+                    if (cik != null) {
+                        ranking.putIfAbsent(cik, entry);
+                    }
+                }
+            }
+            List<Map<String, Object>> selected = new ArrayList<>();
+            for (String cik : selection.selectedCiks()) {
+                JsonNode entry = ranking.get(cik);
+                Double rank = entry == null ? null : Json.asDouble(entry, "rank");
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("cik", cik);
+                row.put("name", entry == null ? null : Json.asText(entry, "name"));
+                row.put("rank", rank == null ? null : rank.intValue());
+                selected.add(row);
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("asOfDate", selection.asOfDate().toString());
+            out.put("selected", selected);
+            return out;
+        }).orElse(null);
     }
 
     private List<Map<String, Object>> jobs(int limit) {

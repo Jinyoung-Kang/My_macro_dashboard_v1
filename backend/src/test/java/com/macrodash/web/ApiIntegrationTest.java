@@ -873,7 +873,7 @@ class ApiIntegrationTest {
     private static final List<String> PAPER_GETS = List.of(
             "/api/paper/overview", "/api/paper/status", "/api/paper/books/bench_spy/positions",
             "/api/paper/books/bench_spy/orders?limit=5", "/api/paper/books/bench_spy/fills?limit=5",
-            "/api/paper/books/bench_spy/nav");
+            "/api/paper/books/bench_spy/nav", "/api/paper/track-record");
 
     /** 테스트가 만든 모의 매매 책을 지웁니다(테스트 DB만 — setUp이 DB 이름을 확인함). 책을 지우면 장부가 함께 지워집니다. */
     private void deletePaperBooks() {
@@ -899,7 +899,7 @@ class ApiIntegrationTest {
             assertThat(denied.getBody().path("required").asString()).isEqualTo("OWNER");
         }
         for (String path : List.of("/api/paper/init", "/api/paper/run/risk", "/api/paper/books/bench_spy/status",
-                "/api/paper/books/bench_spy/reset")) {
+                "/api/paper/books/bench_spy/reset", "/api/paper/run/rerank")) {
             assertThat(rest.exchange(url(path), HttpMethod.POST, new HttpEntity<>(Map.of("status", "PAUSED",
                     "confirm", "bench_spy"), member), String.class).getStatusCode()).as("회원 POST " + path)
                     .isEqualTo(HttpStatus.FORBIDDEN);
@@ -924,6 +924,26 @@ class ApiIntegrationTest {
         assertThat(overview.path("quotes").isNull()).as("관측치 저장본 없음(setUp이 snapshots를 비움)").isTrue();
         ResponseEntity<JsonNode> unknown = authorizedExchange("/api/paper/books/bench_spy/positions", HttpMethod.GET);
         assertThat(unknown.getStatusCode()).as("초기화 전 책 코드는 400(404 아님)").isEqualTo(HttpStatus.BAD_REQUEST);
+
+        // 13F 트랙레코드: 후보 목록 저장본이 없으면(setUp이 snapshots를 비움) 진행률 없음, 재계산은 아무것도 쓰지 않음.
+        JsonNode trackRecord = authorizedGet("/api/paper/track-record");
+        assertThat(trackRecord.path("available").asBoolean()).isTrue();
+        assertThat(trackRecord.path("collection").isNull()).isTrue();
+        assertThat(trackRecord.path("limits").size()).isEqualTo(3);
+        ResponseEntity<JsonNode> rerank = authorizedExchange("/api/paper/run/rerank", HttpMethod.POST);
+        assertThat(rerank.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(rerank.getBody().path("ok").asBoolean()).isTrue();
+        assertThat(rerank.getBody().path("computed").asInt(-1)).isZero();
+        assertThat(rerank.getBody().path("selectedUnchanged").asBoolean()).isTrue();
+        assertThat(rerank.getBody().path("skippedReason").asString()).contains("track_record_index");
+        HttpHeaders owner = new HttpHeaders();
+        owner.add(HttpHeaders.COOKIE, sessionCookie);
+        owner.setContentType(MediaType.APPLICATION_JSON);
+        assertThat(rest.exchange(url("/api/paper/run/rerank"), HttpMethod.POST,
+                new HttpEntity<>(Map.of("asOf", "2099-01-02"), owner), JsonNode.class).getStatusCode())
+                .as("끝나지 않은 세션").isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(authorizedExchange("/api/paper/track-record?asOf=2026-13-01", HttpMethod.GET).getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
     @Test

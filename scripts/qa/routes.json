@@ -601,6 +601,21 @@
       "m": "POST",
       "p": "/api/paper/run/risk",
       "mutating": true
+    },
+    {
+      "m": "GET",
+      "p": "/api/paper/track-record",
+      "q": {
+        "asOf": "date"
+      }
+    },
+    {
+      "m": "POST",
+      "p": "/api/paper/run/rerank",
+      "body": {
+        "asOf": "date"
+      },
+      "mutating": true
     }
   ]
 }

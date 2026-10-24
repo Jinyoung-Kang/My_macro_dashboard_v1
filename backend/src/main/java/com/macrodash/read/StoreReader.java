@@ -14,6 +14,7 @@ import org.springframework.web.context.request.RequestContextHolder;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -241,6 +242,22 @@ public class StoreReader {
     /** 수집 요청 없이 저장본만 읽습니다. */
     public Optional<Snapshot> readStored(String name) {
         return repository.readSnapshot(name);
+    }
+
+    /**
+     * 큰 배열 키 하나를 뺀 메타 정보만 — 수집을 요청하지 않고 캐시하지 않습니다({@link StoreRepository#readSnapshotMeta}).
+     * 정기 작업·화면 어디서 불러도 수집기를 깨우지 않습니다.
+     */
+    public Optional<Snapshot> readStoredMeta(String name, String droppedKey) {
+        return repository.readSnapshotMeta(name, droppedKey);
+    }
+
+    /**
+     * 13F 형식 저장본의 보유 열만 — 수집을 요청하지 않고 캐시하지 않습니다({@link StoreRepository#readQuarterHoldings}).
+     * 트랙레코드처럼 30분기 × 수천 줄을 읽는 곳이 씁니다.
+     */
+    public List<StoreRepository.HoldingRow> readStoredHoldings(String name) {
+        return repository.readQuarterHoldings(name);
     }
 
     /**
