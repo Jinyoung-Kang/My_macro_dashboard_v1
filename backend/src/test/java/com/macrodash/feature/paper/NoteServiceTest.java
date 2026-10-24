@@ -3,6 +3,7 @@ package com.macrodash.feature.paper;
 import com.macrodash.store.PaperStore.Note;
 import com.macrodash.support.InvalidRequestException;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
@@ -96,6 +97,14 @@ class NoteServiceTest {
                 .as("4,000자는 됨").isPositive();
         assertThatThrownBy(() -> notes.create("INSIGHT", null, null, "t", "가".repeat(NoteService.INSIGHT_MAX_CHARS + 1)))
                 .hasMessageContaining("50000자 이내");
+    }
+
+    @Test
+    @Disabled("재현 — 다음 커밋에서 고침: 메모 본문의 빈 줄(문단 구분)이 모두 지워짐")
+    @DisplayName("메모 본문은 문단 구분을 지킨다 — 줄 끝 공백만 지우고 이어진 빈 줄은 하나로(OS 원문을 그대로 남기려고)")
+    void bodyKeepsParagraphs() {
+        JsonNode note = create("INSIGHT", null, null, "OS 원문", "\n# 제목\n\n## 역할  \n본문 한 줄\n\n\n\n## 원칙\nP1 …\n\n");
+        assertThat(note.path("body").asString()).isEqualTo("# 제목\n\n## 역할\n본문 한 줄\n\n## 원칙\nP1 …");
     }
 
     @Test
