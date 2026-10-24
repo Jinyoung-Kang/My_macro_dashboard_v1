@@ -134,10 +134,17 @@ config/          설정 값(AppProperties) · 정기 작업 켜기 — 여러 �
 |---|---|
 | `SeriesMath` | 기간 수익률·백분위·YTD 같은 공통 시계열 계산 |
 | `Correlation` | 롤링 상관계수, 수준↔변화 변환 |
+| `AdvancedIndicators` | 심화 매크로 지표 6종(실질금리·기대인플레·10Y−3M·30Y−3M·IG 스프레드·NFCI)의 정의와 해석 임계치(참고치) — 매크로 화면 |
 | `Regime` | 성장·신용 축 × 유동성 축 4국면 판정 |
+| `RegimeBacktest` | 국면 판정 성과 — 매주 목요일 그때 발표된 값으로 판정, 다음 거래일 종가 진입, 국면 시작 주·머문 주 vs 아무 때나, 표본 부족 판정 |
+| `PointInTime` | 발표 지연을 반영한 '그날 알 수 있었던' 값(look-ahead 방지) — 국면 판정 성과, 🧪 Claude 패킷 |
 | `CotExtremes` | 극단 포지션 탐지 + 이후 수익률 (look-ahead 방지) |
+| `ForwardReturns` | 신호 이후 N주 수익률(그날 이후 첫 거래일 종가 → N주 뒤 첫 거래일 종가)과 요약 — COT 백테스트·국면 판정 성과가 같은 규칙으로 잼 |
 | `PortfolioRisk` | 변동성·VaR·ES·MDD·베타·추적오차·위험 기여 |
+| `Benchmarks` | 베타·추적오차의 기준 ETF 목록(SPY·QQQ·ACWI, 모르는 요청은 SPY) — 구루 위험·스코어카드 |
 | `GuruStyle` | 집중도(HHI)·유효 종목 수·회전율·포트폴리오 유사도 |
+| `Holding` | 13F 보유 항목 하나(값을 모르면 null) — 13F 계산의 입력 타입 |
+| `HoldingsDiff` | 13F 분기 대비 액션(신규 매수·전량 매도·비중 확대/축소·유지) — 직전 분기가 없으면 '비교 데이터 없음' |
 | `Scorecard` | 모멘텀·추세·백분위 점수 |
 | `FxIndex` | 기준일 100 재기준화, 날짜 합집합 |
 | `SupplyConsensus` | 외국인·기관 상위 목록 교집합 |
@@ -146,6 +153,7 @@ config/          설정 값(AppProperties) · 정기 작업 켜기 — 여러 �
 | `Verification` | 교차 검증 판정 |
 | `FlowIntegrity` | 토스 투자자별 매매대금 정합성 (매수 합계 = 매도 합계, 기관 = 세부 7개 합) |
 | `FlowRecord` | 투자자별 매매 기록 한 건(값을 모르면 null) — 수급 계산의 입력 타입 |
+| `AlertRules` | 알림 사건 판정(ADR 0011) — 국면 전환 확정(3번 연속 기록)·연속 순매수 N일 도달·13F 신규 편입 |
 | `UsMarketCalendar` | 🧪 미국 거래일·세션 날짜(휴장일 규칙은 화면 `lib/marketCalendar.ts`와 같음)·13F 공시 기한 다음 거래일 |
 | `DailySeries` | 🧪 일별 값 계열(원시 배열 + 이진 탐색 — 10년 × 수백 종목을 힙에 들기 위해). 기준일 뒤 값은 `until`로 자름 |
 | `PaperLedger` | 🧪 체결(수량 십진 내림·슬리피지)·평가·노출 |
