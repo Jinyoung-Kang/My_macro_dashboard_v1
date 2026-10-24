@@ -15,6 +15,17 @@ describe("메뉴 고르기", () => {
     expect(visibleMenus(MENUS, undefined).map((m) => m.href)).toEqual(["/macro", "/regime"]);
   });
 
+  it("모의 알고리즘 매매(/paper)는 운영자 메뉴 — 백엔드 /api/paper/*가 전부 운영자 전용이라 회원에게는 403뿐", () => {
+    const menus = [{ href: "/regime" }, { href: "/paper" }, { href: "/ai/report" }];
+    expect(visibleMenus(menus, { email: "o@x", role: "OWNER", tier: "FREE" }).map((m) => m.href))
+      .toEqual(["/regime", "/paper", "/ai/report"]);
+    expect(visibleMenus(menus, { email: "m@x", role: "MEMBER", tier: "PRO" }).map((m) => m.href))
+      .toEqual(["/regime", "/ai/report"]);
+    expect(visibleMenus(menus, { email: null, role: "MEMBER", tier: "PRO", demo: true }).map((m) => m.href))
+      .toEqual(["/regime", "/ai/report"]);
+    expect(visibleMenus(menus, undefined).map((m) => m.href)).toEqual(["/regime", "/ai/report"]);
+  });
+
   it("역할·등급 이름", () => {
     expect(roleLabel({ email: "o@x", role: "OWNER", tier: "FREE" })).toBe("운영자");
     expect(roleLabel({ email: "m@x", role: "MEMBER", tier: "PRO" })).toBe("유료 회원");

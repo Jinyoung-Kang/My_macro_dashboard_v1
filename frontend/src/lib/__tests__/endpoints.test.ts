@@ -103,6 +103,12 @@ const CASES: Case[] = [
   { name: "toss.exchangeRate", before: "/api/ai/toss/exchange-rate?base=USD&quote=KRW",
     after: endpoints.toss.exchangeRate("USD", "KRW") },
   { name: "toss.indices", before: "/api/ai/toss/indices?symbols=KOSPI,KOSDAQ", after: endpoints.toss.indices("KOSPI,KOSDAQ") },
+  { name: "paper.positions", before: "/api/paper/books/rules/positions", after: endpoints.paper.positions("rules") },
+  { name: "paper.orders", before: "/api/paper/books/claude/orders?limit=50", after: endpoints.paper.orders("claude", 50) },
+  { name: "paper.fills", before: "/api/paper/books/bench_spy/fills?limit=50", after: endpoints.paper.fills("bench_spy", 50) },
+  { name: "paper.nav", before: "/api/paper/books/bench_mix/nav", after: endpoints.paper.nav("bench_mix") },
+  { name: "paper.bookStatus", before: "/api/paper/books/rules/status", after: endpoints.paper.bookStatus("rules") },
+  { name: "paper.bookReset", before: "/api/paper/books/claude/reset", after: endpoints.paper.bookReset("claude") },
 ];
 
 describe("API 경로 — 예전 조립식과 서버가 받는 값이 같다", () => {
@@ -119,6 +125,8 @@ describe("값 인코딩", () => {
 
   it("경로 조각도 인코딩한다", () => {
     expect(endpoints.status.runTask("a/b")).toBe("/api/status/run/a%2Fb");
+    // 책 코드의 "/"가 경로를 바꾸지 않게 — 그대로 붙이면 "../init"이 /api/paper/init/reset으로 풀립니다.
+    expect(endpoints.paper.bookReset("../init")).toBe("/api/paper/books/..%2Finit/reset");
   });
 });
 
@@ -135,7 +143,8 @@ const documentedForm = (url: string) => new URL(url, "http://backend").pathname
   .replace(/^\/api\/macro\/fred\/[^/]+$/, "/api/macro/fred/{seriesId}")
   .replace(/^\/api\/status\/run\/[^/]+$/, "/api/status/run/{taskName}")
   .replace(/^\/api\/admin\/users\/[^/]+$/, "/api/admin/users/{id}")
-  .replace(/^\/api\/alerts\/rules\/[^/]+$/, "/api/alerts/rules/{id}");
+  .replace(/^\/api\/alerts\/rules\/[^/]+$/, "/api/alerts/rules/{id}")
+  .replace(/^\/api\/paper\/books\/[^/]+\/(positions|orders|fills|nav|status|reset)$/, "/api/paper/books/{code}/$1");
 
 describe("docs/API.md 백엔드 표와 대조", () => {
   it("화면이 부르는 경로는 모두 문서(= 백엔드 경로 목록 테스트가 대조하는 표)에 있다", () => {
@@ -148,6 +157,6 @@ describe("docs/API.md 백엔드 표와 대조", () => {
     const paths = [...strings, ...CASES.map(({ after }) => after)].map(documentedForm);
     expect(paths.filter((path) => !documented.has(path))).toEqual([]);
     // 경로를 만드는 함수는 모두 위 CASES에 한 줄 이상 있습니다. 새 함수를 만들었다면 CASES에 추가하고 이 숫자를 고치세요.
-    expect(functions).toBe(38);
+    expect(functions).toBe(44);
   });
 });

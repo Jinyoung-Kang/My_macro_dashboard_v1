@@ -168,6 +168,20 @@ export const endpoints = {
     test: (engineId: string, prompt: string) => withQuery("/api/ai/test", { engineId, prompt }),
   },
 
+  // 🧪 모의 알고리즘 매매(운영자, 로컬 전용). code는 책 코드(rules · claude · bench_spy · bench_mix).
+  paper: {
+    overview: "/api/paper/overview",
+    status: "/api/paper/status",
+    init: "/api/paper/init",
+    runRisk: "/api/paper/run/risk",
+    positions: (code: string) => `/api/paper/books/${segment(code)}/positions`,
+    orders: (code: string, limit: number) => withQuery(`/api/paper/books/${segment(code)}/orders`, { limit }),
+    fills: (code: string, limit: number) => withQuery(`/api/paper/books/${segment(code)}/fills`, { limit }),
+    nav: (code: string) => `/api/paper/books/${segment(code)}/nav`,
+    bookStatus: (code: string) => `/api/paper/books/${segment(code)}/status`,
+    bookReset: (code: string) => `/api/paper/books/${segment(code)}/reset`,
+  },
+
   // 🔌 토스증권 연결 테스트 (경로는 /api/ai/toss 이지만 AI와 관계없음)
   toss: {
     diagnostics: (run: number) => withQuery("/api/ai/toss/diagnostics", { run }),
