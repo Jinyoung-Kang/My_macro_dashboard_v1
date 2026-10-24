@@ -346,6 +346,77 @@ class FakePaperStore extends PaperStore {
         return Optional.ofNullable(settingsHistory.get(version));
     }
 
+    /** 버전 → 그 버전에서 바뀐 키(처음 값은 빈 목록). */
+    Map<Integer, List<String>> settingsChangedKeys = new TreeMap<>();
+
+    /** 버전 +1(행이 없으면 1)과 이력. */
+    @Override
+    public int saveSettings(JsonNode body, List<String> changedKeys) {
+        int version = settings == null ? 1 : settings.version() + 1;
+        settings = new SettingsRow(version, body, dbNow);
+        settingsHistory.put(version, settings);
+        settingsChangedKeys.put(version, changedKeys == null ? List.of() : List.copyOf(changedKeys));
+        return version;
+    }
+
+    @Override
+    public List<SettingsHistoryRow> settingsHistory(int limit) {
+        List<SettingsHistoryRow> out = new ArrayList<>();
+        new TreeMap<>(settingsHistory).descendingMap().forEach((version, row) -> out.add(new SettingsHistoryRow(version,
+                row.body(), settingsChangedKeys.getOrDefault(version, List.of()), row.updatedAt())));
+        return out.stream().limit(limit).toList();
+    }
+
+    // ------------------------------------------------------------------ Claude 호출 사용량
+    TreeMap<LocalDate, ApiUsage> apiUsage = new TreeMap<>();
+
+    @Override
+    public Optional<ApiUsage> apiUsage(LocalDate day) {
+        return Optional.ofNullable(apiUsage.get(day));
+    }
+
+    @Override
+    public ApiUsageTotal apiUsageBetween(LocalDate from, LocalDate to) {
+        var rows = apiUsage.subMap(from, true, to, true).values();
+        return new ApiUsageTotal(from, to, rows.size(), rows.stream().mapToLong(ApiUsage::calls).sum(),
+                rows.stream().mapToLong(ApiUsage::inputTokens).sum(), rows.stream().mapToLong(ApiUsage::outputTokens).sum(),
+                rows.stream().mapToLong(ApiUsage::cacheReadTokens).sum(),
+                rows.stream().mapToLong(ApiUsage::cacheWriteTokens).sum());
+    }
+
+    @Override
+    public boolean reserveApiCall(LocalDate day, int cap) {
+        ApiUsage u = apiUsage.getOrDefault(day, new ApiUsage(day, 0, 0, 0, 0, 0));
+        if (cap <= 0 || u.calls() >= cap) {
+            return false;
+        }
+        apiUsage.put(day, new ApiUsage(day, u.calls() + 1, u.inputTokens(), u.outputTokens(), u.cacheReadTokens(),
+                u.cacheWriteTokens()));
+        return true;
+    }
+
+    @Override
+    public void releaseApiCall(LocalDate day) {
+        ApiUsage u = apiUsage.get(day);
+        if (u != null) {
+            apiUsage.put(day, new ApiUsage(day, Math.max(0, u.calls() - 1), u.inputTokens(), u.outputTokens(),
+                    u.cacheReadTokens(), u.cacheWriteTokens()));
+        }
+    }
+
+    @Override
+    public void addApiTokens(LocalDate day, Long inputTokens, Long outputTokens, Long cacheReadTokens,
+                             Long cacheWriteTokens) {
+        ApiUsage u = apiUsage.getOrDefault(day, new ApiUsage(day, 0, 0, 0, 0, 0));
+        apiUsage.put(day, new ApiUsage(day, u.calls(), u.inputTokens() + orZero(inputTokens),
+                u.outputTokens() + orZero(outputTokens), u.cacheReadTokens() + orZero(cacheReadTokens),
+                u.cacheWriteTokens() + orZero(cacheWriteTokens)));
+    }
+
+    private static long orZero(Long value) {
+        return value == null ? 0 : value;
+    }
+
     // ------------------------------------------------------------------ 트랙레코드·선정
     /** (기준일, 그룹, CIK) 충돌 시 통째로 바꿉니다. 비유한 수치는 실제 저장소처럼 거절합니다. */
     @Override
@@ -431,7 +502,7 @@ class FakePaperStore extends PaperStore {
                 d.decidedAt() == null ? dbNow : d.decidedAt(), d.status(), d.model(), d.frameworkVersion(),
                 d.settingsVersion(), d.selectionAsOf(), d.targetExposurePct(), d.packet(), d.packetHash(),
                 d.responseRaw(), d.response(), d.usage(), d.error(), d.noteIds(), d.pricesFinal(), d.latencyMs(),
-                d.retryCount()));
+                d.retryCount(), d.packetText()));
         return Optional.of(id);
     }
 
@@ -475,7 +546,22 @@ class FakePaperStore extends PaperStore {
         decisions.put(id, new Decision(d.id(), d.bookCode(), d.asOfTradingDate(), d.kind(), d.decidedAt(), status,
                 d.model(), d.frameworkVersion(), d.settingsVersion(), d.selectionAsOf(), d.targetExposurePct(),
                 d.packet(), d.packetHash(), d.responseRaw(), response == null ? d.response() : response, d.usage(),
-                error, d.noteIds(), d.pricesFinal(), d.latencyMs(), d.retryCount()));
+                error, d.noteIds(), d.pricesFinal(), d.latencyMs(), d.retryCount(), d.packetText()));
+    }
+
+    /** API 오류이고 아직 재시도하지 않은 행만 통째로 바꾸고 재시도 수 +1(실제 저장소의 조건과 같음). */
+    @Override
+    public boolean updateDecisionRetry(Decision d) {
+        Decision old = decisions.get(d.id());
+        if (old == null || !"API_ERROR".equals(old.status()) || old.retryCount() != 0) {
+            return false;
+        }
+        decisions.put(d.id(), new Decision(old.id(), old.bookCode(), old.asOfTradingDate(), old.kind(),
+                d.decidedAt() == null ? dbNow : d.decidedAt(), d.status(), d.model(), d.frameworkVersion(),
+                d.settingsVersion(), d.selectionAsOf(), d.targetExposurePct(), d.packet(), d.packetHash(),
+                d.responseRaw(), d.response(), d.usage(), d.error(), d.noteIds(), d.pricesFinal(), d.latencyMs(),
+                old.retryCount() + 1, d.packetText()));
+        return true;
     }
 
     List<Decision> decisionsOf(String code) {

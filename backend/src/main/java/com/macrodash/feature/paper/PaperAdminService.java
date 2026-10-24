@@ -250,7 +250,7 @@ public class PaperAdminService {
             Book book = existing(code);
             if (PaperBooks.NOT_STARTED.equals(book.status())) {
                 throw new InvalidRequestException("시작 전 책(" + code + ")은 운용·일시정지를 바꿀 수 없습니다. "
-                        + "규칙·Claude 책은 초기 결정으로 시작합니다(다음 단계).");
+                        + "규칙·Claude 책은 개요의 '규칙 책 시작'·'Claude 재량 책 시작'(초기 결정)으로 시작합니다.");
             }
             int cancelled = 0;
             if (PaperBooks.PAUSED.equals(target)) {

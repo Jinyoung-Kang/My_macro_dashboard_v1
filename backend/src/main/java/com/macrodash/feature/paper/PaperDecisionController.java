@@ -1,6 +1,5 @@
 package com.macrodash.feature.paper;
 
-import com.macrodash.support.InvalidRequestException;
 import com.macrodash.support.Params;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -25,6 +24,9 @@ import java.util.Map;
  *  POST /api/paper/run/initial-decision              {"book", "preview"?} 시작(초기 결정 + 출발일 사후 체결)
  * </pre>
  *
+ * <p>Claude 책({@code book:"claude"})의 수동 결정·미리보기·시작은 Claude를 한 번 부릅니다(하루 호출 상한에 셈, 설정
+ * {@code apiDailyCallCap}). 미리보기는 장부·결정 기록을 바꾸지 않습니다.
+ *
  * <p>테이블이 없으면 500이 아니라 {@code available:false}(+ POST는 {@code ok:false})입니다.
  */
 @RestController
@@ -34,11 +36,14 @@ public class PaperDecisionController {
     private final PaperQueryService query;
     private final PaperDecisionJob job;
     private final RuleBookService rules;
+    private final ClaudeBookService claude;
 
-    public PaperDecisionController(PaperQueryService query, PaperDecisionJob job, RuleBookService rules) {
+    public PaperDecisionController(PaperQueryService query, PaperDecisionJob job, RuleBookService rules,
+                                   ClaudeBookService claude) {
         this.query = query;
         this.job = job;
         this.rules = rules;
+        this.claude = claude;
     }
 
     public record DecisionRequest(String book) {
@@ -79,12 +84,13 @@ public class PaperDecisionController {
         }
         String book = Params.oneOf("book", body == null ? null : body.book(),
                 List.of(PaperBooks.RULES, PaperBooks.CLAUDE));
+        boolean preview = body.preview() != null && body.preview();
         if (PaperBooks.CLAUDE.equals(book)) {
-            throw new InvalidRequestException("Claude 책의 초기 결정은 다음 단계(3a)에서 엽니다.");
+            return preview ? claude.preview() : claudeStart();
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("ok", true);
-        if (body.preview() != null && body.preview()) {
+        if (preview) {
             out.put("preview", true);
             out.put("decision", null);
             out.put("plan", rules.preview());
@@ -96,6 +102,18 @@ public class PaperDecisionController {
         out.put("decision", query.decisionSummary(result.decision()));
         out.put("fills", query.fillRows(result.fills()));
         out.put("book", query.bookSummary(PaperBooks.RULES));
+        return out;
+    }
+
+    /** Claude 책 시작 — 규칙 책 시작과 같은 모양({@code decision}·{@code fills}·{@code book}). */
+    private Map<String, Object> claudeStart() {
+        var result = claude.start();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("ok", true);
+        out.put("preview", false);
+        out.put("decision", query.decisionSummary(result.decision()));
+        out.put("fills", query.fillRows(result.fills()));
+        out.put("book", query.bookSummary(PaperBooks.CLAUDE));
         return out;
     }
 

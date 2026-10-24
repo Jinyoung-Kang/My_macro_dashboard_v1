@@ -65,6 +65,8 @@ class PaperStoreDbTest {
         jdbc.update("DELETE FROM paper_job_runs WHERE job LIKE 't\\_%'");
         jdbc.update("DELETE FROM paper_start_prices WHERE ticker LIKE 'T\\_%'");
         jdbc.update("DELETE FROM timeseries WHERE dataset = ?", TS_DATASET);
+        // Claude 호출 사용량은 날짜가 키라, 시험은 쓰일 일이 없는 1999년 날짜만 씁니다.
+        jdbc.update("DELETE FROM paper_api_usage WHERE day < DATE '2000-01-01'");
     }
 
     private static PaperStore.Book book(String code, String label) {
@@ -86,9 +88,10 @@ class PaperStoreDbTest {
     }
 
     @Test
-    @DisplayName("테이블이 있다 — V8이 마지막에 만드는 paper_api_usage와 V9가 마지막에 더하는 열로 준비 여부를 본다")
+    @DisplayName("테이블이 있다 — V8이 마지막에 만드는 paper_api_usage와 V9·V10이 더하는 열로 준비 여부를 본다")
     void ready() {
-        assertThat(store.ready()).as("make db-test로 V8·V9를 적용했는가").isTrue();
+        assertThat(store.ready()).as("make db-test로 V8~V10을 적용했는가").isTrue();
+        assertThat(new SchemaCheck(jdbc).columnExists("paper_decisions", "packet_text")).isTrue();
     }
 
     @Test
@@ -516,6 +519,150 @@ class PaperStoreDbTest {
                     .containsExactly("1:", "2:slippageBp");
             throw new Rollback();
         })).isInstanceOf(Rollback.class);
+    }
+
+    @Test
+    @DisplayName("설정 이력: 최근 버전 순으로 본문·바뀐 키·시각 — 시험 뒤 되돌림")
+    void settingsHistoryIsNewestFirst() {
+        class Rollback extends RuntimeException {
+        }
+        assertThatThrownBy(() -> store.atomically(() -> {
+            jdbc.update("DELETE FROM paper_settings_history");
+            jdbc.update("DELETE FROM paper_settings");
+            store.initSettingsIfAbsent(MAPPER.valueToTree(Map.of("slippageBp", 5)));
+            store.saveSettings(MAPPER.valueToTree(Map.of("slippageBp", 6)), List.of("slippageBp"));
+            store.saveSettings(MAPPER.valueToTree(Map.of("slippageBp", 6, "model", "claude-haiku-5-5")),
+                    List.of("model", "effort"));
+
+            List<PaperStore.SettingsHistoryRow> history = store.settingsHistory(10);
+            assertThat(history).extracting(PaperStore.SettingsHistoryRow::version).containsExactly(3, 2, 1);
+            assertThat(history.get(0).changedKeys()).containsExactly("model", "effort");
+            assertThat(history.get(0).body().path("model").asString()).isEqualTo("claude-haiku-5-5");
+            assertThat(history.get(2).changedKeys()).as("처음 값").isEmpty();
+            assertThat(history.get(2).createdAt()).isNotNull();
+            assertThat(store.settingsHistory(1)).hasSize(1);
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+    }
+
+    @Test
+    @DisplayName("Claude 호출 사용량: 상한 안에서만 호출을 잡고(한 문장), 되돌리기는 0 아래로 안 가고, 토큰은 아는 값만 더하고, 기간 합계")
+    void apiUsageReservesWithinCap() {
+        LocalDate day = LocalDate.of(1999, 1, 4);
+        LocalDate next = LocalDate.of(1999, 1, 5);
+        assertThat(store.apiUsage(day)).isEmpty();
+        assertThat(store.reserveApiCall(day, 0)).as("상한 0").isFalse();
+        assertThat(store.apiUsage(day)).as("상한 0이면 행도 만들지 않음").isEmpty();
+
+        assertThat(store.reserveApiCall(day, 2)).isTrue();
+        assertThat(store.reserveApiCall(day, 2)).isTrue();
+        assertThat(store.reserveApiCall(day, 2)).as("세 번째는 상한").isFalse();
+        assertThat(store.apiUsage(day).orElseThrow().calls()).isEqualTo(2);
+
+        store.addApiTokens(day, 21_000L, 3_100L, null, 0L);
+        store.addApiTokens(day, 1_000L, null, 7_800L, null);
+        PaperStore.ApiUsage usage = store.apiUsage(day).orElseThrow();
+        assertThat(usage.calls()).as("토큰 더하기는 호출 수를 바꾸지 않음").isEqualTo(2);
+        assertThat(usage.inputTokens()).isEqualTo(22_000);
+        assertThat(usage.outputTokens()).isEqualTo(3_100);
+        assertThat(usage.cacheReadTokens()).isEqualTo(7_800);
+        assertThat(usage.cacheWriteTokens()).isZero();
+
+        store.releaseApiCall(day);
+        store.releaseApiCall(day);
+        store.releaseApiCall(day);
+        assertThat(store.apiUsage(day).orElseThrow().calls()).as("0 아래로는 내리지 않음").isZero();
+
+        store.addApiTokens(next, 5L, 6L, null, null);   // 행이 없으면 호출 0으로 만듦
+        assertThat(store.apiUsage(next).orElseThrow().calls()).isZero();
+        assertThat(store.reserveApiCall(next, 1)).isTrue();
+        PaperStore.ApiUsageTotal total = store.apiUsageBetween(LocalDate.of(1999, 1, 1), LocalDate.of(1999, 1, 31));
+        assertThat(total.days()).isEqualTo(2);
+        assertThat(total.calls()).isEqualTo(1);
+        assertThat(total.inputTokens()).isEqualTo(22_005);
+        assertThat(total.outputTokens()).isEqualTo(3_106);
+        PaperStore.ApiUsageTotal empty = store.apiUsageBetween(LocalDate.of(1998, 1, 1), LocalDate.of(1998, 1, 31));
+        assertThat(empty.days()).isZero();
+        assertThat(empty.calls()).isZero();
+    }
+
+    @Test
+    @DisplayName("결정 재시도: API 오류·재시도 전 행만 통째로 바꾸고 재시도 수 1 — 두 번째·다른 상태는 바꾸지 않음")
+    void decisionRetryUpdatesOnlyOnce() throws Exception {
+        store.insertBookIfAbsent(book(BOOK, "Claude 책 시험"));
+        long id = store.insertDecisionIfAbsent(new PaperStore.Decision(0, BOOK, DAY, "SCHEDULED", null, "API_ERROR",
+                "claude-sonnet-5-5", null, 1, null, null, MAPPER.readTree("{\"p\":1}"), "h1", null, null, null,
+                "[RATE_LIMIT] 429", List.of(), true, 12L, 0)).orElseThrow();
+        long ok = store.insertDecisionIfAbsent(new PaperStore.Decision(0, BOOK, DAY, "MANUAL", null, "OK", null, null, 1,
+                null, null, null, null, null, null, null, null, null, true, 1L, 0)).orElseThrow();
+
+        PaperStore.Decision retry = new PaperStore.Decision(id, BOOK, DAY, "SCHEDULED", null, "OK",
+                "claude-haiku-5-5", 3, 2, DAY, 42.5, MAPPER.readTree("{\"p\":2}"), "h2", "{\"raw\":true}",
+                MAPPER.readTree("{\"summary\":\"두 번째\"}"), MAPPER.readTree("{\"inputTokens\":9}"), null,
+                List.of(4L), false, 99L, 0);
+        assertThat(store.updateDecisionRetry(retry)).isTrue();
+        PaperStore.Decision saved = store.decision(id).orElseThrow();
+        assertThat(saved.status()).isEqualTo("OK");
+        assertThat(saved.retryCount()).isEqualTo(1);
+        assertThat(saved.model()).isEqualTo("claude-haiku-5-5");
+        assertThat(saved.frameworkVersion()).isEqualTo(3);
+        assertThat(saved.settingsVersion()).isEqualTo(2);
+        assertThat(saved.selectionAsOf()).isEqualTo(DAY);
+        assertThat(saved.targetExposurePct()).isEqualTo(42.5);
+        assertThat(saved.packet().path("p").asInt()).isEqualTo(2);
+        assertThat(saved.packetHash()).isEqualTo("h2");
+        assertThat(saved.responseRaw()).isEqualTo("{\"raw\":true}");
+        assertThat(saved.response().path("summary").asString()).isEqualTo("두 번째");
+        assertThat(saved.usage().path("inputTokens").asInt()).isEqualTo(9);
+        assertThat(saved.error()).isNull();
+        assertThat(saved.noteIds()).containsExactly(4L);
+        assertThat(saved.pricesFinal()).isFalse();
+        assertThat(saved.latencyMs()).isEqualTo(99L);
+        assertThat(saved.kind()).isEqualTo("SCHEDULED");
+
+        assertThat(store.updateDecisionRetry(retry)).as("이미 재시도함").isFalse();
+        assertThat(store.updateDecisionRetry(new PaperStore.Decision(ok, BOOK, DAY, "MANUAL", null, "API_ERROR", null,
+                null, 1, null, null, null, null, null, null, null, null, null, true, 1L, 0))).as("API 오류가 아님")
+                .isFalse();
+        assertThat(store.decision(ok).orElseThrow().status()).isEqualTo("OK");
+    }
+
+    @Test
+    @DisplayName("패킷 문자열(V10): 보낸 글자 그대로 남아 SHA-256을 기록만으로 다시 만들고, 패킷은 보낸 섹션 순서로 읽힌다 — JSONB는 키를 다시 정렬함")
+    void packetTextKeepsSentBytes() throws Exception {
+        store.insertBookIfAbsent(book(BOOK, "Claude 책 시험"));
+        // JSONB는 키를 길이·바이트 순으로 정렬합니다 — "0_instructions"(14자)가 "1_basis"(7자) 뒤로 갑니다.
+        String sent = "{\"0_instructions\":{\"lines\":[\"가\"]},\"1_basis\":{\"asOf\":\"2026-10-23\"},\"12_hardRules\":1.50}";
+        String hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(sent.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        long id = store.insertDecisionIfAbsent(new PaperStore.Decision(0, BOOK, DAY, "SCHEDULED", null, "API_ERROR",
+                "claude-sonnet-5-5", null, 1, null, null, MAPPER.readTree(sent), hash, null, null, null, "[RATE_LIMIT] 429",
+                List.of(), true, 12L, 0, sent)).orElseThrow();
+
+        PaperStore.Decision saved = store.decision(id).orElseThrow();
+        assertThat(saved.packetText()).isEqualTo(sent);
+        assertThat(jdbc.queryForObject("SELECT encode(sha256(convert_to(packet_text, 'UTF8')), 'hex') FROM "
+                + "paper_decisions WHERE id = ?", String.class, id)).as("기록만으로 해시 재현").isEqualTo(hash);
+        assertThat(jdbc.queryForObject("SELECT encode(sha256(convert_to(packet::text, 'UTF8')), 'hex') FROM "
+                + "paper_decisions WHERE id = ?", String.class, id)).as("JSONB로는 재현되지 않음").isNotEqualTo(hash);
+        List<String> sections = new java.util.ArrayList<>();
+        saved.packet().propertyNames().forEach(sections::add);
+        assertThat(sections).as("보낸 섹션 순서").containsExactly("0_instructions", "1_basis", "12_hardRules");
+
+        // 재시도도 패킷 문자열을 바꿔 씁니다.
+        String resent = "{\"0_instructions\":2}";
+        assertThat(store.updateDecisionRetry(new PaperStore.Decision(id, BOOK, DAY, "SCHEDULED", null, "OK",
+                "claude-sonnet-5-5", null, 1, null, null, MAPPER.readTree(resent), "h2", null, null, null, null,
+                List.of(), true, 5L, 0, resent))).isTrue();
+        assertThat(store.decision(id).orElseThrow().packetText()).isEqualTo(resent);
+
+        // 문자열이 없는 기록(규칙 책·V10 전)은 JSONB에서 읽고 packetText는 null.
+        long legacy = store.insertDecisionIfAbsent(new PaperStore.Decision(0, BOOK, DAY, "MANUAL", null, "OK", null,
+                null, 1, null, null, MAPPER.readTree(sent), "h3", null, null, null, null, null, true, 1L, 0))
+                .orElseThrow();
+        PaperStore.Decision old = store.decision(legacy).orElseThrow();
+        assertThat(old.packetText()).isNull();
+        assertThat(old.packet().path("1_basis").path("asOf").asString()).isEqualTo("2026-10-23");
     }
 
     private static PaperStore.TrackRecordRow trackRow(LocalDate asOf, String cik, Integer rank, Double cagr,

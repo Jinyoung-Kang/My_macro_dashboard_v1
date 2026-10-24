@@ -95,6 +95,26 @@ public class PaperStore {
     public record SettingsRow(int version, JsonNode body, Instant updatedAt) {
     }
 
+    /** 설정 변경 이력 한 줄({@code paper_settings_history}). 처음 값(버전 1)은 {@code changedKeys}가 비어 있습니다. */
+    public record SettingsHistoryRow(int version, JsonNode body, List<String> changedKeys, Instant createdAt) {
+        public SettingsHistoryRow {
+            changedKeys = changedKeys == null ? List.of() : List.copyOf(changedKeys);
+        }
+    }
+
+    /**
+     * 하루(KST 달력)의 Claude 호출 사용량({@code paper_api_usage}, 명세 C8·D18). 호출 수는 성공·실패를 모두 세고, 토큰은 응답이 알려
+     * 준 값만 더합니다(모르는 값은 더하지 않음 — 열이 NOT NULL이라 0을 더한 것과 같습니다).
+     */
+    public record ApiUsage(LocalDate day, int calls, long inputTokens, long outputTokens, long cacheReadTokens,
+                           long cacheWriteTokens) {
+    }
+
+    /** 기간(양끝 포함)의 사용량 합계. {@code days}는 기록이 있는 날 수(호출이 없던 날은 행이 없음). */
+    public record ApiUsageTotal(LocalDate from, LocalDate to, int days, long calls, long inputTokens,
+                                long outputTokens, long cacheReadTokens, long cacheWriteTokens) {
+    }
+
     /**
      * 얼려 둔 출발일 종가 한 건. {@code source}는 체결의 {@code price_source}와 같은 말(equity_close·paper.quotes)이고,
      * {@code capturedAt}은 넣을 때 null이면 DB가 지금으로 채웁니다.
@@ -175,14 +195,29 @@ public class PaperStore {
      * 결정 한 건({@code paper_decisions}). (책, 기준 거래일, 종류)마다 하나입니다. 규칙 책은 {@code model}·{@code packet}·
      * {@code usage}처럼 Claude 호출에만 있는 열이 null이고, 판단 근거는 {@code response} JSON에 있습니다.
      * {@code decidedAt}은 넣을 때 null이면 DB가 지금으로 채웁니다.
+     *
+     * <p>{@code packetText}는 Claude에 보낸 패킷 문자열 그대로({@code packet_text}, V10) — {@code packetHash}는 이 문자열의
+     * SHA-256이고, JSONB {@code packet}은 키 순서·표기를 바꿔 저장하므로 다시 직렬화해도 해시가 맞지 않습니다. 읽을 때 이 값이
+     * 있으면 {@code packet}도 이 문자열에서 읽어 보낸 섹션 순서를 지킵니다. 규칙 책·V10 전 기록은 null.
      */
     public record Decision(long id, String bookCode, LocalDate asOfTradingDate, String kind, Instant decidedAt,
                            String status, String model, Integer frameworkVersion, int settingsVersion,
                            LocalDate selectionAsOf, Double targetExposurePct, JsonNode packet, String packetHash,
                            String responseRaw, JsonNode response, JsonNode usage, String error, List<Long> noteIds,
-                           boolean pricesFinal, Long latencyMs, int retryCount) {
+                           boolean pricesFinal, Long latencyMs, int retryCount, String packetText) {
         public Decision {
             noteIds = noteIds == null ? null : List.copyOf(noteIds);
+        }
+
+        /** 패킷 문자열 없이(규칙 책·호출하지 않은 결정·시험). */
+        public Decision(long id, String bookCode, LocalDate asOfTradingDate, String kind, Instant decidedAt,
+                        String status, String model, Integer frameworkVersion, int settingsVersion,
+                        LocalDate selectionAsOf, Double targetExposurePct, JsonNode packet, String packetHash,
+                        String responseRaw, JsonNode response, JsonNode usage, String error, List<Long> noteIds,
+                        boolean pricesFinal, Long latencyMs, int retryCount) {
+            this(id, bookCode, asOfTradingDate, kind, decidedAt, status, model, frameworkVersion, settingsVersion,
+                    selectionAsOf, targetExposurePct, packet, packetHash, responseRaw, response, usage, error, noteIds,
+                    pricesFinal, latencyMs, retryCount, null);
         }
     }
 
@@ -225,7 +260,9 @@ public class PaperStore {
     private static final String SELECTION_COLUMNS = "as_of_date, selected_ciks, ranking::text AS ranking, "
             + "settings_version, created_at";
     private static final String DECISION_COLUMNS = "id, book_code, as_of_trading_date, kind, decided_at, status, model, "
-            + "framework_version, settings_version, selection_as_of, target_exposure_pct, packet::text AS packet, "
+            + "framework_version, settings_version, selection_as_of, target_exposure_pct, "
+            // 보낸 문자열이 있으면 그것을(섹션 순서 그대로), 없으면 JSONB를 — 큰 패킷을 두 번 읽지 않게 한 칸으로.
+            + "COALESCE(packet_text, packet::text) AS packet, (packet_text IS NOT NULL) AS packet_text_stored, "
             + "packet_hash, response_raw, response::text AS response, usage::text AS usage, error, note_ids, "
             + "prices_final, latency_ms, retry_count";
     /** 목록용 — 응답 JSON은 요약 한 칸만 꺼내고, 주문 수·거절 수는 주문 표에서 셉니다(주문은 결정 번호로 찾음). */
@@ -252,12 +289,14 @@ public class PaperStore {
     }
 
     /**
-     * 테이블이 있는가. 수집기가 아직 V8·V9를 적용하지 않았으면 false입니다 — V8이 마지막에 만드는 테이블과 V9가 마지막에 더하는
-     * 열({@code paper_track_record.data_source})로 봅니다. V8만 있는 DB(백엔드만 새로 띄운 경우, QA-016)에서 참이면 트랙레코드
-     * 읽기·쓰기가 {@code group_code}·{@code data_source} 열과 새 기본키에서 SQL 오류(500)를 냅니다.
+     * 테이블이 있는가. 수집기가 아직 V8~V10을 적용하지 않았으면 false입니다 — V8이 마지막에 만드는 테이블과 V9·V10이 더하는
+     * 열({@code paper_track_record.data_source}·{@code paper_decisions.packet_text})로 봅니다. V8만 있는 DB(백엔드만 새로 띄운
+     * 경우, QA-016)에서 참이면 트랙레코드 읽기·쓰기가 {@code group_code}·{@code data_source} 열과 새 기본키에서, 결정 읽기·쓰기가
+     * {@code packet_text} 열에서 SQL 오류(500)를 냅니다.
      */
     public boolean ready() {
-        return schema.tableExists("paper_api_usage") && schema.columnExists("paper_track_record", "data_source");
+        return schema.tableExists("paper_api_usage") && schema.columnExists("paper_track_record", "data_source")
+                && schema.columnExists("paper_decisions", "packet_text");
     }
 
     /**
@@ -701,6 +740,88 @@ public class PaperStore {
                 version).stream().findFirst();
     }
 
+    /** 설정 변경 이력 최근 {@code limit}건, 최근 버전 순(바뀐 키와 그 버전의 본문 전체). */
+    public List<SettingsHistoryRow> settingsHistory(int limit) {
+        return jdbc.query("SELECT version, body::text AS body, changed_keys, created_at FROM paper_settings_history "
+                        + "ORDER BY version DESC LIMIT ?",
+                (rs, rowNum) -> {
+                    java.sql.Array array = rs.getArray("changed_keys");
+                    List<String> keys = array == null ? List.of() : List.of((String[]) array.getArray());
+                    return new SettingsHistoryRow(rs.getInt("version"), json(rs, "body"), keys,
+                            instant(rs, "created_at"));
+                },
+                limit);
+    }
+
+    // ------------------------------------------------------------------ Claude 호출 사용량
+    /** 그날(KST)의 사용량. 그날 호출이 없었으면 empty. */
+    public Optional<ApiUsage> apiUsage(LocalDate day) {
+        return jdbc.query("SELECT day, calls, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens "
+                        + "FROM paper_api_usage WHERE day = ?",
+                (rs, rowNum) -> new ApiUsage(date(rs, "day"), rs.getInt("calls"), rs.getLong("input_tokens"),
+                        rs.getLong("output_tokens"), rs.getLong("cache_read_tokens"), rs.getLong("cache_write_tokens")),
+                Date.valueOf(day)).stream().findFirst();
+    }
+
+    /** 기간(양끝 포함, KST 날짜)의 사용량 합계 — 월 누적 표시용. 기록이 없으면 모두 0·{@code days = 0}. */
+    public ApiUsageTotal apiUsageBetween(LocalDate from, LocalDate to) {
+        return jdbc.queryForObject("SELECT COUNT(*) AS days, COALESCE(SUM(calls), 0) AS calls, "
+                        + "COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+                        + "COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, "
+                        + "COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens "
+                        + "FROM paper_api_usage WHERE day BETWEEN ? AND ?",
+                (rs, rowNum) -> new ApiUsageTotal(from, to, rs.getInt("days"), rs.getLong("calls"),
+                        rs.getLong("input_tokens"), rs.getLong("output_tokens"), rs.getLong("cache_read_tokens"),
+                        rs.getLong("cache_write_tokens")),
+                Date.valueOf(from), Date.valueOf(to));
+    }
+
+    /**
+     * 그날 호출 한 번을 잡습니다 — 그날 호출 수가 {@code cap}보다 적을 때만 하나 올립니다(행이 없으면 1로 만듦). 검사와 증가가
+     * 한 문장이라, 결정 작업과 미리보기 버튼이 동시에 불러도 상한을 넘지 않습니다(명세 D18). 호출 전에 잡고, 성공·실패와
+     * 상관없이 그대로 둡니다(호출이 요청을 보내지도 않은 경우만 {@link #releaseApiCall}).
+     *
+     * @return 잡았으면 true, 상한에 닿았으면(또는 {@code cap ≤ 0}) false — 아무것도 바꾸지 않음
+     */
+    public boolean reserveApiCall(LocalDate day, int cap) {
+        if (cap <= 0) {
+            return false;
+        }
+        return jdbc.update("INSERT INTO paper_api_usage (day, calls) VALUES (?, 1) "
+                + "ON CONFLICT (day) DO UPDATE SET calls = paper_api_usage.calls + 1 "
+                + "WHERE paper_api_usage.calls < ?", Date.valueOf(day), cap) == 1;
+    }
+
+    /** 잡아 둔 호출 한 번을 돌려놓습니다 — 키가 없어 요청을 보내지도 않은 경우. 0 아래로는 내리지 않습니다. */
+    public void releaseApiCall(LocalDate day) {
+        jdbc.update("UPDATE paper_api_usage SET calls = GREATEST(calls - 1, 0) WHERE day = ?", Date.valueOf(day));
+    }
+
+    /**
+     * 그날 사용량에 토큰을 더합니다(호출 수는 그대로 — {@link #reserveApiCall}이 셈). null인 값은 더하지 않습니다 — 응답이 없거나
+     * API가 알려 주지 않은 토큰을 지어내지 않습니다(호출별 원값은 결정 기록의 {@code usage}에 null 그대로 남음).
+     */
+    public void addApiTokens(LocalDate day, Long inputTokens, Long outputTokens, Long cacheReadTokens,
+                             Long cacheWriteTokens) {
+        jdbc.update("INSERT INTO paper_api_usage (day, calls, input_tokens, output_tokens, cache_read_tokens, "
+                        + "cache_write_tokens) VALUES (?, 0, ?, ?, ?, ?) ON CONFLICT (day) DO UPDATE SET "
+                        + "input_tokens = paper_api_usage.input_tokens + EXCLUDED.input_tokens, "
+                        + "output_tokens = paper_api_usage.output_tokens + EXCLUDED.output_tokens, "
+                        + "cache_read_tokens = paper_api_usage.cache_read_tokens + EXCLUDED.cache_read_tokens, "
+                        + "cache_write_tokens = paper_api_usage.cache_write_tokens + EXCLUDED.cache_write_tokens",
+                ps -> {
+                    setDate(ps, 1, day);
+                    ps.setLong(2, tokens(inputTokens));
+                    ps.setLong(3, tokens(outputTokens));
+                    ps.setLong(4, tokens(cacheReadTokens));
+                    ps.setLong(5, tokens(cacheWriteTokens));
+                });
+    }
+
+    private static long tokens(Long value) {
+        return value == null || value < 0 ? 0 : value;
+    }
+
     // ------------------------------------------------------------------ 트랙레코드·선정
     /**
      * 트랙레코드 한 행을 넣거나 통째로 바꿉니다({@code (as_of_date, group_code, cik)} 충돌 시 갱신 — 같은 기준일의 수동
@@ -857,8 +978,8 @@ public class PaperStore {
         List<Long> ids = jdbc.query("INSERT INTO paper_decisions (book_code, as_of_trading_date, kind, decided_at, status, "
                         + "model, framework_version, settings_version, selection_as_of, target_exposure_pct, packet, "
                         + "packet_hash, response_raw, response, usage, error, note_ids, prices_final, latency_ms, "
-                        + "retry_count) VALUES (?, ?, ?, COALESCE(CAST(? AS timestamptz), now()), ?, ?, ?, ?, ?, ?, "
-                        + "CAST(? AS jsonb), ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, ?) "
+                        + "retry_count, packet_text) VALUES (?, ?, ?, COALESCE(CAST(? AS timestamptz), now()), ?, ?, ?, "
+                        + "?, ?, ?, CAST(? AS jsonb), ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, ?, ?) "
                         + "ON CONFLICT (book_code, as_of_trading_date, kind) DO NOTHING RETURNING id",
                 ps -> {
                     ps.setString(1, d.bookCode());
@@ -885,6 +1006,7 @@ public class PaperStore {
                     ps.setBoolean(18, d.pricesFinal());
                     setLong(ps, 19, d.latencyMs());
                     ps.setInt(20, d.retryCount());
+                    ps.setString(21, d.packetText());
                 },
                 (rs, rowNum) -> rs.getLong("id"));
         return ids.stream().findFirst();
@@ -947,6 +1069,50 @@ public class PaperStore {
                     ps.setString(3, error);
                     ps.setLong(4, id);
                 });
+    }
+
+    /**
+     * API 오류로 끝난 결정을 <b>같은 행</b>에서 한 번 더 낸 결과로 바꿉니다(재시도, 명세 C7 "같은 거래일에 한 번"). 그 행이 아직
+     * {@code status = 'API_ERROR'}이고 {@code retry_count = 0}일 때만 바꾸고 {@code retry_count}를 1 올립니다 — 두 곳에서 동시에
+     * 재시도해도 한 번만 반영됩니다. 번호·책·거래일·종류는 그대로이고, 나머지 열은 {@code d}의 값으로 통째로 씁니다
+     * ({@code decidedAt}이 null이면 지금).
+     *
+     * @return 바꿨으면 true, 이미 재시도했거나 상태가 바뀌었으면 false(아무것도 바꾸지 않음)
+     */
+    public boolean updateDecisionRetry(Decision d) {
+        String packet = d.packet() == null ? null : mapper.writeValueAsString(d.packet());
+        String response = d.response() == null ? null : mapper.writeValueAsString(d.response());
+        String usage = d.usage() == null ? null : mapper.writeValueAsString(d.usage());
+        return jdbc.update("UPDATE paper_decisions SET decided_at = COALESCE(CAST(? AS timestamptz), now()), status = ?, "
+                        + "model = ?, framework_version = ?, settings_version = ?, selection_as_of = ?, "
+                        + "target_exposure_pct = ?, packet = CAST(? AS jsonb), packet_hash = ?, response_raw = ?, "
+                        + "response = CAST(? AS jsonb), usage = CAST(? AS jsonb), error = ?, note_ids = ?, prices_final = ?, "
+                        + "latency_ms = ?, packet_text = ?, retry_count = retry_count + 1 "
+                        + "WHERE id = ? AND status = 'API_ERROR' AND retry_count = 0",
+                ps -> {
+                    setInstant(ps, 1, d.decidedAt());
+                    ps.setString(2, d.status());
+                    ps.setString(3, d.model());
+                    setInteger(ps, 4, d.frameworkVersion());
+                    ps.setInt(5, d.settingsVersion());
+                    setDate(ps, 6, d.selectionAsOf());
+                    setMoney(ps, 7, d.targetExposurePct(), "target_exposure_pct");
+                    ps.setString(8, packet);
+                    ps.setString(9, d.packetHash());
+                    ps.setString(10, d.responseRaw());
+                    ps.setString(11, response);
+                    ps.setString(12, usage);
+                    ps.setString(13, d.error());
+                    if (d.noteIds() == null) {
+                        ps.setNull(14, Types.ARRAY);
+                    } else {
+                        ps.setArray(14, ps.getConnection().createArrayOf("bigint", d.noteIds().toArray()));
+                    }
+                    ps.setBoolean(15, d.pricesFinal());
+                    setLong(ps, 16, d.latencyMs());
+                    ps.setString(17, d.packetText());
+                    ps.setLong(18, d.id());
+                }) == 1;
     }
 
     // ------------------------------------------------------------------ 게이트 지표
@@ -1081,13 +1247,15 @@ public class PaperStore {
                     noteIds.add(((Number) id).longValue());
                 }
             }
+            String packet = rs.getString("packet");
             return new Decision(rs.getLong("id"), rs.getString("book_code"), date(rs, "as_of_trading_date"),
                     rs.getString("kind"), instant(rs, "decided_at"), rs.getString("status"), rs.getString("model"),
                     rs.getObject("framework_version", Integer.class), rs.getInt("settings_version"),
-                    date(rs, "selection_as_of"), nullableDouble(rs, "target_exposure_pct"), json(rs, "packet"),
-                    rs.getString("packet_hash"), rs.getString("response_raw"), json(rs, "response"),
-                    json(rs, "usage"), rs.getString("error"), noteIds, rs.getBoolean("prices_final"),
-                    rs.getObject("latency_ms", Long.class), rs.getInt("retry_count"));
+                    date(rs, "selection_as_of"), nullableDouble(rs, "target_exposure_pct"),
+                    packet == null ? null : mapper.readTree(packet), rs.getString("packet_hash"),
+                    rs.getString("response_raw"), json(rs, "response"), json(rs, "usage"), rs.getString("error"),
+                    noteIds, rs.getBoolean("prices_final"), rs.getObject("latency_ms", Long.class),
+                    rs.getInt("retry_count"), rs.getBoolean("packet_text_stored") ? packet : null);
         };
     }
 

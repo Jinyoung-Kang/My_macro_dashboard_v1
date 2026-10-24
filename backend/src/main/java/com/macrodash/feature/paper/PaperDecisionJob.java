@@ -28,6 +28,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,9 +42,10 @@ import java.util.concurrent.locks.ReentrantLock;
  * <pre>
  *  d = 마감이 끝난 가장 최근 세션
  *  d 다음 날 decisionTimeKst(07:30) 전           → TOO_EARLY(기록 안 함)
- *  그날 할 일(게이트 지표·규칙 책 결정)이 다 됨    → ALREADY_DECIDED(기록 안 함)
+ *  그날 할 일(게이트 지표·규칙 책 결정·Claude 책 결정)이 다 됨 → ALREADY_DECIDED(기록 안 함)
  *  관측치가 d의 확정 종가가 아님 && decisionDeadlineKst(12:00) 전 → PRICES_NOT_FINAL(기록 안 함 — 다음 주기에 다시)
- *  관측치 처리 → (확정이 아니면) d의 미확정 순자산 줄 → 게이트 지표 → 재선정일이면 선정 → 규칙 책 결정 → 작업 기록
+ *  관측치 처리 → (확정이 아니면) d의 미확정 순자산 줄 → 게이트 지표 → 재선정일이면 선정 → 규칙 책 결정
+ *  → Claude 책 결정(운용 중일 때만) → 작업 기록
  * </pre>
  *
  * <p>확정 종가 = 관측치의 다수 티커 봉 날짜가 d이고 마감 + 15분 뒤에 수집함. 기한을 넘기면 확정 종가 없이 진행하고 결정·순자산
@@ -56,11 +58,28 @@ import java.util.concurrent.locks.ReentrantLock;
  * 없으면, 다음 결정 날에 r 기준으로 선정하고({@code select(r)} — d가 아니라 r이라 언제 따라잡아도 같은 선정) 그날 REBALANCE를
  * 냅니다. 그러지 않으면 그 분기 매수가 통째로 사라져 다음 재선정일까지 지난 분기 신호로 갑니다. r에 선정을 건너뛴 경우(수집 중·후보
  * 목록 없음 — {@link PaperSelectionService#select})도 같습니다: 그날 REBALANCE는 지난 선정이라 매수 없이 끝나므로 세지 않고, 다음
- * 결정 날마다 {@code select(r)}를 다시 불러 수집이 끝난 뒤 그 분기 매수를 냅니다. Claude 책 결정은 단계 3a에서 규칙 책 다음 자리에
- * 들어갑니다. 시작 전 책은 결정을 내지 않고, 초기화 전(책이 없음)이면 아무것도 하지 않습니다.
+ * 결정 날마다 {@code select(r)}를 다시 불러 수집이 끝난 뒤 그 분기 매수를 냅니다. 시작 전 책은 결정을 내지 않고, 초기화 전(책이
+ * 없음)이면 아무것도 하지 않습니다.
  *
- * <p>저장본은 {@link StoreReader#quietly}로만 읽습니다(정기 작업이 수집을 깨우지 않게). 같은 거래일에 오류가 {@value #MAX_ATTEMPTS}번
- * 나면 그날은 더 시도하지 않습니다 — 10분마다 같은 오류가 작업 기록 200건을 밀어내지 않게(수동 실행·재기동은 다시 시도).
+ * <p><b>Claude 책</b>(단계 3a)은 규칙 책 다음에, 운용 중(ACTIVE)이고 그 거래일이 출발일 뒤일 때만 SCHEDULED 결정을 냅니다(출발일은
+ * 초기 결정이 그날 결정입니다 — 같은 자료로 Claude를 한 번 더 부르지 않게). 그날 결정이 API 오류이고 아직 재시도하지 않았으면
+ * "할 일이 남음"으로 보아 다음 주기에 한 번 더 부릅니다({@link ClaudeBookService#decide} — 같은 행, 명세 C7). Claude 호출은 몇 분
+ * 걸릴 수 있고, 그동안 이 작업의 잠금을 쥡니다(같은 거래일 결정을 동시에 만들지 않게). <b>정기 실행은 그 잠금을 기다리지 않습니다</b>
+ * — 수동 결정이 쥐고 있으면 {@value #BUSY}로 그 주기를 건너뜁니다(스케줄러 스레드를 몇 분씩 붙잡지 않게). 리스크 점검(5분 스탑)·알림
+ * 같은 다른 정기 작업이 이 작업의 긴 호출 뒤에 줄 서지 않는 것은 스케줄러 스레드가 여럿이라서입니다({@code
+ * spring.task.scheduling.pool.size}, application.yml — Spring Boot 기본은 1개). 리스크 점검은 장부 잠금만 쓰고, Claude 호출은 장부
+ * 잠금 밖이라 그 잠금도 기다리지 않습니다. 수동 실행은 잠금을 기다립니다(누른 결정을 버리지 않게).
+ *
+ * <p><b>두 책은 따로</b>: 선정·규칙 책 결정과 Claude 책 결정은 오류를 따로 잡습니다 — 대조군(규칙 책)의 자료 오류가 실험군의 그날
+ * 결정을 지우지 않게(반대도). 한쪽이라도 오류면 그 실행은 ERROR로 기록하고 그날 오류 횟수를 올리며, 다음 주기에는 남은 쪽만 다시
+ * 합니다. 규칙 책의 그날 정기 결정이 이미 있으면 선정·결정을 다시 하지 않고 그 결정을 씁니다(Claude 쪽 일로 다시 돌 때 규칙 책
+ * 결정이 하루 두 건이 되지 않게 — {@code decideRules}). 관측치 처리·순자산 줄·게이트 지표가 실패하면 두 책 모두 결정하지 않습니다.
+ *
+ * <p>저장본은 {@link StoreReader#quietly}로만 읽습니다(정기 작업이 수집을 깨우지 않게). 같은 거래일에 한 책 쪽 오류가
+ * {@value #MAX_ATTEMPTS}번 나면 그날 그 책은 더 시도하지 않습니다 — 10분마다 같은 오류가 작업 기록 200건을 밀어내지 않게. 횟수는 책마다
+ * 셉니다(관측치 처리·순자산 줄·게이트 지표의 오류는 두 책 모두 결정하지 못하므로 둘 다에). 남은 일이 있는 책이 모두 포기했으면
+ * {@value #GAVE_UP}입니다. 수동 실행은 <b>그 책의</b> 횟수만 지웁니다 — 규칙 책 수동 결정이 Claude 책의 포기를 풀면 Claude 쪽 예외가
+ * 되풀이될 때 유료 호출을 다시 부르게 됩니다. 재기동하면 처음부터 셉니다.
  * 정기 실행은 {@code dashboard.paper.enabled=false}면 아무것도 하지 않고, 수동 실행({@link #runNow})은 설정과 상관없이 돕니다.
  */
 @Service
@@ -83,6 +102,8 @@ public class PaperDecisionJob {
     public static final String GAVE_UP = "GAVE_UP";
     public static final String DECIDED = "DECIDED";
     public static final String ERROR = "ERROR";
+    /** 수동 실행이 작업 잠금을 쥐고 있어 정기 실행이 그 주기를 건너뜀(기록 안 함 — 클래스 설명). */
+    public static final String BUSY = "BUSY";
 
     /**
      * 한 번 실행의 결과.
@@ -91,8 +112,10 @@ public class PaperDecisionJob {
      * @param tradingDate 결정 대상 거래일(테이블이 없으면 null)
      * @param pricesFinal 확정 종가로 결정했나(결정 전에 끝났으면 null)
      * @param rules       규칙 책 결정(내지 않았으면 null)
+     * @param claude      Claude 책 결정(내지 않았으면 null)
      */
-    public record Result(String outcome, LocalDate tradingDate, Boolean pricesFinal, Decision rules, String message) {
+    public record Result(String outcome, LocalDate tradingDate, Boolean pricesFinal, Decision rules, Decision claude,
+                         String message) {
     }
 
     /** 설정의 결정 시각과 마감 기한(KST). */
@@ -105,32 +128,48 @@ public class PaperDecisionJob {
     private final PaperLedgerService ledger;
     private final PaperSelectionService selection;
     private final RuleBookService rules;
+    private final ClaudeBookService claude;
     private final PaperSettingsService settings;
     private final PaperConfig config;
     private final ObjectMapper mapper;
     private final Clock clock;
     /** 정기 실행과 수동 실행이 겹치지 않게(같은 거래일 결정을 동시에 만들지 않게 — 유일 제약이 마지막 방어선). */
     private final ReentrantLock running = new ReentrantLock();
-    /** 거래일 → 오류 난 횟수(클래스 설명). 재기동하면 사라집니다. */
-    private final Map<LocalDate, Integer> failures = new ConcurrentHashMap<>();
+    /** (거래일, 책) → 오류 난 횟수(클래스 설명). 재기동하면 사라집니다. */
+    private final Map<FailureKey, Integer> failures = new ConcurrentHashMap<>();
+
+    /** 오류 횟수를 세는 단위 — 거래일 × 책 코드(rules·claude). */
+    private record FailureKey(LocalDate day, String book) {
+    }
+
+    /**
+     * 그 거래일에 남은 일 — 게이트 지표(두 책이 함께 기다림), 시작한 규칙 책의 정기 결정, Claude 책의 정기 결정(재시도할 API 오류 포함).
+     */
+    private record Work(boolean gate, boolean rules, boolean claude) {
+
+        boolean any() {
+            return gate || rules || claude;
+        }
+    }
 
     @Autowired
     public PaperDecisionJob(PaperStore store, StoreReader reader, PaperMarketData marketData, PaperLedgerService ledger,
-                            PaperSelectionService selection, RuleBookService rules, PaperSettingsService settings,
-                            PaperConfig config, ObjectMapper mapper) {
-        this(store, reader, marketData, ledger, selection, rules, settings, config, mapper, Clock.systemUTC());
+                            PaperSelectionService selection, RuleBookService rules, ClaudeBookService claude,
+                            PaperSettingsService settings, PaperConfig config, ObjectMapper mapper) {
+        this(store, reader, marketData, ledger, selection, rules, claude, settings, config, mapper, Clock.systemUTC());
     }
 
     /** 테스트용 — 시계를 움직입니다. */
     PaperDecisionJob(PaperStore store, StoreReader reader, PaperMarketData marketData, PaperLedgerService ledger,
-                     PaperSelectionService selection, RuleBookService rules, PaperSettingsService settings,
-                     PaperConfig config, ObjectMapper mapper, Clock clock) {
+                     PaperSelectionService selection, RuleBookService rules, ClaudeBookService claude,
+                     PaperSettingsService settings, PaperConfig config, ObjectMapper mapper, Clock clock) {
         this.store = store;
         this.reader = reader;
         this.marketData = marketData;
         this.ledger = ledger;
         this.selection = selection;
         this.rules = rules;
+        this.claude = claude;
         this.settings = settings;
         this.config = config;
         this.mapper = mapper;
@@ -146,20 +185,29 @@ public class PaperDecisionJob {
         }
         try {
             Result result = run();
-            if (ERROR.equals(result.outcome())) {
+            if (BUSY.equals(result.outcome())) {
+                log.info("모의 매매 결정 작업: {}", result.message());
+            } else if (ERROR.equals(result.outcome())) {
                 log.warn("모의 매매 결정 작업 오류({}) — {}", result.tradingDate(), result.message());
             } else if (DECIDED.equals(result.outcome())) {
-                log.info("모의 매매 결정 작업: {} 규칙 책 {}", result.tradingDate(),
-                        result.rules() == null ? "결정 없음" : result.rules().status());
+                log.info("모의 매매 결정 작업: {} 규칙 책 {} · Claude 책 {}", result.tradingDate(),
+                        result.rules() == null ? "결정 없음" : result.rules().status(),
+                        result.claude() == null ? "결정 없음" : result.claude().status());
             }
         } catch (RuntimeException e) {
             log.warn("모의 매매 결정 작업 실패 — 다음 주기에 다시 시도합니다: {}", e.toString());
         }
     }
 
-    /** 정기 실행 한 번(클래스 설명의 순서). 테스트도 부릅니다. */
+    /**
+     * 정기 실행 한 번(클래스 설명의 순서). 테스트도 부릅니다. 수동 실행이 잠금을 쥐고 있으면 기다리지 않고 {@value #BUSY} — 스케줄러
+     * 스레드를 Claude 호출 몇 분 동안 붙잡지 않게(다음 주기에 다시 봅니다).
+     */
     Result run() {
-        running.lock();
+        if (!running.tryLock()) {
+            return new Result(BUSY, null, null, null, null,
+                    "수동 결정이 진행 중 — 이번 주기는 건너뛰고 다음 주기에 다시 봅니다");
+        }
         try {
             return runLocked();
         } finally {
@@ -169,30 +217,34 @@ public class PaperDecisionJob {
 
     private Result runLocked() {
         if (!store.ready()) {
-            return new Result(NOT_READY, null, null, null, PaperQueryService.NOT_READY_MESSAGE);
+            return new Result(NOT_READY, null, null, null, null, PaperQueryService.NOT_READY_MESSAGE);
         }
         Instant now = clock.instant();
         LocalDate d = UsMarketCalendar.lastCompletedSession(now);
         if (store.books().isEmpty()) {
-            return new Result(NOT_INITIALIZED, d, null, null, "초기화 전입니다 — 책이 없습니다");
+            return new Result(NOT_INITIALIZED, d, null, null, null, "초기화 전입니다 — 책이 없습니다");
         }
         Times times = times();
         Instant decisionAt = kst(d.plusDays(1), times.decision());
         if (now.isBefore(decisionAt)) {
-            return new Result(TOO_EARLY, d, null, null, "결정 시각 " + Kst.stamp(decisionAt) + " 전");
+            return new Result(TOO_EARLY, d, null, null, null, "결정 시각 " + Kst.stamp(decisionAt) + " 전");
         }
-        if (!pendingWork(d)) {
-            return new Result(ALREADY_DECIDED, d, null, null, d + " 결정·게이트 지표를 이미 남겼습니다");
+        Work work = pendingWork(d);
+        if (!work.any()) {
+            return new Result(ALREADY_DECIDED, d, null, null, null, d + " 결정·게이트 지표를 이미 남겼습니다");
         }
-        if (failures.getOrDefault(d, 0) >= MAX_ATTEMPTS) {
-            return new Result(GAVE_UP, d, null, null, d + " 오류가 " + MAX_ATTEMPTS + "번 나 오늘은 더 시도하지 않습니다 — "
+        boolean rulesGaveUp = gaveUp(d, PaperBooks.RULES);
+        boolean claudeGaveUp = gaveUp(d, PaperBooks.CLAUDE);
+        // 게이트 지표는 두 책이 함께 기다리는 일입니다(그 단계 오류는 두 책 모두에 셈).
+        if ((!(work.gate() || work.rules()) || rulesGaveUp) && (!(work.gate() || work.claude()) || claudeGaveUp)) {
+            return new Result(GAVE_UP, d, null, null, null, d + " 오류가 " + MAX_ATTEMPTS + "번 나 오늘은 더 시도하지 않습니다 — "
                     + "수동 실행(POST /api/paper/run/decision)은 다시 시도합니다");
         }
         Optional<Quotes> quotes = reader.quietly(marketData::quotes);
         boolean pricesFinal = quotes.map(q -> finalFor(q, d)).orElse(false);
         Instant deadline = kst(d.plusDays(1), times.deadline());
         if (!pricesFinal && now.isBefore(deadline)) {
-            return new Result(PRICES_NOT_FINAL, d, false, null, d + " 확정 종가 관측치를 기다립니다(기한 "
+            return new Result(PRICES_NOT_FINAL, d, false, null, null, d + " 확정 종가 관측치를 기다립니다(기한 "
                     + Kst.stamp(deadline) + ")");
         }
 
@@ -211,64 +263,145 @@ public class PaperDecisionJob {
             }
             GateRow gate = recordGate(d);
             detail.put("gateLevel", gate.level());
-
-            // 이 거래일 시점에 재선정이 지난 최신 분기의 재선정일 r — 오늘이 r이면 재선정, r을 놓쳤으면 따라잡기(클래스 설명).
-            LocalDate reselectionDay = UsMarketCalendar.reselectionDay(
-                    UsMarketCalendar.latestQuarterEndReselectedBy(d));
-            boolean reselection = reselectionDay.equals(d);
-            Optional<Book> book = store.book(PaperBooks.RULES);
-            boolean rulesStarted = book.isPresent() && !PaperBooks.NOT_STARTED.equals(book.get().status());
-            boolean rebalance = rulesStarted && rebalanceMissing(book.get(), reselectionDay);
-            detail.put("reselectionDay", reselection);
-            if (rebalance && !reselection) {
-                detail.put("catchUpReselection", reselectionDay.toString());
-            }
-            if (reselection || rebalance) {
-                PaperSelectionService.SelectionOutcome outcome = selection.select(reselectionDay);
-                Map<String, Object> picked = new LinkedHashMap<>();
-                picked.put("created", outcome.created());
-                picked.put("asOf", outcome.selection() == null ? null : outcome.selection().asOfDate().toString());
-                picked.put("ciks", outcome.selection() == null ? null : outcome.selection().selectedCiks());
-                picked.put("skippedReason", outcome.skippedReason());
-                detail.put("selection", picked);
-            }
-            Decision decision = null;
-            if (rulesStarted) {
-                decision = rules.decide(d, rebalance ? RuleBookService.REBALANCE : RuleBookService.SCHEDULED,
-                        pricesFinal);
-                detail.put("rules", decisionDetail(decision));
-            } else {
-                detail.put("rules", "시작 전 — 결정을 내지 않습니다");
-            }
-            // 단계 3a: Claude 책 결정(claude.decide(d, SCHEDULED))이 이 자리에 들어갑니다.
-            failures.remove(d);
-            record(now, DECIDED, detail);
-            return new Result(DECIDED, d, pricesFinal, decision, null);
         } catch (RuntimeException e) {
-            failures.merge(d, 1, Integer::sum);
-            String message = e.getClass().getSimpleName() + " " + e.getMessage();
-            detail.put("error", message);
-            detail.put("attempt", failures.get(d));
-            record(now, ERROR, detail);
-            return new Result(ERROR, d, pricesFinal, null, message);
+            // 장부·게이트가 실패하면 두 책 모두 결정하지 않습니다(그날 장부를 믿을 수 없음) — 오류도 두 책 모두에 셉니다.
+            return failed(now, d, pricesFinal, detail, List.of(message(e)), List.of(PaperBooks.RULES, PaperBooks.CLAUDE),
+                    null, null);
         }
+
+        // 규칙 책(대조군)과 Claude 책(실험군)은 따로 잡습니다 — 한쪽 오류가 다른 쪽의 그날 결정을 막지 않게(클래스 설명).
+        List<String> errors = new ArrayList<>();
+        List<String> failedBooks = new ArrayList<>();
+        Decision decision = null;
+        if (rulesGaveUp) {
+            detail.put("rules", gaveUpNote());
+        } else {
+            try {
+                decision = decideRules(d, pricesFinal, detail);
+                failures.remove(new FailureKey(d, PaperBooks.RULES));
+            } catch (RuntimeException e) {
+                errors.add("규칙 책: " + message(e));
+                detail.put("rulesError", message(e));
+                failedBooks.add(PaperBooks.RULES);
+            }
+        }
+        Decision claudeDecision = null;
+        if (claudeGaveUp) {
+            detail.put("claude", gaveUpNote());
+        } else {
+            try {
+                String claudeSkip = claudeSkipReason(store.book(PaperBooks.CLAUDE), d);
+                if (claudeSkip == null) {
+                    claudeDecision = claude.decide(d, RuleBookService.SCHEDULED, pricesFinal);
+                    detail.put("claude", decisionDetail(claudeDecision));
+                } else {
+                    detail.put("claude", claudeSkip);
+                }
+                failures.remove(new FailureKey(d, PaperBooks.CLAUDE));
+            } catch (RuntimeException e) {
+                errors.add("Claude 책: " + message(e));
+                detail.put("claudeError", message(e));
+                failedBooks.add(PaperBooks.CLAUDE);
+            }
+        }
+        if (!errors.isEmpty()) {
+            return failed(now, d, pricesFinal, detail, errors, failedBooks, decision, claudeDecision);
+        }
+        record(now, DECIDED, detail);
+        return new Result(DECIDED, d, pricesFinal, decision, claudeDecision, null);
+    }
+
+    /**
+     * 규칙 책의 그날 정기 결정 — 재선정일이면 선정 → REBALANCE, 놓친 재선정일 따라잡기도 REBALANCE, 그 밖은 SCHEDULED(클래스 설명).
+     * <b>그날 정기 결정(SCHEDULED·REBALANCE)이 이미 있으면 그것을 돌려주고 선정·결정을 다시 하지 않습니다</b> — Claude 쪽 일이 남아
+     * 같은 거래일에 다시 돌 때(API 오류 재시도·Claude 오류), r 선정으로 낸 REBALANCE가 생긴 뒤라 {@link #rebalanceMissing}이 거짓이
+     * 돼 SCHEDULED를 하나 더 내면 "거래일마다 책당 한 번"(C1·R5)이 깨집니다. 시작 전 책은 결정하지 않습니다(null).
+     */
+    private Decision decideRules(LocalDate d, boolean pricesFinal, Map<String, Object> detail) {
+        // 이 거래일 시점에 재선정이 지난 최신 분기의 재선정일 r — 오늘이 r이면 재선정, r을 놓쳤으면 따라잡기(클래스 설명).
+        LocalDate reselectionDay = UsMarketCalendar.reselectionDay(UsMarketCalendar.latestQuarterEndReselectedBy(d));
+        boolean reselection = reselectionDay.equals(d);
+        detail.put("reselectionDay", reselection);
+        Optional<Book> book = store.book(PaperBooks.RULES);
+        boolean rulesStarted = book.isPresent() && !PaperBooks.NOT_STARTED.equals(book.get().status());
+        Optional<Decision> existing = rulesStarted ? rulesDecisionOn(d) : Optional.empty();
+        if (existing.isPresent()) {
+            Map<String, Object> view = decisionDetail(existing.get());
+            view.put("existing", true);
+            detail.put("rules", view);
+            return existing.get();
+        }
+        boolean rebalance = rulesStarted && rebalanceMissing(book.get(), reselectionDay);
+        if (rebalance && !reselection) {
+            detail.put("catchUpReselection", reselectionDay.toString());
+        }
+        if (reselection || rebalance) {
+            PaperSelectionService.SelectionOutcome outcome = selection.select(reselectionDay);
+            Map<String, Object> picked = new LinkedHashMap<>();
+            picked.put("created", outcome.created());
+            picked.put("asOf", outcome.selection() == null ? null : outcome.selection().asOfDate().toString());
+            picked.put("ciks", outcome.selection() == null ? null : outcome.selection().selectedCiks());
+            picked.put("skippedReason", outcome.skippedReason());
+            detail.put("selection", picked);
+        }
+        if (!rulesStarted) {
+            detail.put("rules", "시작 전 — 결정을 내지 않습니다");
+            return null;
+        }
+        Decision decision = rules.decide(d, rebalance ? RuleBookService.REBALANCE : RuleBookService.SCHEDULED,
+                pricesFinal);
+        detail.put("rules", decisionDetail(decision));
+        return decision;
+    }
+
+    /**
+     * 오류로 끝난 실행 — 오류 난 책마다 그날 오류 횟수를 하나 올리고 기록합니다({@code attempt}는 그중 가장 큰 횟수, {@code attempts}는
+     * 책마다). 그사이 낸 결정은 결과에 그대로 싣습니다.
+     */
+    private Result failed(Instant now, LocalDate d, boolean pricesFinal, Map<String, Object> detail, List<String> errors,
+                          List<String> books, Decision rulesDecision, Decision claudeDecision) {
+        int attempt = 0;
+        for (String book : books) {
+            attempt = Math.max(attempt, failures.merge(new FailureKey(d, book), 1, Integer::sum));
+        }
+        Map<String, Integer> attempts = new LinkedHashMap<>();
+        for (String book : List.of(PaperBooks.RULES, PaperBooks.CLAUDE)) {
+            attempts.put(book, failures.getOrDefault(new FailureKey(d, book), 0));
+        }
+        String message = String.join(" · ", errors);
+        detail.put("error", message);
+        detail.put("attempt", attempt);
+        detail.put("attempts", attempts);
+        record(now, ERROR, detail);
+        return new Result(ERROR, d, pricesFinal, rulesDecision, claudeDecision, message);
+    }
+
+    private boolean gaveUp(LocalDate d, String book) {
+        return failures.getOrDefault(new FailureKey(d, book), 0) >= MAX_ATTEMPTS;
+    }
+
+    private static String gaveUpNote() {
+        return "오늘 오류 " + MAX_ATTEMPTS + "번 — 더 시도하지 않습니다(수동 실행은 다시 시도)";
+    }
+
+    private static String message(RuntimeException e) {
+        return e.getClass().getSimpleName() + " " + e.getMessage();
     }
 
     /**
      * 수동 결정(POST /api/paper/run/decision) — 그 책만 종류 MANUAL로 한 번. 결정 시각·확정 종가를 기다리지 않고(결정의
      * {@code prices_final}에 그때 관측치가 확정 종가였는지 남김), 먼저 최신 관측치를 장부에 적용합니다. MANUAL도 거래일마다 한
-     * 건이라 같은 날 다시 누르면 처음 결정을 돌려줍니다. 매수는 재선정일·시작에만이라 수동 결정은 매도 신호와 남는 현금 SHY만 냅니다.
+     * 건이라 같은 날 다시 누르면 처음 결정을 돌려줍니다. 규칙 책은 매수가 재선정일·시작에만이라 수동 결정은 매도 신호와 남는 현금
+     * SHY만 냅니다. Claude 책은 Claude를 한 번 부릅니다(하루 호출 상한에 셈 — 그 결정이 API 오류였으면 다시 누를 때 한 번 더 부름).
      *
-     * @throws InvalidRequestException 책 코드가 rules·claude가 아님, Claude 책(단계 3a), 규칙 책이 시작 전
+     * @throws InvalidRequestException 책 코드가 rules·claude가 아님, 그 책이 시작 전, Claude 책이 일시정지 중
      */
     public Decision runNow(String book) {
         String code = Params.oneOf("book", book, List.of(PaperBooks.RULES, PaperBooks.CLAUDE));
-        if (PaperBooks.CLAUDE.equals(code)) {
-            throw new InvalidRequestException("Claude 책의 결정은 다음 단계(3a)에서 엽니다.");
-        }
         running.lock();
         try {
-            failures.clear();
+            // 그 책의 오류 횟수만 지웁니다(클래스 설명) — 다른 책의 포기 상태는 그대로.
+            failures.keySet().removeIf(key -> key.book().equals(code));
             Instant now = clock.instant();
             LocalDate d = UsMarketCalendar.lastCompletedSession(now);
             Optional<Quotes> quotes = reader.quietly(marketData::quotes);
@@ -279,8 +412,10 @@ public class PaperDecisionJob {
             detail.put("tradingDate", d.toString());
             detail.put("pricesFinal", pricesFinal);
             quotes.ifPresent(q -> detail.put("ledger", ledgerDetail(ledger.process(q))));
-            Decision decision = rules.decide(d, RuleBookService.MANUAL, pricesFinal);
-            detail.put("rules", decisionDetail(decision));
+            Decision decision = PaperBooks.CLAUDE.equals(code)
+                    ? claude.decide(d, RuleBookService.MANUAL, pricesFinal)
+                    : rules.decide(d, RuleBookService.MANUAL, pricesFinal);
+            detail.put(code, decisionDetail(decision));
             record(now, DECIDED, detail);
             return decision;
         } finally {
@@ -289,21 +424,44 @@ public class PaperDecisionJob {
     }
 
     // ------------------------------------------------------------------ 판정
-    /** 그 거래일에 아직 할 일이 있나 — 게이트 지표가 없거나, 시작한 규칙 책의 그날 정기 결정(SCHEDULED·REBALANCE)이 없음. */
-    private boolean pendingWork(LocalDate d) {
-        if (store.gate(d).isEmpty()) {
-            return true;
-        }
+    /**
+     * 그 거래일에 아직 할 일 — 게이트 지표가 없음, 시작한 규칙 책의 그날 정기 결정(SCHEDULED·REBALANCE)이 없음, Claude 책이 그날
+     * 결정을 내야 하는데 아직 없음(또는 재시도할 API 오류 — {@link #claudeSkipReason}).
+     */
+    private Work pendingWork(LocalDate d) {
         Optional<Book> book = store.book(PaperBooks.RULES);
-        if (book.isPresent() && !PaperBooks.NOT_STARTED.equals(book.get().status())) {
-            boolean decided = store.decisionFor(PaperBooks.RULES, d, RuleBookService.SCHEDULED).isPresent()
-                    || store.decisionFor(PaperBooks.RULES, d, RuleBookService.REBALANCE).isPresent();
-            if (!decided) {
-                return true;
-            }
+        boolean rules = book.isPresent() && !PaperBooks.NOT_STARTED.equals(book.get().status())
+                && rulesDecisionOn(d).isEmpty();
+        return new Work(store.gate(d).isEmpty(), rules, claudeSkipReason(store.book(PaperBooks.CLAUDE), d) == null);
+    }
+
+    /** 규칙 책의 그 거래일 정기 결정(REBALANCE 먼저, 없으면 SCHEDULED). 수동(MANUAL)은 정기 결정을 대신하지 않습니다. */
+    private Optional<Decision> rulesDecisionOn(LocalDate d) {
+        return store.decisionFor(PaperBooks.RULES, d, RuleBookService.REBALANCE)
+                .or(() -> store.decisionFor(PaperBooks.RULES, d, RuleBookService.SCHEDULED));
+    }
+
+    /**
+     * Claude 책이 그 거래일 정기 결정을 내야 하면 null, 아니면 내지 않는 이유 — 책 없음·운용 중 아님(시작 전·일시정지)·출발일
+     * 이하(초기 결정이 그날 결정)·이미 결정함(재시도할 API 오류는 "낼 것"으로 봄, 명세 C7).
+     */
+    private String claudeSkipReason(Optional<Book> book, LocalDate d) {
+        if (book.isEmpty()) {
+            return "Claude 책 없음";
         }
-        // 단계 3a: Claude 책의 그날 결정도 여기서 봅니다.
-        return false;
+        if (!PaperBooks.ACTIVE.equals(book.get().status())) {
+            return PaperBooks.NOT_STARTED.equals(book.get().status()) ? "시작 전 — 결정을 내지 않습니다"
+                    : "일시정지 중 — 결정을 내지 않습니다";
+        }
+        LocalDate startedOn = book.get().startedOn();
+        if (startedOn == null || !d.isAfter(startedOn)) {
+            return "출발일(" + startedOn + ") 이하 — 초기 결정이 그날 결정입니다";
+        }
+        Optional<Decision> existing = store.decisionFor(PaperBooks.CLAUDE, d, RuleBookService.SCHEDULED);
+        if (existing.isPresent() && !ClaudeBookService.retryable(existing.get())) {
+            return "이미 결정함(" + existing.get().status() + ")";
+        }
+        return null;
     }
 
     /**

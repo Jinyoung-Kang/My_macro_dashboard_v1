@@ -13,9 +13,12 @@ import com.macrodash.support.InvalidRequestException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.core.io.ClassPathResource;
 import tools.jackson.databind.JsonNode;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -25,7 +28,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 import static com.macrodash.feature.paper.PaperFixtures.FRI;
@@ -35,6 +41,7 @@ import static com.macrodash.feature.paper.PaperFixtures.bar;
 import static com.macrodash.feature.paper.PaperFixtures.quotes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyCollection;
@@ -66,8 +73,12 @@ class PaperDecisionJobTest {
     private PaperMarketData marketData;
     private PaperSelectionService selection;
     private RuleBookService rules;
+    private ClaudeBookService claude;
     private Map<String, Snapshot> snapshots;
     private List<String> decided;
+    private List<String> claudeDecided;
+    /** 두 책의 결정 호출을 부른 순서대로("rules …"·"claude …") — 순서를 보는 시험용. */
+    private List<String> calls;
 
     @BeforeEach
     @SuppressWarnings("unchecked")
@@ -83,14 +94,28 @@ class PaperDecisionJobTest {
         selection = mock(PaperSelectionService.class);
         rules = mock(RuleBookService.class);
         decided = new ArrayList<>();
+        calls = new ArrayList<>();
         when(rules.decide(any(), anyString(), anyBoolean())).thenAnswer(invocation -> {
             LocalDate d = invocation.getArgument(0);
             String kind = invocation.getArgument(1);
             boolean pricesFinal = invocation.getArgument(2);
             decided.add(d + " " + kind + " " + pricesFinal);
+            calls.add("rules " + d + " " + kind + " " + pricesFinal);
             return new Decision(99, PaperBooks.RULES, d, kind, store.dbNow, "NO_TRADE", null, null, 1, null, null, null,
                     null, null, MAPPER.valueToTree(Map.of("summary", "주문 없음")), null, null, null, pricesFinal,
                     0L, 0);
+        });
+        claude = mock(ClaudeBookService.class);
+        claudeDecided = new ArrayList<>();
+        when(claude.decide(any(), anyString(), anyBoolean())).thenAnswer(invocation -> {
+            LocalDate d = invocation.getArgument(0);
+            String kind = invocation.getArgument(1);
+            boolean pricesFinal = invocation.getArgument(2);
+            claudeDecided.add(d + " " + kind + " " + pricesFinal);
+            calls.add("claude " + d + " " + kind + " " + pricesFinal);
+            return new Decision(98, PaperBooks.CLAUDE, d, kind, store.dbNow, "NO_TRADE", "claude-sonnet-5-5", null, 1,
+                    null, 40.0, null, null, null, MAPPER.valueToTree(Map.of("summary", "주문 없음")), null, null, null,
+                    pricesFinal, 0L, 0);
         });
         store.initSettingsIfAbsent(PaperFixtures.settings(store).defaultsJson());
         // 운용 중인 규칙 책(현금만)과 시작 전 Claude 책
@@ -108,7 +133,7 @@ class PaperDecisionJobTest {
     private PaperDecisionJob job(Instant now) {
         PaperSettingsService settings = PaperFixtures.settings(store);
         return new PaperDecisionJob(store, reader, marketData,
-                new PaperLedgerService(store, marketData, settings, MAPPER), selection, rules, settings,
+                new PaperLedgerService(store, marketData, settings, MAPPER), selection, rules, claude, settings,
                 PaperFixtures.config(), MAPPER, Clock.fixed(now, ZoneOffset.UTC));
     }
 
@@ -431,7 +456,7 @@ class PaperDecisionJobTest {
     }
 
     @Test
-    @DisplayName("수동 실행: 시각·확정 종가를 기다리지 않고 규칙 책만 MANUAL로, Claude 책·다른 값은 400")
+    @DisplayName("수동 실행: 시각·확정 종가를 기다리지 않고 그 책만 MANUAL로 — Claude 책은 Claude 책 결정으로, 다른 값은 400")
     void runNowDecidesManual() {
         observed(FRI_INTRADAY, FRI);
         PaperDecisionJob job = job(Instant.parse("2026-10-23T22:00:00Z"));   // 결정 시각 전
@@ -440,11 +465,230 @@ class PaperDecisionJobTest {
 
         assertThat(decision.kind()).isEqualTo("MANUAL");
         assertThat(decided).containsExactly("2026-10-23 MANUAL false");
+        assertThat(claudeDecided).isEmpty();
         assertThat(store.jobRuns).singleElement().satisfies(run ->
                 assertThat(run.detail().path("manual").asBoolean()).isTrue());
-        assertThatThrownBy(() -> job.runNow("claude")).isInstanceOf(InvalidRequestException.class)
-                .hasMessageContaining("다음 단계");
+
+        Decision claudeDecision = job.runNow("claude");
+        assertThat(claudeDecision.bookCode()).isEqualTo(PaperBooks.CLAUDE);
+        assertThat(claudeDecided).containsExactly("2026-10-23 MANUAL false");
+        assertThat(decided).as("규칙 책은 다시 부르지 않음").hasSize(1);
+        assertThat(store.jobRuns.get(store.jobRuns.size() - 1).detail().path("claude").path("kind").asString())
+                .isEqualTo("MANUAL");
         assertThatThrownBy(() -> job.runNow("bench_spy")).isInstanceOf(InvalidRequestException.class);
+    }
+
+    /** Claude 책을 운용 중(출발 = 금요일)으로. */
+    private void claudeActive() {
+        store.books.put(PaperBooks.CLAUDE, new Book(PaperBooks.CLAUDE, PaperBooks.KIND_CLAUDE, "Claude 재량 책", 100_000,
+                FRI, PaperBooks.ACTIVE, FRI_CLOSE));
+    }
+
+    @Test
+    @DisplayName("Claude 책: 운용 중이면 규칙 책 다음에 SCHEDULED 결정 — 출발일(초기 결정이 그날 결정)·시작 전·일시정지면 부르지 않음")
+    void claudeDecidesAfterRulesWhenActive() {
+        // 시작 전 Claude 책(setUp) — 부르지 않고, 할 일이 남지 않음
+        observed(Instant.parse("2026-10-26T20:30:00Z"), PaperFixtures.MON);
+        job(Instant.parse("2026-10-26T23:00:00Z")).run();
+        assertThat(claudeDecided).isEmpty();
+        assertThat(store.jobRuns.get(0).detail().path("claude").asString()).contains("시작 전");
+
+        // 출발일(금) 결정 — 초기 결정이 그날 결정이라 부르지 않음
+        claudeActive();
+        observed(Instant.parse("2026-10-23T20:30:00Z"), FRI);
+        PaperDecisionJob.Result fri = job(Instant.parse("2026-10-24T00:00:00Z")).run();
+        assertThat(fri.outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(claudeDecided).isEmpty();
+        assertThat(store.jobRuns.get(store.jobRuns.size() - 1).detail().path("claude").asString()).contains("출발일");
+        store.insertDecisionIfAbsent(new Decision(0, PaperBooks.RULES, FRI, "SCHEDULED", null, "NO_TRADE", null, null,
+                1, null, null, null, null, null, null, null, null, null, true, 0L, 0));   // 가짜 규칙 책은 기록하지 않음
+        assertThat(job(Instant.parse("2026-10-24T00:10:00Z")).run().outcome())
+                .as("출발일은 Claude 할 일이 없음").isEqualTo(PaperDecisionJob.ALREADY_DECIDED);
+
+        // 출발일 다음 거래일(월) — 규칙 책 다음에 부름(두 가짜가 한 목록에 부른 순서대로 남김), 결과에 둘 다
+        decided.clear();
+        calls.clear();
+        observed(Instant.parse("2026-10-26T20:30:00Z"), PaperFixtures.MON);
+        PaperDecisionJob.Result mon = job(Instant.parse("2026-10-26T23:00:00Z")).run();
+        assertThat(mon.outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(calls).as("규칙 책 → Claude 책 순서")
+                .containsExactly("rules 2026-10-26 SCHEDULED true", "claude 2026-10-26 SCHEDULED true");
+        assertThat(decided).containsExactly("2026-10-26 SCHEDULED true");
+        assertThat(claudeDecided).containsExactly("2026-10-26 SCHEDULED true");
+        assertThat(mon.claude().bookCode()).isEqualTo(PaperBooks.CLAUDE);
+        assertThat(store.jobRuns.get(store.jobRuns.size() - 1).detail().path("claude").path("kind").asString())
+                .isEqualTo("SCHEDULED");
+
+        // 일시정지 — 부르지 않음
+        claudeDecided.clear();
+        store.books.put(PaperBooks.CLAUDE, new Book(PaperBooks.CLAUDE, PaperBooks.KIND_CLAUDE, "Claude 재량 책", 100_000,
+                FRI, PaperBooks.PAUSED, FRI_CLOSE));
+        observed(Instant.parse("2026-10-27T20:30:00Z"), PaperFixtures.TUE);
+        job(Instant.parse("2026-10-27T23:00:00Z")).run();
+        assertThat(claudeDecided).isEmpty();
+    }
+
+    @Test
+    @DisplayName("ALREADY_DECIDED는 운용 중인 Claude 책의 그날 결정도 본다 — 없거나 재시도할 API 오류면 할 일이 남음, 재시도한 뒤에는 끝")
+    void alreadyDecidedIncludesClaude() {
+        claudeActive();
+        LocalDate mon = PaperFixtures.MON;
+        observed(Instant.parse("2026-10-26T20:30:00Z"), mon);
+        store.insertDecisionIfAbsent(new Decision(0, PaperBooks.RULES, mon, "SCHEDULED", null, "NO_TRADE", null, null, 1,
+                null, null, null, null, null, null, null, null, null, true, 0L, 0));
+        store.insertGateIfAbsent(new GateRow(mon, MAPPER.createObjectNode(), "L0", MAPPER.createObjectNode(), null));
+        Instant now = Instant.parse("2026-10-26T23:00:00Z");
+
+        // 규칙 책·게이트는 다 했지만 Claude 결정이 없음 → 진행해 Claude만 부름(규칙 책은 그날 결정을 그대로 씀 — 다시 부르지 않음)
+        assertThat(job(now).run().outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(claudeDecided).containsExactly("2026-10-26 SCHEDULED true");
+        assertThat(decided).isEmpty();
+
+        // 그날 결정이 API 오류(재시도 전) → 할 일이 남음
+        claudeDecided.clear();
+        long failed = store.insertDecisionIfAbsent(new Decision(0, PaperBooks.CLAUDE, mon, "SCHEDULED", null,
+                "API_ERROR", "claude-sonnet-5-5", null, 1, null, null, null, null, null, null, null, "[RATE_LIMIT] 429",
+                null, true, 10L, 0)).orElseThrow();
+        assertThat(job(now).run().outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(claudeDecided).as("재시도 차례").containsExactly("2026-10-26 SCHEDULED true");
+
+        // 재시도까지 한 API 오류·다른 상태 → 끝
+        Decision old = store.decisions.get(failed);
+        store.decisions.put(failed, new Decision(old.id(), old.bookCode(), old.asOfTradingDate(), old.kind(),
+                old.decidedAt(), "API_ERROR", old.model(), null, 1, null, null, null, null, null, null, null, old.error(),
+                null, true, 10L, 1));
+        claudeDecided.clear();
+        assertThat(job(now).run().outcome()).isEqualTo(PaperDecisionJob.ALREADY_DECIDED);
+        assertThat(claudeDecided).isEmpty();
+    }
+
+    /** 진짜 규칙 책처럼 결정을 남기는 가짜 — selection_as_of에 그때 유효한 선정 기준일({@code effective[0]})을 적습니다. */
+    private void recordingRules(LocalDate[] effective) {
+        // doAnswer — when(rules.decide(…))로 다시 정하면 정하는 호출이 setUp의 답을 한 번 불러 decided에 남습니다.
+        doAnswer(invocation -> {
+            LocalDate d = invocation.getArgument(0);
+            String kind = invocation.getArgument(1);
+            boolean pricesFinal = invocation.getArgument(2);
+            decided.add(d + " " + kind + " " + pricesFinal);
+            store.insertDecisionIfAbsent(new Decision(0, PaperBooks.RULES, d, kind, null, "NO_TRADE", null, null, 1,
+                    effective[0], null, null, null, null, MAPPER.valueToTree(Map.of("summary", "주문 없음")), null,
+                    null, null, pricesFinal, 0L, 0));
+            return store.decisionFor(PaperBooks.RULES, d, kind).orElseThrow();
+        }).when(rules).decide(any(), anyString(), anyBoolean());
+    }
+
+    /**
+     * 진짜 Claude 책처럼 결정을 남기는 가짜 — 처음은 {@code firstStatus}(API_ERROR면 재시도 전), 재시도할 API 오류 행이 있으면 같은
+     * 행을 NO_TRADE로 바꿉니다(재시도 수 1). 이미 끝난 결정이면 그대로 돌려줍니다.
+     */
+    private void recordingClaude(String firstStatus) {
+        doAnswer(invocation -> {
+            LocalDate d = invocation.getArgument(0);
+            String kind = invocation.getArgument(1);
+            boolean pricesFinal = invocation.getArgument(2);
+            claudeDecided.add(d + " " + kind + " " + pricesFinal);
+            Optional<Decision> existing = store.decisionFor(PaperBooks.CLAUDE, d, kind);
+            if (existing.isEmpty()) {
+                long id = store.insertDecisionIfAbsent(new Decision(0, PaperBooks.CLAUDE, d, kind, null, firstStatus,
+                        "claude-sonnet-5-5", null, 1, null, null, null, null, null,
+                        MAPPER.valueToTree(Map.of("summary", firstStatus)), null,
+                        "API_ERROR".equals(firstStatus) ? "[OVERLOADED] 529" : null, null, pricesFinal, 10L, 0))
+                        .orElseThrow();
+                return store.decision(id).orElseThrow();
+            }
+            Decision old = existing.get();
+            if (ClaudeBookService.retryable(old)) {
+                store.updateDecisionRetry(new Decision(old.id(), old.bookCode(), d, kind, null, "NO_TRADE",
+                        old.model(), null, 1, null, null, null, null, null,
+                        MAPPER.valueToTree(Map.of("summary", "주문 없음")), null, null, null, pricesFinal, 10L, 0));
+            }
+            return store.decision(old.id()).orElseThrow();
+        }).when(claude).decide(any(), anyString(), anyBoolean());
+    }
+
+    @Test
+    @DisplayName("재선정일에 Claude가 API 오류면 다음 주기엔 Claude만 다시 — 규칙 책은 그날 REBALANCE를 그대로 쓰고 SCHEDULED를 더 내지 않는다(C1·R5)")
+    void claudeRetryOnReselectionDayDoesNotAddRulesDecision() {
+        claudeActive();
+        LocalDate[] effective = {FRI};
+        recordingRules(effective);
+        recordingClaude("API_ERROR");
+        when(selection.select(RESELECTION)).thenAnswer(invocation -> {
+            effective[0] = RESELECTION;
+            return new PaperSelectionService.SelectionOutcome(RESELECTION, true,
+                    new Selection(RESELECTION, List.of("0000000001"), null, 1, null), null, null);
+        });
+        observed(Instant.parse("2026-11-17T21:30:00Z"), RESELECTION);
+
+        // 1회차: 선정 → REBALANCE(r 선정) → Claude API 오류(재시도 전)
+        PaperDecisionJob.Result first = job(Instant.parse("2026-11-17T23:00:00Z")).run();
+        assertThat(first.outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(first.claude().status()).isEqualTo("API_ERROR");
+
+        // 10분 뒤: Claude 쪽 일이 남아 다시 돎 — 규칙 책은 그날 REBALANCE를 그대로(r 선정 매수 결정이 생겨 rebalanceMissing이
+        // 거짓이 돼도 SCHEDULED를 새로 내지 않음), 선정도 다시 하지 않음
+        PaperDecisionJob.Result second = job(Instant.parse("2026-11-17T23:10:00Z")).run();
+        assertThat(second.outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(decided).as("거래일마다 책당 한 번").containsExactly("2026-11-17 REBALANCE true");
+        assertThat(store.decisionFor(PaperBooks.RULES, RESELECTION, "SCHEDULED")).isEmpty();
+        assertThat(second.rules().kind()).isEqualTo("REBALANCE");
+        verify(selection, times(1)).select(RESELECTION);
+        assertThat(claudeDecided).containsExactly("2026-11-17 SCHEDULED true", "2026-11-17 SCHEDULED true");
+        assertThat(store.decisionFor(PaperBooks.CLAUDE, RESELECTION, "SCHEDULED").orElseThrow().retryCount())
+                .isEqualTo(1);
+        assertThat(store.jobRuns.get(1).detail().path("rules").path("existing").asBoolean()).isTrue();
+
+        // 따라잡기 날(d > r)도 같음: Claude가 예외로 끝나면(ERROR) 다음 주기에 규칙 책 REBALANCE를 다시 내지 않음
+        LocalDate wednesday = LocalDate.of(2026, 11, 18);
+        store.decisions.values().removeIf(d -> d.asOfTradingDate().equals(RESELECTION)
+                && PaperBooks.RULES.equals(d.bookCode()));   // 11-17 REBALANCE가 없던 것으로 — 11-18에 따라잡기
+        effective[0] = FRI;
+        decided.clear();
+        doAnswer(invocation -> {
+            throw new IllegalStateException("패킷 고장");
+        }).doAnswer(invocation -> {
+            claudeDecided.add("retry");
+            return new Decision(97, PaperBooks.CLAUDE, wednesday, "SCHEDULED", store.dbNow, "NO_TRADE",
+                    "claude-sonnet-5-5", null, 1, null, null, null, null, null, null, null, null, null, true, 0L, 0);
+        }).when(claude).decide(any(), anyString(), anyBoolean());
+        observed(Instant.parse("2026-11-18T21:30:00Z"), wednesday);
+        assertThat(job(Instant.parse("2026-11-18T23:00:00Z")).run().outcome()).isEqualTo(PaperDecisionJob.ERROR);
+        assertThat(decided).containsExactly("2026-11-18 REBALANCE true");
+        assertThat(job(Instant.parse("2026-11-18T23:10:00Z")).run().outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(decided).as("따라잡기 REBALANCE 뒤 SCHEDULED를 더 내지 않음").containsExactly("2026-11-18 REBALANCE true");
+        assertThat(store.decisionFor(PaperBooks.RULES, wednesday, "SCHEDULED")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("규칙 책 쪽 오류가 Claude 책의 그날 결정을 막지 않는다 — Claude는 결정하고 실행은 ERROR(오류 횟수 +1), 다음 주기엔 규칙 책만 다시")
+    void rulesErrorDoesNotBlockClaude() {
+        claudeActive();
+        recordingClaude("NO_TRADE");
+        doAnswer(invocation -> {
+            throw new IllegalStateException("13F 저장본 고장");
+        }).when(rules).decide(any(), anyString(), anyBoolean());
+        observed(Instant.parse("2026-10-26T20:30:00Z"), PaperFixtures.MON);
+        PaperDecisionJob job = job(Instant.parse("2026-10-26T23:00:00Z"));
+
+        PaperDecisionJob.Result first = job.run();
+
+        assertThat(first.outcome()).isEqualTo(PaperDecisionJob.ERROR);
+        assertThat(first.rules()).isNull();
+        assertThat(first.claude()).as("대조군 오류가 실험군의 하루를 지우지 않음").isNotNull();
+        assertThat(first.claude().status()).isEqualTo("NO_TRADE");
+        assertThat(first.message()).contains("규칙 책", "13F 저장본 고장");
+        assertThat(claudeDecided).containsExactly("2026-10-26 SCHEDULED true");
+        JsonNode detail = store.jobRuns.get(0).detail();
+        assertThat(detail.path("rulesError").asString()).contains("13F 저장본 고장");
+        assertThat(detail.path("claude").path("kind").asString()).isEqualTo("SCHEDULED");
+        assertThat(detail.path("attempt").asInt()).isEqualTo(1);
+
+        // 다음 주기: Claude는 이미 결정함 — 규칙 책만 다시(같은 오류), 세 번째 오류 뒤 그날 포기. Claude는 한 번만 불림.
+        for (int i = 1; i < PaperDecisionJob.MAX_ATTEMPTS; i++) {
+            assertThat(job.run().outcome()).isEqualTo(PaperDecisionJob.ERROR);
+        }
+        assertThat(job.run().outcome()).isEqualTo(PaperDecisionJob.GAVE_UP);
+        assertThat(claudeDecided).hasSize(1);
     }
 
     @Test
@@ -456,5 +700,76 @@ class PaperDecisionJobTest {
                 .put("decisionDeadlineKst", "25:99");
         assertThat(job(FRI_CLOSE).times()).isEqualTo(new PaperDecisionJob.Times(
                 java.time.LocalTime.of(8, 15), java.time.LocalTime.of(12, 0)));
+    }
+
+    @Test
+    @DisplayName("수동 실행이 작업 잠금을 쥐고 있으면 정기 실행은 기다리지 않고 BUSY(기록 없음) — 스케줄러 스레드를 Claude 호출 동안 붙잡지 않음")
+    void scheduledRunDoesNotWaitForManualRun() throws Exception {
+        claudeActive();
+        observed(Instant.parse("2026-10-26T20:30:00Z"), PaperFixtures.MON);
+        PaperDecisionJob job = job(Instant.parse("2026-10-26T23:00:00Z"));
+        CountDownLatch inCall = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            inCall.countDown();
+            release.await(10, TimeUnit.SECONDS);
+            return new Decision(96, PaperBooks.CLAUDE, PaperFixtures.MON, "MANUAL", store.dbNow, "NO_TRADE",
+                    "claude-sonnet-5-5", null, 1, null, null, null, null, null, null, null, null, null, true, 0L, 0);
+        }).when(claude).decide(any(), eq("MANUAL"), anyBoolean());
+        Thread manual = new Thread(() -> job.runNow("claude"));
+        manual.start();
+        try {
+            assertThat(inCall.await(5, TimeUnit.SECONDS)).isTrue();
+            PaperDecisionJob.Result busy = assertTimeoutPreemptively(Duration.ofSeconds(5), job::run);
+            assertThat(busy.outcome()).isEqualTo(PaperDecisionJob.BUSY);
+            assertThat(store.jobRuns).as("건너뛴 주기는 기록하지 않음").isEmpty();
+            assertThat(claudeDecided).as("정기 결정을 부르지 않음").isEmpty();
+        } finally {
+            release.countDown();
+            manual.join(10_000);
+        }
+        assertThat(job.run().outcome()).as("수동 실행이 끝나면 다음 주기는 그대로").isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(claudeDecided).containsExactly("2026-10-26 SCHEDULED true");
+    }
+
+    @Test
+    @DisplayName("오류 횟수는 책마다 — Claude 책이 포기한 날 규칙 책 수동 결정은 그 포기를 풀지 않고(유료 호출을 다시 부르지 않음), Claude 책 수동 결정은 푼다")
+    void runNowClearsOnlyItsBooksFailures() {
+        claudeActive();
+        recordingRules(new LocalDate[]{FRI});
+        doAnswer(invocation -> {
+            claudeDecided.add("scheduled");
+            throw new IllegalStateException("저장 고장");
+        }).when(claude).decide(any(), eq("SCHEDULED"), anyBoolean());
+        observed(Instant.parse("2026-10-26T20:30:00Z"), PaperFixtures.MON);
+        PaperDecisionJob job = job(Instant.parse("2026-10-26T23:00:00Z"));
+
+        for (int i = 0; i < PaperDecisionJob.MAX_ATTEMPTS; i++) {
+            assertThat(job.run().outcome()).isEqualTo(PaperDecisionJob.ERROR);
+        }
+        assertThat(store.jobRuns.get(store.jobRuns.size() - 1).detail().path("attempts").path("claude").asInt())
+                .isEqualTo(PaperDecisionJob.MAX_ATTEMPTS);
+        assertThat(job.run().outcome()).isEqualTo(PaperDecisionJob.GAVE_UP);
+        assertThat(claudeDecided).hasSize(PaperDecisionJob.MAX_ATTEMPTS);
+
+        assertThat(job.runNow("rules").kind()).isEqualTo("MANUAL");
+        assertThat(job.run().outcome()).as("규칙 책 수동 결정은 Claude 책의 포기를 풀지 않음")
+                .isEqualTo(PaperDecisionJob.GAVE_UP);
+        assertThat(claudeDecided).hasSize(PaperDecisionJob.MAX_ATTEMPTS);
+
+        job.runNow("claude");
+        assertThat(job.run().outcome()).as("Claude 책 수동 결정은 그 책의 횟수를 지움").isEqualTo(PaperDecisionJob.ERROR);
+        assertThat(store.jobRuns.get(store.jobRuns.size() - 1).detail().path("attempt").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("정기 작업 스레드는 둘 이상(application.yml) — Spring Boot 기본 1개면 결정 작업의 Claude 호출 몇 분 동안 리스크 점검(스탑)이 멈춤")
+    void schedulerHasMoreThanOneThread() throws Exception {
+        // 통합 테스트는 정기 작업을 꺼 두어(dashboard.scheduler.enabled=false) 스케줄러 빈이 없으므로 설정 파일 값을 직접 봅니다.
+        Object size = new YamlPropertySourceLoader().load("application", new ClassPathResource("application.yml"))
+                .stream().map(source -> source.getProperty("spring.task.scheduling.pool.size"))
+                .filter(Objects::nonNull).findFirst().orElse(null);
+        assertThat(size).as("spring.task.scheduling.pool.size").isNotNull();
+        assertThat(Integer.parseInt(size.toString())).isGreaterThanOrEqualTo(2);
     }
 }

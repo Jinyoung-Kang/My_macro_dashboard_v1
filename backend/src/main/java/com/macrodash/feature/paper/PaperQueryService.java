@@ -20,6 +20,7 @@ import com.macrodash.support.Json;
 import com.macrodash.support.Params;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -27,6 +28,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.temporal.TemporalAccessor;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -141,6 +143,7 @@ public class PaperQueryService {
         out.put("selection", latestSelection());
         // OS 게이트 지표(참고 — 구속하지 않음, D7·D19): 결정 작업이 거래일마다 남긴 가장 최근 줄. 없으면 null.
         out.put("gate", store.recentGate(1).stream().findFirst().map(PaperGate::view).orElse(null));
+        out.put("claudeExposureSeries", claudeExposureSeries(navByBook.getOrDefault(PaperBooks.CLAUDE, List.of())));
         out.put("limits", limits());
         out.put("jobs", jobs(OVERVIEW_JOBS));
         return out;
@@ -185,6 +188,10 @@ public class PaperQueryService {
         detail.put("noteIds", d.noteIds());
         detail.put("latencyMs", d.latencyMs());
         detail.put("retryCount", d.retryCount());
+        // Claude 책: 모델이 보낸 원문(형식 오류일 때 무엇이 왔는지)과 목표 노출·주문의 어긋남(결정 표에 열이 없어 응답에서).
+        detail.put("responseRaw", d.responseRaw());
+        JsonNode mismatch = Json.child(d.response(), "exposureMismatch");
+        detail.put("exposureMismatch", mismatch != null && mismatch.isBoolean() ? mismatch.asBoolean() : null);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("available", true);
         out.put("decision", detail);
@@ -259,6 +266,71 @@ public class PaperQueryService {
         fallbacks.addAll(current.settings().blend().fallbacks());
         fallbacks.addAll(current.settings().rules().fallbacks());
         out.put("settingsFallbacks", fallbacks);
+        out.put("apiUsage", apiUsage());
+        return out;
+    }
+
+    /**
+     * Claude 호출 사용량(명세 C8) — 오늘(KST)의 호출 수·상한·토큰과 이달(KST) 누적. 비용은 내지 않습니다(단가를 코드에 적어 두면
+     * 바뀌어도 모르는 숫자가 됨 — 토큰만).
+     */
+    private Map<String, Object> apiUsage() {
+        LocalDate today = Kst.today(clock);
+        JsonNode body = store.settings().map(PaperStore.SettingsRow::body).orElse(null);
+        int cap = ClaudeBookService.ClaudeSettings.from(body == null ? settings.defaultsJson() : body).dailyCallCap();
+        Optional<PaperStore.ApiUsage> day = store.apiUsage(today);
+        Map<String, Object> todayView = new LinkedHashMap<>();
+        todayView.put("day", today.toString());
+        todayView.put("calls", day.map(PaperStore.ApiUsage::calls).orElse(0));
+        todayView.put("cap", cap);
+        todayView.put("inputTokens", day.map(PaperStore.ApiUsage::inputTokens).orElse(0L));
+        todayView.put("outputTokens", day.map(PaperStore.ApiUsage::outputTokens).orElse(0L));
+        todayView.put("cacheReadTokens", day.map(PaperStore.ApiUsage::cacheReadTokens).orElse(0L));
+        todayView.put("cacheWriteTokens", day.map(PaperStore.ApiUsage::cacheWriteTokens).orElse(0L));
+        YearMonth month = YearMonth.from(today);
+        PaperStore.ApiUsageTotal total = store.apiUsageBetween(month.atDay(1), month.atEndOfMonth());
+        Map<String, Object> monthView = new LinkedHashMap<>();
+        monthView.put("month", month.toString());
+        monthView.put("days", total.days());
+        monthView.put("calls", total.calls());
+        monthView.put("inputTokens", total.inputTokens());
+        monthView.put("outputTokens", total.outputTokens());
+        monthView.put("cacheReadTokens", total.cacheReadTokens());
+        monthView.put("cacheWriteTokens", total.cacheWriteTokens());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("today", todayView);
+        out.put("month", monthView);
+        out.put("note", "호출 수는 성공·실패를 모두 셉니다. 토큰은 응답이 알려 준 값의 합이고, 추정 비용은 단가를 코드에 두지 않아 "
+                + "내지 않습니다.");
+        return out;
+    }
+
+    /**
+     * Claude 노출 추이(설계 §8) — 거래일 오름차순 {@code [{tradingDate, targetExposurePct, actualExposurePct}]}. 목표는 그 거래일
+     * 결정이 적은 {@code targetEquityExposurePct}(같은 날 결정이 여럿이면 가장 나중의 값 있는 것 — 실패한 결정은 값이 없음), 실제는
+     * 그 거래일 순자산 줄의 노출({@code exposure_pct}, 현금성 포함). 둘 중 하나라도 있는 거래일만 싣고, 없는 쪽은 null입니다.
+     * 그 거래일 결정의 목표는 다음 세션에 체결돼 반영되므로, 같은 줄의 실제 노출은 "결정할 때의 노출"입니다.
+     */
+    private List<Map<String, Object>> claudeExposureSeries(List<NavRow> nav) {
+        java.util.TreeMap<LocalDate, Double> target = new java.util.TreeMap<>();
+        // 최근 순(같은 날은 나중 결정 먼저)이라 그날 처음 만난 값 있는 결정이 가장 나중 것입니다.
+        for (PaperStore.DecisionSummary d : store.decisions(PaperBooks.CLAUDE, MAX_LIMIT)) {
+            if (d.targetExposurePct() != null) {
+                target.putIfAbsent(d.asOfTradingDate(), d.targetExposurePct());
+            }
+        }
+        java.util.TreeMap<LocalDate, Double> actual = new java.util.TreeMap<>();
+        nav.forEach(row -> actual.put(row.tradingDate(), row.exposurePct()));
+        TreeSet<LocalDate> dates = new TreeSet<>(target.keySet());
+        dates.addAll(actual.keySet());
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (LocalDate date : dates) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("tradingDate", date.toString());
+            row.put("targetExposurePct", round2(target.get(date)));
+            row.put("actualExposurePct", round2(actual.get(date)));
+            out.add(row);
+        }
         return out;
     }
 

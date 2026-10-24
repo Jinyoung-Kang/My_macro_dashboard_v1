@@ -1,0 +1,560 @@
+package com.macrodash.analytics;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+
+/**
+ * 🧪 Claude 재량 책이 제안한 주문의 하드 규칙 검사(명세 C4·C9·C11·D7·D8·D11, 설계 §5-4) — 순수 계산.
+ *
+ * <p>Claude는 주문을 <b>제안</b>만 하고, 집행 여부는 이 검사기가 정합니다(C4 "제안과 집행 분리"). 주문마다 통과·거절과 사유
+ * 코드 하나를 돌려주며, 결과 목록은 입력 목록과 같은 순서·같은 길이입니다. 같은 입력이면 같은 결과입니다 — 맵·집합의 순회 순서가
+ * 결과에 끼어들지 않게 합계는 티커 순으로 더하고, 처리 순서는 아래처럼 고정합니다.
+ *
+ * <p><b>검사 순서</b>(주문 하나에 사유는 하나 — 앞 단계에서 걸리면 뒤는 보지 않음):
+ * <ol start="0">
+ *   <li>{@link #STALE_INPUT} — {@code inputsStale}(종목 저장본 24시간 초과 또는 확정 종가 전)이면 매도까지 <b>모든</b> 주문.
+ *       오래된 가격으로 정한 주문은 어느 것도 믿을 수 없어서입니다.</li>
+ * </ol>
+ * 1단계 — 주문마다 따로(다른 주문을 보지 않음):
+ * <ol>
+ *   <li>{@link #MALFORMED} — 주문·티커 없음, side가 BUY/SELL이 아님, timing이 NEXT_OBSERVATION/NEXT_CLOSE가 아님, 매수에
+ *       targetWeightPct가 없음·숫자 아님·0~100 밖, 매도 sellFraction이 숫자 아님·0 이하·1 초과, 매도에 sellFraction 없이
+ *       targetWeightPct(0 초과)만 있음(아래 "매도 비율").</li>
+ *   <li>{@link #DUPLICATE_TICKER} — 같은 티커가 목록 앞에 이미 있음. 같은 종목에 주문이 둘이면 어느 쪽이 뜻인지 모르므로 첫 주문만
+ *       보고 뒤의 것은 거절합니다(앞 주문이 거절됐어도 마찬가지 — 결과가 앞 주문의 판정에 따라 바뀌지 않게).</li>
+ *   <li>{@link #OUT_OF_UNIVERSE} — 유니버스 밖. 단 <b>보유 중인 종목의 매도</b>는 예외입니다 — 설정에서 유니버스를 줄여도 이미
+ *       든 종목에서 빠져나올 수 있어야 해서입니다.</li>
+ *   <li>{@link #NOT_HELD}(매도: 보유 없음) / {@link #LOCKED_OUT}(매수: 트레일링 스탑 뒤 재진입 금지 중).</li>
+ *   <li>{@link #NO_PRICE} — 가격이 없거나 오래된 티커(매수·매도 모두 — 체결 가격을 정할 수 없음).</li>
+ *   <li>{@link #MIN_HOLD}(매도: 보유 거래일 &lt; 최소 보유일, 보유 거래일을 모르면 거절) → {@link #BELOW_ONE_SHARE}(매도: 아래
+ *       "매도 비율"의 1주 미만) / {@link #WEIGHT_CAP}(매수: 목표 비중 &gt; 종목 상한, ETF면 ETF 상한).</li>
+ *   <li>{@link #MIN_NOTIONAL}(매수: 증가분 금액 = (목표 − 현재 비중) × 순자산이 최소 금액 미만, 또는 목표가 현재 비중 이하라 살
+ *       금액이 없음).</li>
+ * </ol>
+ * 2단계 — 1단계를 통과한 주문 사이(처리 순서 = <b>매도를 목록 순으로 먼저</b>, 그다음 <b>매수를 목표 비중 큰 순</b>, 같으면 목록 순):
+ * <ol start="8">
+ *   <li>{@link #MONTHLY_CAP} — 이달 누계 + 이번에 받은 건수가 월 상한 이상. 거절된 주문은 집행되지 않으므로 자리를 쓰지 않습니다.</li>
+ *   <li>{@link #MAX_POSITIONS}(매수) — 매도 뒤 남는 종목 + 앞서 받은 신규 매수 + 이 주문이 최대 종목 수 초과. 이미 보유한 종목의
+ *       추가 매수는 종목 수를 늘리지 않습니다. 종목 수도 아래 "체결 시점"대로 셉니다 — NEXT_OBSERVATION 신규 매수는 그 시점에 이미
+ *       체결된 NEXT_OBSERVATION 전량 매도만 자리를 비운 것으로 봅니다.</li>
+ *   <li>{@link #OVER_ALLOCATED}(매수) — 매도 뒤 남는 보유 비중 + 앞서 받은 매수 증가분 + 이 주문 증가분이 100% 초과(C11 "큰 비중부터
+ *       받고 나머지는 거절"). 넘치는 주문만 거절하므로 그 뒤의 더 작은 매수는 남은 자리에 들어갈 수 있습니다. 합은 아래 "체결
+ *       시점"대로 매수가 체결될 때 이미 체결된 매도만으로 셉니다.</li>
+ * </ol>
+ * 매도를 먼저 처리하는 이유: 매수의 100% 검사가 "매도 뒤 남는 보유"를 쓰므로 어느 매도가 통과했는지가 먼저 정해져야 하고(매수부터
+ * 받으면 뒤에 월 상한으로 거절된 매도 때문에 이미 받은 매수가 100%를 넘을 수 있음), 매도는 위험을 줄이고 현금을 만드는 쪽이라
+ * 월 상한 자리도 먼저 받는 것이 안전합니다.
+ *
+ * <p><b>체결 시점</b>: 장부는 NEXT_OBSERVATION 주문을 다음 세션의 첫 관측치에, NEXT_CLOSE 주문을 확정 종가 관측치에 체결하고, 같은
+ * 관측치 안에서는 매도를 먼저 체결합니다. 그래서 NEXT_CLOSE 매도는 NEXT_OBSERVATION 매수보다 늦게 체결돼 그 매수의 현금을 만들지
+ * 못합니다 — 그대로 통과시키면 매수가 현금 부족으로 줄어든 채(cashLimited) 체결로 끝납니다. 100% 검사는 두 시점에서 봅니다:
+ * 확정 종가 뒤(모든 매도 + 모든 매수 증가분)와, NEXT_OBSERVATION 매수면 다음 관측치(NEXT_OBSERVATION 매도만 + 앞서 받은
+ * NEXT_OBSERVATION 매수 증가분)도. NEXT_CLOSE 매수는 모든 매도 뒤라 확정 종가 쪽만 봅니다. 최대 종목 수도 같은 두 시점입니다 —
+ * NEXT_CLOSE 전량 매도가 비울 자리를 NEXT_OBSERVATION 신규 매수가 먼저 쓰면 그 사이(다음 세션 장중~마감) 상한 + 1종목이 되고, 그 매도가
+ * 체결되지 않으면(보유 미확인·만료·다음 결정이 대신함) 그대로 굳습니다.
+ *
+ * <p><b>매수 목표 비중</b>: Claude 응답의 매수 {@code targetWeightPct}는 <b>체결 뒤 그 종목의 목표 비중</b>(순자산 대비 %)입니다.
+ * 이미 보유한 종목이면 증가분 = 목표 − 현재 비중만 새로 삽니다({@link #buyIncrementPct}). 장부의 매수 주문 targetWeightPct는 "살
+ * 금액(체결 시점 순자산 대비 %)"이라 서비스는 목표가 아니라 이 증가분을 주문에 넣어야 목표보다 더 사지 않습니다.
+ *
+ * <p><b>매도 비율</b>: {@code sellFraction}이 null이면 전량입니다(장부 규칙과 같음). 그래서 sellFraction 없이 targetWeightPct만 준
+ * 매도("5%까지 줄여라")를 그대로 넘기면 장부가 전량 매도로 집행합니다 — Claude가 뜻하지 않은 청산이라 MALFORMED로 거절합니다.
+ * targetWeightPct가 0이면 "0%까지" = 전량이라 뜻이 같으므로 통과시킵니다. 같은 이유로 1 미만의 비율인데 보유 수량 × 비율이 1주
+ * 미만이면({@link #BELOW_ONE_SHARE}) 거절합니다 — 장부는 그런 매도를 '1주 미만이면 전량'으로 집행해(PaperLedger.sellQty, 명세 §3-1)
+ * 5% 트림이 전량 청산이 되고, 검증 문구·예상 노출·종목 수도 실제와 어긋납니다. 전량을 뜻하면 sellFraction 1(또는 null)입니다.
+ *
+ * <p><b>현금성(SHY 등, {@code cashLike})은 현금처럼</b> 다룹니다: 비중 상한이 없고(D8 "SHY 무제한"), 최대 종목 수에 세지 않으며,
+ * 최소 보유일을 보지 않습니다 — SHY는 남는 현금의 자리라, 사흘 전에 산 SHY를 팔아 종목을 사는 것은 판단을 뒤집는 매매가 아니고,
+ * 막으면 그 매도로 자리를 만들려던 매수까지 OVER_ALLOCATED로 함께 막힙니다. 최소 금액·월 상한·가격 없음·유니버스는 그대로 봅니다.
+ *
+ * <p><b>검사하지 않는 것(D7)</b>: 현금 비중·주식 노출(0%든 100%든 거절 사유가 아님), 매크로 게이트 조건, 응답의
+ * targetEquityExposurePct와 주문의 어긋남(서비스가 exposureMismatch로 기록 — 숫자를 맞추지 않음). 노출은 Claude가 정합니다(C11).
+ */
+public final class OrderValidator {
+
+    private OrderValidator() {
+    }
+
+    /** 주문 방향·시점(설계 §5-3 decision.schema.json, paper_orders CHECK와 같은 문자열). */
+    public static final String BUY = "BUY";
+    public static final String SELL = "SELL";
+    public static final String NEXT_OBSERVATION = "NEXT_OBSERVATION";
+    public static final String NEXT_CLOSE = "NEXT_CLOSE";
+
+    /** 거절 사유 코드(설계 §5-4 표) — 결정 기록 {@code response.validation}과 주문 {@code reject_reason}에 그대로 남습니다. */
+    public static final String STALE_INPUT = "STALE_INPUT";
+    public static final String MALFORMED = "MALFORMED";
+    public static final String DUPLICATE_TICKER = "DUPLICATE_TICKER";
+    public static final String OUT_OF_UNIVERSE = "OUT_OF_UNIVERSE";
+    public static final String NOT_HELD = "NOT_HELD";
+    public static final String LOCKED_OUT = "LOCKED_OUT";
+    public static final String NO_PRICE = "NO_PRICE";
+    public static final String MIN_HOLD = "MIN_HOLD";
+    public static final String BELOW_ONE_SHARE = "BELOW_ONE_SHARE";
+    public static final String WEIGHT_CAP = "WEIGHT_CAP";
+    public static final String MIN_NOTIONAL = "MIN_NOTIONAL";
+    public static final String MONTHLY_CAP = "MONTHLY_CAP";
+    public static final String MAX_POSITIONS = "MAX_POSITIONS";
+    public static final String OVER_ALLOCATED = "OVER_ALLOCATED";
+
+    /**
+     * 비중(%p) 비교 여유. 비중은 평가액/순자산 × 100이라 끝자리 잡음이 있고(예: 합이 100.00000000000001), Claude가 정확히 상한
+     * 10이나 합 100을 주문했는데 그 잡음으로 거절되면 안 됩니다. 1e-9%p는 순자산 10만 달러에서 1백만분의 1달러라 실제로 다른
+     * 주문을 가르지 못합니다.
+     */
+    private static final double WEIGHT_EPSILON = 1e-9;
+    /** 금액(달러) 비교 여유 — 0.5% × 100,000처럼 정확히 500달러인 주문이 499.99999999999994로 거절되지 않게. */
+    private static final double MONEY_EPSILON = 1e-6;
+
+    /**
+     * Claude가 제안한 주문 한 줄(decision.schema.json의 orders[] 중 검사에 쓰는 필드).
+     *
+     * @param targetWeightPct 매수: 체결 뒤 목표 비중(순자산 대비 %, 0~100). 매도에는 쓰지 않음(클래스 설명의 "매도 비율")
+     * @param sellFraction    매도: 보유 중 팔 비율(0 초과 1 이하). null이면 전량. 매수에는 쓰지 않음
+     * @param timing          NEXT_OBSERVATION · NEXT_CLOSE
+     */
+    public record Proposed(String ticker, String side, Double targetWeightPct, Double sellFraction, String timing) {
+    }
+
+    /**
+     * 검사 시점의 장부와 자료 상태. 집합·맵은 복사해 두므로 호출한 쪽이 나중에 고쳐도 결과가 바뀌지 않습니다.
+     *
+     * @param nav                순자산(달러). 0 초과 — 최소 금액 검사가 증가분 비중을 금액으로 바꿀 때 씁니다
+     * @param cash               현금(달러). <b>검사에는 쓰지 않습니다</b> — 현금 비중은 하드 규칙이 아니고(D7), 100% 검사는 보유
+     *                           비중으로 합니다. 거절 문구에 현금 비중을 함께 보이는 데만 씁니다
+     * @param currentWeightPct   티커 → 현재 비중(평가액/순자산 × 100, 현금성 포함). 값이 null·숫자 아님·0 이하인 항목은 보유가
+     *                           아닌 것으로 봅니다. null이면 보유 없음
+     * @param heldTradingDays    티커 → 보유 거래일(최소 보유일 검사). null이면 없음
+     * @param universe           살 수 있는 티커. null이면 호출 실수로 보고 막습니다(조용히 "전부 유니버스 밖"이 되지 않게)
+     * @param etfs               ETF 티커(ETF 상한). null이면 없음
+     * @param cashLike           현금성 티커(기본 SHY — 상한·종목 수·최소 보유일 제외). null이면 없음
+     * @param lockedOut          재진입 금지 중인 티커. null이면 없음
+     * @param noPrice            가격이 없거나 오래된 티커. null이면 없음
+     * @param monthlyOrdersSoFar 이달(미국 거래일 기준 달) 이미 받은 재량 주문 수. 0 이상
+     * @param inputsStale        종목 저장본 24시간 초과 또는 확정 종가 전(blockWhenNotFinal) — true면 전부 STALE_INPUT
+     * @param heldQty            티커 → 보유 수량(주, 1주 미만 매도 검사 — 클래스 설명의 "매도 비율"). null이거나 그 티커가 없으면(또는 0
+     *                           이하) 수량을 모르는 것으로 보고 그 검사를 하지 않습니다
+     */
+    public record Context(double nav, double cash, Map<String, Double> currentWeightPct,
+                          Map<String, Integer> heldTradingDays, Set<String> universe, Set<String> etfs,
+                          Set<String> cashLike, Set<String> lockedOut, Set<String> noPrice, int monthlyOrdersSoFar,
+                          boolean inputsStale, Map<String, Integer> heldQty) {
+        public Context {
+            if (!(nav > 0) || Double.isInfinite(nav)) {
+                throw new IllegalArgumentException("순자산은 0보다 큰 숫자여야 합니다: " + nav);
+            }
+            if (!Double.isFinite(cash)) {
+                throw new IllegalArgumentException("현금이 숫자가 아닙니다: " + cash);
+            }
+            if (universe == null) {
+                throw new IllegalArgumentException("유니버스가 없습니다");
+            }
+            if (monthlyOrdersSoFar < 0) {
+                throw new IllegalArgumentException("이달 주문 수는 0 이상이어야 합니다: " + monthlyOrdersSoFar);
+            }
+            currentWeightPct = copy(currentWeightPct);
+            heldTradingDays = copy(heldTradingDays);
+            universe = copy(universe);
+            etfs = copy(etfs);
+            cashLike = copy(cashLike);
+            lockedOut = copy(lockedOut);
+            noPrice = copy(noPrice);
+            heldQty = copy(heldQty);
+        }
+
+        /** 보유 수량 없이(1주 미만 매도 검사를 하지 않음 — 수량을 모르는 호출·시험). */
+        public Context(double nav, double cash, Map<String, Double> currentWeightPct,
+                       Map<String, Integer> heldTradingDays, Set<String> universe, Set<String> etfs,
+                       Set<String> cashLike, Set<String> lockedOut, Set<String> noPrice, int monthlyOrdersSoFar,
+                       boolean inputsStale) {
+            this(nav, cash, currentWeightPct, heldTradingDays, universe, etfs, cashLike, lockedOut, noPrice,
+                    monthlyOrdersSoFar, inputsStale, null);
+        }
+
+        /** 보유 비중(%). 보유가 아니면(없음·null·숫자 아님·0 이하) null. */
+        Double weightOf(String ticker) {
+            Double weight = currentWeightPct.get(ticker);
+            return weight != null && Double.isFinite(weight) && weight > 0 ? weight : null;
+        }
+    }
+
+    /**
+     * 하드 규칙 한도(설정 §4-4 — maxWeightStockPct 10, maxWeightEtfPct 20, maxPositions 20, minOrderNotional 500,
+     * maxDiscretionaryOrdersPerMonth 20, minHoldTradingDaysForSell 5가 기본).
+     *
+     * @param maxWeightStockPct              개별 종목 목표 비중 상한(%). 0 초과 100 이하
+     * @param maxWeightEtfPct                ETF 목표 비중 상한(%). 0 초과 100 이하
+     * @param maxPositions                   매수 뒤 최대 종목 수(현금성 제외). 1 이상
+     * @param minOrderNotional               매수 증가분의 최소 금액(달러). 0 이상 — 0이면 금액 하한 없음(살 금액이 0 이하인 매수는 그래도 거절)
+     * @param maxDiscretionaryOrdersPerMonth 월 재량 주문 상한. 0 이상 — 0이면 재량 주문을 받지 않음
+     * @param minHoldTradingDaysForSell      재량 매도 전 최소 보유 거래일. 0 이상 — 0이면 검사 안 함
+     * @throws IllegalArgumentException 범위 밖(설정 실수 — 조용히 기본값으로 바꾸지 않고 막습니다)
+     */
+    public record Limits(double maxWeightStockPct, double maxWeightEtfPct, int maxPositions, double minOrderNotional,
+                         int maxDiscretionaryOrdersPerMonth, int minHoldTradingDaysForSell) {
+        public Limits {
+            if (!(maxWeightStockPct > 0) || maxWeightStockPct > 100) {
+                throw new IllegalArgumentException("종목 상한(%)은 0 초과 100 이하여야 합니다: " + maxWeightStockPct);
+            }
+            if (!(maxWeightEtfPct > 0) || maxWeightEtfPct > 100) {
+                throw new IllegalArgumentException("ETF 상한(%)은 0 초과 100 이하여야 합니다: " + maxWeightEtfPct);
+            }
+            if (maxPositions < 1) {
+                throw new IllegalArgumentException("최대 종목 수는 1 이상이어야 합니다: " + maxPositions);
+            }
+            if (!(minOrderNotional >= 0) || Double.isInfinite(minOrderNotional)) {
+                throw new IllegalArgumentException("최소 주문 금액은 0 이상인 숫자여야 합니다: " + minOrderNotional);
+            }
+            if (maxDiscretionaryOrdersPerMonth < 0) {
+                throw new IllegalArgumentException("월 주문 상한은 0 이상이어야 합니다: " + maxDiscretionaryOrdersPerMonth);
+            }
+            if (minHoldTradingDaysForSell < 0) {
+                throw new IllegalArgumentException("최소 보유일은 0 이상이어야 합니다: " + minHoldTradingDaysForSell);
+            }
+        }
+    }
+
+    /**
+     * 주문 하나의 판정.
+     *
+     * @param order        입력 주문 그대로(null 주문이면 null)
+     * @param rejectReason 거절 사유 코드. 통과면 null
+     * @param detail       사람이 읽는 근거 한 줄(통과: 현재 → 목표·금액 또는 매도 비율, 거절: 걸린 숫자)
+     */
+    public record Verdict(Proposed order, boolean accepted, String rejectReason, String detail) {
+
+        static Verdict accept(Proposed order, String detail) {
+            return new Verdict(order, true, null, detail);
+        }
+
+        static Verdict reject(Proposed order, String reason, String detail) {
+            return new Verdict(order, false, reason, detail);
+        }
+    }
+
+    /**
+     * 주문 목록을 하드 규칙으로 판정합니다(검사 순서는 클래스 설명).
+     *
+     * @param orders 제안 주문(응답 순서). null·빈 목록이면 빈 결과. 원소가 null이면 그 자리는 MALFORMED
+     * @return 입력과 같은 순서·같은 길이의 판정(바꿀 수 없는 목록)
+     * @throws IllegalArgumentException ctx·limits가 null
+     */
+    public static List<Verdict> validate(List<Proposed> orders, Context ctx, Limits limits) {
+        if (ctx == null) {
+            throw new IllegalArgumentException("검사 문맥(장부 상태)이 없습니다");
+        }
+        if (limits == null) {
+            throw new IllegalArgumentException("하드 규칙 한도가 없습니다");
+        }
+        if (orders == null || orders.isEmpty()) {
+            return List.of();
+        }
+        int n = orders.size();
+        Verdict[] out = new Verdict[n];
+
+        // 0) 자료가 오래됐으면 그날 재량 주문 전부(매도 포함).
+        if (ctx.inputsStale()) {
+            for (int i = 0; i < n; i++) {
+                out[i] = Verdict.reject(orders.get(i), STALE_INPUT,
+                        "입력 자료가 오래됨(종목 저장본 24시간 초과 또는 확정 종가 전) — 그날 재량 주문 전부 거절");
+            }
+            return List.of(out);
+        }
+
+        // 1) 주문마다 따로. null로 남은 자리가 2단계 후보입니다.
+        Map<String, Integer> firstIndex = new HashMap<>();
+        for (int i = 0; i < n; i++) {
+            out[i] = checkAlone(orders.get(i), i, firstIndex, ctx, limits);
+        }
+
+        // 2-a) 매도 — 목록 순으로 월 상한 자리를 먼저 받습니다(클래스 설명).
+        int slots = Math.max(0, limits.maxDiscretionaryOrdersPerMonth() - ctx.monthlyOrdersSoFar());
+        int used = 0;
+        Map<String, Double> soldFraction = new HashMap<>();
+        // 다음 관측치(NEXT_OBSERVATION)에 체결되는 매도만 — 같은 시점 매수의 자리를 만드는 매도(클래스 설명의 "체결 시점").
+        Map<String, Double> earlySoldFraction = new HashMap<>();
+        List<Integer> buys = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            if (out[i] != null) {
+                continue;
+            }
+            Proposed order = orders.get(i);
+            if (BUY.equals(order.side())) {
+                buys.add(i);
+                continue;
+            }
+            if (used >= slots) {
+                out[i] = Verdict.reject(order, MONTHLY_CAP, monthlyDetail(ctx, limits, used));
+                continue;
+            }
+            used++;
+            double fraction = order.sellFraction() == null ? 1.0 : Math.min(1.0, order.sellFraction());
+            soldFraction.put(order.ticker(), fraction);
+            if (NEXT_OBSERVATION.equals(order.timing())) {
+                earlySoldFraction.put(order.ticker(), fraction);
+            }
+            out[i] = Verdict.accept(order, sellDetail(ctx.weightOf(order.ticker()), fraction));
+        }
+
+        // 매도 뒤 남는 보유 비중과 종목 수 — 티커 순으로 더해 맵 순회 순서와 관계없이 같은 합. 둘 다 두 시점으로 봅니다
+        // (클래스 설명의 "체결 시점"): 확정 종가 뒤(모든 매도 체결) · 다음 관측치(NEXT_OBSERVATION 매도만 체결).
+        double allocated = 0;
+        double allocatedEarly = 0;
+        int positions = 0;
+        int positionsEarly = 0;
+        int lateFreed = 0;   // NEXT_CLOSE 전량 매도로만 비는 자리(거절 문구용)
+        for (String ticker : heldTickers(ctx)) {
+            double weight = ctx.weightOf(ticker);
+            double fraction = soldFraction.getOrDefault(ticker, 0.0);
+            double earlyFraction = earlySoldFraction.getOrDefault(ticker, 0.0);
+            allocated += weight * (1.0 - fraction);
+            allocatedEarly += weight * (1.0 - earlyFraction);
+            if (!ctx.cashLike().contains(ticker)) {
+                if (fraction < 1.0) {
+                    positions++;
+                }
+                if (earlyFraction < 1.0) {
+                    positionsEarly++;
+                    if (fraction >= 1.0) {
+                        lateFreed++;
+                    }
+                }
+            }
+        }
+        double residual = allocated;
+        double residualEarly = allocatedEarly;
+        double cashPct = ctx.cash() / ctx.nav() * 100.0;
+
+        // 2-b) 매수 — 목표 비중 큰 순(C11), 같으면 목록 순.
+        buys.sort((a, b) -> {
+            int byTarget = Double.compare(orders.get(b).targetWeightPct(), orders.get(a).targetWeightPct());
+            return byTarget != 0 ? byTarget : Integer.compare(a, b);
+        });
+        for (int i : buys) {
+            Proposed order = orders.get(i);
+            String ticker = order.ticker();
+            Double current = ctx.weightOf(ticker);
+            double increment = buyIncrementPct(order, ctx);
+            boolean newName = current == null && !ctx.cashLike().contains(ticker);
+            boolean early = NEXT_OBSERVATION.equals(order.timing());
+            if (used >= slots) {
+                out[i] = Verdict.reject(order, MONTHLY_CAP, monthlyDetail(ctx, limits, used));
+            } else if (newName && positions + 1 > limits.maxPositions()) {
+                out[i] = Verdict.reject(order, MAX_POSITIONS, String.format(Locale.ROOT,
+                        "매수 뒤 종목 수 %d > 상한 %d(현금성 제외)", positions + 1, limits.maxPositions()));
+            } else if (newName && early && positionsEarly + 1 > limits.maxPositions()) {
+                out[i] = Verdict.reject(order, MAX_POSITIONS, String.format(Locale.ROOT,
+                        "다음 관측치(NEXT_OBSERVATION) 매수인데 확정 종가(NEXT_CLOSE) 전량 매도 %d종목은 그 뒤에 체결돼 자리를 "
+                                + "비우지 못함 — 그 시점 종목 수 %d > 상한 %d(현금성 제외)",
+                        lateFreed, positionsEarly + 1, limits.maxPositions()));
+            } else if (allocated + increment > 100.0 + WEIGHT_EPSILON) {
+                out[i] = Verdict.reject(order, OVER_ALLOCATED, String.format(Locale.ROOT,
+                        "매도 뒤 남는 보유 %.2f%% + 앞서 받은 매수 %.2f%%p + 이 주문 %.2f%%p = %.2f%% > 100%% (현재 현금 %.2f%%)",
+                        residual, allocated - residual, increment, allocated + increment, cashPct));
+            } else if (early && allocatedEarly + increment > 100.0 + WEIGHT_EPSILON) {
+                out[i] = Verdict.reject(order, OVER_ALLOCATED, String.format(Locale.ROOT,
+                        "다음 관측치(NEXT_OBSERVATION) 매수인데 확정 종가(NEXT_CLOSE) 매도 %.2f%%p는 그 뒤에 체결돼 자리를 만들지 "
+                                + "못함 — 그 시점 남는 보유 %.2f%% + 앞서 받은 다음 관측치 매수 %.2f%%p + 이 주문 %.2f%%p = %.2f%% "
+                                + "> 100%% (현재 현금 %.2f%%)",
+                        residualEarly - residual, residualEarly, allocatedEarly - residualEarly, increment,
+                        allocatedEarly + increment, cashPct));
+            } else {
+                used++;
+                allocated += increment;
+                if (early) {
+                    allocatedEarly += increment;
+                }
+                if (newName) {
+                    positions++;
+                    if (early) {
+                        positionsEarly++;
+                    }
+                }
+                out[i] = Verdict.accept(order, buyDetail(current, order.targetWeightPct(), increment, ctx.nav()));
+            }
+        }
+        return List.of(out);
+    }
+
+    /**
+     * 매수 증가분(%p) = 목표 비중 − 현재 비중(보유 아니면 0). 통과한 매수는 늘 0보다 큽니다(MIN_NOTIONAL이 0 이하를 거절).
+     * 장부에 낼 매수 주문의 targetWeightPct("살 금액" — 순자산 대비 %)는 이 값입니다(클래스 설명의 "매수 목표 비중").
+     *
+     * @throws IllegalArgumentException 매수가 아니거나 targetWeightPct가 없음·숫자 아님, ctx가 null
+     */
+    public static double buyIncrementPct(Proposed order, Context ctx) {
+        if (order == null || !BUY.equals(order.side()) || order.targetWeightPct() == null
+                || !Double.isFinite(order.targetWeightPct())) {
+            throw new IllegalArgumentException("목표 비중이 있는 매수 주문이 아닙니다: " + order);
+        }
+        if (ctx == null) {
+            throw new IllegalArgumentException("검사 문맥(장부 상태)이 없습니다");
+        }
+        Double current = ctx.weightOf(order.ticker());
+        return order.targetWeightPct() - (current == null ? 0.0 : current);
+    }
+
+    /** 1단계 — 다른 주문을 보지 않는 검사. 통과면 null. firstIndex에 티커의 첫 자리를 남깁니다. */
+    private static Verdict checkAlone(Proposed order, int index, Map<String, Integer> firstIndex, Context ctx,
+                                      Limits limits) {
+        if (order == null) {
+            return Verdict.reject(null, MALFORMED, "주문이 비어 있음");
+        }
+        String ticker = order.ticker();
+        if (ticker == null || ticker.isBlank()) {
+            return Verdict.reject(order, MALFORMED, "티커가 없음");
+        }
+        // 모양이 틀린 주문도 티커 자리는 잡습니다 — 같은 티커의 뒤 주문이 앞 주문의 판정에 따라 통과·거절이 갈리지 않게.
+        Integer earlier = firstIndex.putIfAbsent(ticker, index);
+        String malformed = malformed(order);
+        if (malformed != null) {
+            return Verdict.reject(order, MALFORMED, malformed);
+        }
+        if (earlier != null) {
+            return Verdict.reject(order, DUPLICATE_TICKER,
+                    "같은 티커의 앞선 주문(" + (earlier + 1) + "번째)이 있음 — 첫 주문만 봄");
+        }
+        boolean buy = BUY.equals(order.side());
+        Double current = ctx.weightOf(ticker);
+        if (!ctx.universe().contains(ticker) && (buy || current == null)) {
+            return Verdict.reject(order, OUT_OF_UNIVERSE, "유니버스 밖 티커: " + ticker);
+        }
+        if (buy && ctx.lockedOut().contains(ticker)) {
+            return Verdict.reject(order, LOCKED_OUT, "트레일링 스탑 뒤 재진입 금지 중");
+        }
+        if (!buy && current == null) {
+            return Verdict.reject(order, NOT_HELD, "보유하지 않은 종목은 팔 수 없음");
+        }
+        if (ctx.noPrice().contains(ticker)) {
+            return Verdict.reject(order, NO_PRICE, "가격이 없거나 오래됨 — 체결 가격을 정할 수 없음");
+        }
+        boolean cashLike = ctx.cashLike().contains(ticker);
+        if (!buy) {
+            int minHold = limits.minHoldTradingDaysForSell();
+            if (minHold > 0 && !cashLike) {
+                Integer days = ctx.heldTradingDays().get(ticker);
+                if (days == null) {
+                    // 모르는 보유일을 '충분함'으로 읽으면 과매매 억제(C9)가 조용히 꺼집니다 — 거절하고 이유를 남깁니다.
+                    return Verdict.reject(order, MIN_HOLD, "보유 거래일을 알 수 없음 — 최소 " + minHold + "거래일 확인 불가");
+                }
+                if (days < minHold) {
+                    return Verdict.reject(order, MIN_HOLD, "보유 " + days + "거래일 < 최소 " + minHold + "거래일");
+                }
+            }
+            Double fraction = order.sellFraction();
+            Integer held = ctx.heldQty().get(ticker);
+            // 장부와 같은 계산(PaperLedger.sellQty) — 1 미만의 비율인데 1주 미만이면 장부가 보유 전체를 팝니다(클래스 설명의 "매도 비율").
+            if (fraction != null && fraction < 1.0 && held != null && held > 0
+                    && PaperLedger.sellQty(held, fraction) >= held) {
+                return Verdict.reject(order, BELOW_ONE_SHARE, "보유 " + held + "주의 "
+                        + BigDecimal.valueOf(fraction).stripTrailingZeros().toPlainString()
+                        + "는 1주 미만 — 장부가 전량으로 집행하므로 거절, 전량이면 sellFraction 1");
+            }
+            return null;
+        }
+        double target = order.targetWeightPct();
+        if (!cashLike) {
+            boolean etf = ctx.etfs().contains(ticker);
+            double cap = etf ? limits.maxWeightEtfPct() : limits.maxWeightStockPct();
+            if (target > cap + WEIGHT_EPSILON) {
+                return Verdict.reject(order, WEIGHT_CAP, String.format(Locale.ROOT, "목표 %.2f%% > %s 상한 %.2f%%",
+                        target, etf ? "ETF" : "종목", cap));
+            }
+        }
+        double now = current == null ? 0.0 : current;
+        double increment = target - now;
+        if (!(increment > WEIGHT_EPSILON)) {
+            return Verdict.reject(order, MIN_NOTIONAL, String.format(Locale.ROOT,
+                    "목표 비중이 현재 비중 이하 — 살 금액 없음(현재 %.2f%% → 목표 %.2f%%)", now, target));
+        }
+        double amount = increment / 100.0 * ctx.nav();
+        if (amount < limits.minOrderNotional() - MONEY_EPSILON) {
+            return Verdict.reject(order, MIN_NOTIONAL, String.format(Locale.ROOT,
+                    "매수 증가분 약 $%,.2f < 최소 $%,.2f(현재 %.2f%% → 목표 %.2f%%)", amount, limits.minOrderNotional(),
+                    now, target));
+        }
+        return null;
+    }
+
+    /** MALFORMED 사유 문구. 모양이 맞으면 null. */
+    private static String malformed(Proposed order) {
+        String side = order.side();
+        if (!BUY.equals(side) && !SELL.equals(side)) {
+            return "side는 BUY 또는 SELL이어야 함: " + side;
+        }
+        String timing = order.timing();
+        if (!NEXT_OBSERVATION.equals(timing) && !NEXT_CLOSE.equals(timing)) {
+            return "timing은 NEXT_OBSERVATION 또는 NEXT_CLOSE여야 함: " + timing;
+        }
+        Double target = order.targetWeightPct();
+        if (BUY.equals(side)) {
+            if (target == null) {
+                return "매수에 targetWeightPct가 없음";
+            }
+            if (!Double.isFinite(target) || target < 0 || target > 100) {
+                return "targetWeightPct는 0~100이어야 함: " + target;
+            }
+            return null;
+        }
+        Double fraction = order.sellFraction();
+        if (fraction == null) {
+            if (target != null && !(target == 0.0)) {
+                // NaN도 여기로 옵니다(NaN == 0.0은 거짓) — 뜻을 모르는 숫자이므로 같이 거절합니다.
+                return "매도에 sellFraction 없이 targetWeightPct만 있음 — 비율 없는 매도는 장부가 전량으로 집행하므로 거절";
+            }
+            return null;
+        }
+        // 0을 받으면 장부의 '1주 미만이면 전량' 규칙과 만나 '안 팖'이 '전량 매도'로 뒤집힙니다(PaperLedger.sellQty).
+        if (!Double.isFinite(fraction) || !(fraction > 0) || fraction > 1) {
+            return "sellFraction은 0 초과 1 이하여야 함: " + fraction;
+        }
+        return null;
+    }
+
+    /** 보유 티커(티커 순). */
+    private static TreeSet<String> heldTickers(Context ctx) {
+        TreeSet<String> tickers = new TreeSet<>();
+        for (String ticker : ctx.currentWeightPct().keySet()) {
+            if (ticker != null && ctx.weightOf(ticker) != null) {
+                tickers.add(ticker);
+            }
+        }
+        return tickers;
+    }
+
+    private static String monthlyDetail(Context ctx, Limits limits, int used) {
+        return "이달 재량 주문 " + (ctx.monthlyOrdersSoFar() + used) + "건(이번 결정 " + used + "건 포함) — 상한 "
+                + limits.maxDiscretionaryOrdersPerMonth() + "건";
+    }
+
+    private static String sellDetail(Double weight, double fraction) {
+        String held = weight == null ? "—" : String.format(Locale.ROOT, "%.2f%%", weight);
+        if (fraction >= 1.0) {
+            return "보유 " + held + " 전량 매도";
+        }
+        return String.format(Locale.ROOT, "보유 %s 중 %.0f%% 매도", held, fraction * 100.0);
+    }
+
+    private static String buyDetail(Double current, double target, double increment, double nav) {
+        return String.format(Locale.ROOT, "현재 %.2f%% → 목표 %.2f%%(+%.2f%%p, 약 $%,.0f)",
+                current == null ? 0.0 : current, target, increment, increment / 100.0 * nav);
+    }
+
+    // 빈 값도 Map.of()·Set.of()가 아니라 HashMap·HashSet으로 둡니다 — 그 둘은 get(null)·contains(null)에서 예외를 던져, 받은
+    // 맵에 null 키가 섞였는지에 따라 결과가 아니라 예외가 나는 일이 없게.
+    private static <K, V> Map<K, V> copy(Map<K, V> map) {
+        return Collections.unmodifiableMap(map == null ? new HashMap<>() : new HashMap<>(map));
+    }
+
+    private static <T> Set<T> copy(Set<T> set) {
+        return Collections.unmodifiableSet(set == null ? new HashSet<>() : new HashSet<>(set));
+    }
+}

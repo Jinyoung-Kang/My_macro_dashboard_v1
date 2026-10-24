@@ -272,5 +272,57 @@ class PaperQueryServiceTest {
         assertThat(query.decisions("claude", 50).get("decisions")).isEqualTo(List.of());
     }
 
+    @Test
+    @DisplayName("Claude 책: 개요의 노출 추이(목표 = 그날 결정의 값, 같은 날이면 나중의 값 있는 결정 · 실제 = 순자산 줄), 상세의 원문·어긋남, 상태의 호출 사용량")
+    void claudeExposureSeriesDetailAndUsage() {
+        initWithBenchmarks();
+        var mapper = PaperFixtures.MAPPER;
+        store.upsertNav(new NavRow(PaperBooks.CLAUDE, FRI, 100_000, 40_000, 60_000, 60, true));
+        store.upsertNav(new NavRow(PaperBooks.CLAUDE, MON, 101_000, 41_000, 60_000, 59.41, true));
+        store.dbNow = Instant.parse("2026-10-24T01:00:00Z");
+        store.insertDecisionIfAbsent(new com.macrodash.store.PaperStore.Decision(0, PaperBooks.CLAUDE, FRI, "INITIAL",
+                null, "OK", "claude-sonnet-5-5", null, 1, FRI, 60.0, null, "h", "{}", mapper.valueToTree(Map.of(
+                "summary", "시작", "exposureMismatch", false)), null, null, List.of(), true, 10L, 0));
+        store.dbNow = Instant.parse("2026-10-26T23:00:00Z");
+        long scheduled = store.insertDecisionIfAbsent(new com.macrodash.store.PaperStore.Decision(0, PaperBooks.CLAUDE,
+                MON, "SCHEDULED", null, "OK", "claude-sonnet-5-5", null, 1, FRI, 30.0, null, "h2", "{\"raw\":1}",
+                mapper.valueToTree(Map.of("summary", "줄임", "exposureMismatch", true)), null, null, List.of(), true,
+                10L, 0)).orElseThrow();
+        store.dbNow = Instant.parse("2026-10-26T23:30:00Z");
+        store.insertDecisionIfAbsent(new com.macrodash.store.PaperStore.Decision(0, PaperBooks.CLAUDE, MON, "MANUAL",
+                null, "API_ERROR", "claude-sonnet-5-5", null, 1, FRI, null, null, null, null,
+                mapper.valueToTree(Map.of("summary", "API 오류")), null, "[RATE_LIMIT] 429", List.of(), true, 10L, 0));
+        store.insertDecisionIfAbsent(new com.macrodash.store.PaperStore.Decision(0, PaperBooks.CLAUDE,
+                PaperFixtures.TUE, "SCHEDULED", null, "OK", "claude-sonnet-5-5", null, 1, FRI, 45.5, null, null, null,
+                null, null, null, List.of(), true, 10L, 0));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> series = (List<Map<String, Object>>) query.overview().get("claudeExposureSeries");
+        assertThat(series).extracting(p -> p.get("tradingDate"), p -> p.get("targetExposurePct"),
+                p -> p.get("actualExposurePct")).containsExactly(
+                org.assertj.core.groups.Tuple.tuple("2026-10-23", 60.0, 60.0),
+                org.assertj.core.groups.Tuple.tuple("2026-10-26", 30.0, 59.41),
+                org.assertj.core.groups.Tuple.tuple("2026-10-27", 45.5, null));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> detail = (Map<String, Object>) query.decision(scheduled).get("decision");
+        assertThat(detail.get("exposureMismatch")).isEqualTo(true);
+        assertThat(detail.get("responseRaw")).isEqualTo("{\"raw\":1}");
+        assertThat(detail.get("targetExposurePct")).isEqualTo(30.0);
+
+        store.apiUsage.put(java.time.LocalDate.of(2026, 10, 27), new com.macrodash.store.PaperStore.ApiUsage(
+                java.time.LocalDate.of(2026, 10, 27), 2, 40_000, 6_000, 10_000, 0));
+        store.apiUsage.put(java.time.LocalDate.of(2026, 10, 3), new com.macrodash.store.PaperStore.ApiUsage(
+                java.time.LocalDate.of(2026, 10, 3), 1, 20_000, 3_000, 0, 9_000));
+        tools.jackson.databind.JsonNode usage = mapper.valueToTree(query.status().get("apiUsage"));
+        assertThat(usage.path("today").path("day").asString()).as("KST 오늘(NOW = 10-26 21:00Z → 10-27)")
+                .isEqualTo("2026-10-27");
+        assertThat(usage.path("today").path("calls").asInt()).isEqualTo(2);
+        assertThat(usage.path("today").path("cap").asInt()).isEqualTo(6);
+        assertThat(usage.path("month").path("calls").asInt()).isEqualTo(3);
+        assertThat(usage.path("month").path("inputTokens").asLong()).isEqualTo(60_000);
+        assertThat(usage.path("month").path("days").asInt()).isEqualTo(2);
+    }
+
     private static final java.time.LocalDate TUE_EXPIRY = java.time.LocalDate.of(2026, 10, 29);
 }

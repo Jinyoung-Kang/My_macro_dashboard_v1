@@ -2,16 +2,22 @@ package com.macrodash.feature.ai;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.core.JsonValue;
 import com.anthropic.core.RequestOptions;
+import com.anthropic.errors.AnthropicInvalidDataException;
 import com.anthropic.errors.AnthropicServiceException;
 import com.anthropic.errors.NotFoundException;
 import com.anthropic.errors.PermissionDeniedException;
 import com.anthropic.errors.RateLimitException;
 import com.anthropic.errors.UnauthorizedException;
+import com.anthropic.models.messages.CacheControlEphemeral;
+import com.anthropic.models.messages.JsonOutputFormat;
 import com.anthropic.models.messages.Message;
 import com.anthropic.models.messages.MessageCreateParams;
 import com.anthropic.models.messages.OutputConfig;
 import com.anthropic.models.messages.StopReason;
+import com.anthropic.models.messages.TextBlockParam;
+import com.anthropic.models.messages.Usage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +58,7 @@ import java.util.regex.Pattern;
  *   <li>응답이 한국어가 아니면 번역 전용 모델로 한 번 더 호출</li>
  *   <li>키가 없는 엔진은 <b>조용히 건너뛰지 않고</b> 이유를 남깁니다</li>
  *   <li>배포마다 쓸 엔진을 허용 목록({@code AI_ENGINES})으로 좁힐 수 있습니다(비면 전부 — 기본·로컬, ADR 0014)</li>
+ *   <li>모의 매매 Claude 책은 위 경로와 따로 {@link #structured}(스키마로 모양을 강제한 Claude 호출 한 번)를 씁니다</li>
  * </ul>
  *
  * <p>AI는 <b>수집된 데이터만</b> 근거로 삼습니다. 리포트 프롬프트에는 대시보드
@@ -173,6 +180,12 @@ public class AiService {
      * $0.50이라 한도까지 써도 0.8센트입니다.
      */
     static final long ANTHROPIC_MAX_TOKENS = 16_000L;
+
+    /**
+     * 구조화 출력(모의 매매 Claude 책)의 응답 한도(토큰). 리포트 한도와 지금은 같지만 정한 이유가 달라 따로 둡니다 — 이 값은
+     * 명세 C2가 정한 실험 조건이고, 리포트 한도는 Haiku의 사고 분량에 맞춘 값이라 그쪽을 바꿔도 따라 움직이면 안 됩니다.
+     */
+    static final long STRUCTURED_MAX_TOKENS = 16_000L;
 
     /**
      * 남은 예산이 이보다 적으면 다음 엔진을 부르지 않습니다(초). 번역도 같습니다 — 원문을 그대로 보여 줍니다(QA-094).
@@ -860,8 +873,11 @@ public class AiService {
         }
     }
 
-    /** Claude 호출 예외를 나눈 결과 — 화면 문구와 과금 여부. SDK를 올릴 때 이 표 한 곳만 고칩니다. */
-    private record AnthropicError(String message, boolean charged) {
+    /**
+     * Claude 호출 예외를 나눈 결과 — 종류({@link StructuredResult#errorKind}와 같은 이름), 화면 문구, 과금 여부.
+     * 리포트({@link #callAnthropic})와 구조화 출력({@link #structured})이 같은 표를 써서, SDK를 올릴 때 한 곳만 고칩니다.
+     */
+    private record AnthropicError(String kind, String message, boolean charged) {
     }
 
     /**
@@ -869,36 +885,226 @@ public class AiService {
      * 않았고({@code charged=false}), 연결·시간 초과 등은 {@link #reachedModel}로 판단합니다(QA-021).
      *
      * <p>하위 예외(401·403·404·429)를 먼저 봅니다 — 모두 {@link AnthropicServiceException}의 하위 클래스입니다.
+     * 응답은 왔는데 모양을 읽지 못한 경우({@link AnthropicInvalidDataException})는 모델이 이미 답한 것이라 {@code EMPTY}입니다.
      */
     private AnthropicError classifyAnthropic(RuntimeException e, String model, int attemptSeconds) {
         if (e instanceof UnauthorizedException) {
-            return new AnthropicError("인증이 거절됐습니다(401). .env의 ANTHROPIC_API_KEY를 확인하세요.", false);
+            return new AnthropicError("UNAUTHORIZED", "인증이 거절됐습니다(401). .env의 ANTHROPIC_API_KEY를 확인하세요.", false);
         }
         if (e instanceof PermissionDeniedException) {
-            return new AnthropicError("권한이 없습니다(403). 키의 워크스페이스·모델 접근 권한을 확인하세요.", false);
+            return new AnthropicError("FORBIDDEN", "권한이 없습니다(403). 키의 워크스페이스·모델 접근 권한을 확인하세요.", false);
         }
         if (e instanceof NotFoundException) {
-            return new AnthropicError("모델을 찾지 못했습니다(404): " + model, false);
+            return new AnthropicError("NOT_FOUND", "모델을 찾지 못했습니다(404): " + model, false);
         }
         if (e instanceof RateLimitException) {
-            return new AnthropicError("호출 한도에 걸렸습니다(429). 잠시 후 다시 시도하거나 다른 엔진을 고르세요.", false);
+            return new AnthropicError("RATE_LIMIT", "호출 한도에 걸렸습니다(429). 잠시 후 다시 시도하거나 다른 엔진을 고르세요.", false);
         }
         if (e instanceof AnthropicServiceException service) {
             String type = service.errorType().map(String::valueOf).orElse("알 수 없음");
             String hint = service.statusCode() == 402
                     ? " — 크레딧이 부족합니다. platform.claude.com의 Billing을 확인하세요."
                     : service.statusCode() == 529 ? " — Anthropic 서버가 과부하입니다. 잠시 후 다시 시도하세요." : "";
-            return new AnthropicError("HTTP %d (%s)%s".formatted(service.statusCode(), type, hint), false);
+            return new AnthropicError("HTTP", "HTTP %d (%s)%s".formatted(service.statusCode(), type, hint), false);
         }
-        return new AnthropicError(describe(e, attemptSeconds), reachedModel(e));
+        String kind = e instanceof AnthropicInvalidDataException ? "EMPTY" : isTimeout(e) ? "TIMEOUT" : "IO";
+        return new AnthropicError(kind, describe(e, attemptSeconds), reachedModel(e));
     }
 
-    /** 안전 분류기 거절(refusal)의 분류·설명. */
+    /**
+     * 대기 한도에 걸린 실패인가. {@link #describe}와 같은 문구 기준에, 문구가 비어 있는 경우를 위해 원인 사슬의
+     * {@link java.io.InterruptedIOException}(OkHttp의 호출 한도·{@link java.net.SocketTimeoutException}의 부모)도 봅니다.
+     */
+    private static boolean isTimeout(Throwable e) {
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            String text = String.valueOf(cause.getMessage()).toLowerCase(java.util.Locale.ROOT);
+            if (cause instanceof java.io.InterruptedIOException || cause instanceof java.util.concurrent.TimeoutException
+                    || text.contains("timed out") || text.contains("timeout")) {
+                return true;
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    /** 안전 분류기 거절(refusal)의 분류·설명 — 리포트와 구조화 출력이 같은 문구를 씁니다. */
     private static String refusalReason(Message message) {
         return message.stopDetails()
                 .map(details -> details.category().map(String::valueOf).orElse("분류 없음")
                         + details.explanation().map(text -> " — " + text).orElse(""))
                 .orElse("사유 없음");
+    }
+
+    /**
+     * 모의 매매 Claude 책의 결과 한 건(설계 §5-1, 명세 C2·C3·C7).
+     *
+     * @param ok               응답 텍스트를 받았고 거절·잘림이 아님. 텍스트가 스키마에 맞는지는 부른 쪽이 검사합니다(D26)
+     * @param text             응답의 텍스트 블록을 이어 붙인 것(사고 블록 제외). 받은 것이 없으면 null — 실패여도 받은 텍스트는
+     *                         남깁니다(출력 한도로 잘린 JSON 등, 결정 기록의 원문용)
+     * @param stopReason       API의 {@code stop_reason} 원문(예: end_turn·refusal·max_tokens). 응답이 없으면 null
+     * @param errorKind        NO_KEY · UNAUTHORIZED · FORBIDDEN · NOT_FOUND · RATE_LIMIT · HTTP · IO · TIMEOUT · REFUSAL ·
+     *                         EMPTY · MAX_TOKENS. 성공이면 null
+     * @param error            사람이 읽는 실패 사유(한국어, 키·요청 주소 없음). 성공이면 null
+     * @param charged          모델에 닿아 과금됐을 수 있는가(실패여도 true일 수 있음, QA-021)
+     * @param inputTokens      입력 토큰. 응답이 없으면 null(0으로 채우지 않음)
+     * @param outputTokens     출력 토큰(사고 포함). 응답이 없으면 null
+     * @param cacheReadTokens  캐시에서 읽은 입력 토큰. API가 값을 주지 않으면 null
+     * @param cacheWriteTokens 캐시에 새로 쓴 입력 토큰. API가 값을 주지 않으면 null
+     * @param latencyMs        호출에 걸린 시간(실제 시계, 밀리초). 네트워크에 나가지 않았으면 0
+     */
+    public record StructuredResult(boolean ok, String text, String stopReason, String errorKind, String error,
+                                   boolean charged, Long inputTokens, Long outputTokens, Long cacheReadTokens,
+                                   Long cacheWriteTokens, long latencyMs) {
+    }
+
+    /**
+     * 구조화 출력 호출 — 스키마로 응답 모양을 강제하는 Claude 호출 한 번(설계 §0-4·§5-1).
+     *
+     * <p>리포트 경로와 따로입니다: 엔진 레지스트리·자동 탐색(폴오버)·번역·허용 목록을 타지 않고, 부른 쪽이 고른 모델만
+     * <b>한 번</b> 부릅니다. 거절·오류 때 다른 모델로 넘어가지 않습니다(D5) — 서버 쪽 대체 모델({@code fallbacks})도
+     * 보내지 않고 SDK 재시도도 꺼져 있어, 재시도 정책(같은 거래일 한 번, C7)은 부른 쪽이 정합니다.
+     * 클라이언트·키·오류 분류·로그(키·요청 주소 가림)는 리포트와 같은 것을 씁니다.
+     *
+     * <p>요청: {@code temperature}·{@code thinking} 없음(사고는 기본 adaptive, C2), 출력 한도 {@value #STRUCTURED_MAX_TOKENS}토큰,
+     * effort 명시, 시스템 프롬프트는 캐시 블록(ephemeral) — 하루 한 번 바뀌는 프레임이 앞에, 매일 다른 패킷이 사용자
+     * 메시지에 있어 같은 프레임 판의 재호출(재시도·미리보기)이 캐시를 읽습니다.
+     *
+     * <p>출력 한도로 끝났으면({@code max_tokens}) 텍스트가 있어도 실패({@code MAX_TOKENS})입니다 — 잘린 JSON은 스키마를
+     * 지킬 수 없습니다. 받은 텍스트는 {@code text}에 남깁니다.
+     *
+     * @param model          모델 ID(설정에서 고른 것 — 검사는 설정 쪽, S1~S3)
+     * @param system         시스템 프롬프트(프레임 렌더링). 비었으면 보내지 않습니다
+     * @param user           사용자 메시지(패킷 텍스트)
+     * @param apiSchema      API에 보낼 JSON 스키마({@code StructuredSchema.forApi()} — API가 받지 않는 키를 걷어 낸 것, D26)
+     * @param effort         low·medium·high·xhigh·max(대소문자 무시). null·빈 값이면 high(C2 기본)
+     * @param timeoutSeconds 이 호출의 대기 한도(초, 1 이상)
+     * @throws IllegalArgumentException 모델·사용자 메시지·스키마가 비었거나 effort·대기 한도가 틀렸을 때 — 설정 검사를 지나
+     *                                  여기 닿았다면 코드 오류라, 과금되는 호출을 보내지 않고 바로 멈춥니다
+     */
+    public StructuredResult structured(String model, String system, String user, Map<String, Object> apiSchema,
+                                       String effort, int timeoutSeconds) {
+        if (model == null || model.isBlank()) {
+            throw new IllegalArgumentException("모델 ID가 비었습니다");
+        }
+        if (user == null || user.isBlank()) {
+            throw new IllegalArgumentException("사용자 메시지가 비었습니다");
+        }
+        if (apiSchema == null || apiSchema.isEmpty()) {
+            throw new IllegalArgumentException("응답 스키마가 비었습니다");
+        }
+        if (timeoutSeconds < 1) {
+            throw new IllegalArgumentException("대기 한도는 1초 이상이어야 합니다: " + timeoutSeconds);
+        }
+        OutputConfig.Effort level = effortOf(effort);
+
+        if (anthropicKey == null || anthropicKey.isBlank()) {
+            return new StructuredResult(false, null, null, "NO_KEY",
+                    "Claude API Key 누락 — .env에 ANTHROPIC_API_KEY를 넣고 make up 하세요.", false,
+                    null, null, null, null, 0L);
+        }
+
+        // 스키마는 키마다 JsonValue로 넣습니다(단계 0 확인 — Jackson 3로 읽은 Map·List·원시값을 SDK가 그대로 받음).
+        JsonOutputFormat.Schema.Builder schema = JsonOutputFormat.Schema.builder();
+        apiSchema.forEach((key, value) -> schema.putAdditionalProperty(key, JsonValue.from(value)));
+
+        MessageCreateParams.Builder params = MessageCreateParams.builder()
+                .model(model)
+                .maxTokens(STRUCTURED_MAX_TOKENS)
+                .outputConfig(OutputConfig.builder()
+                        .effort(level)
+                        .format(JsonOutputFormat.builder().schema(schema.build()).build())
+                        .build())
+                .addUserMessage(user);
+        if (system != null && !system.isBlank()) {
+            // 문자열 system(String)으로는 캐시 표시를 달 수 없어 블록 목록으로 보냅니다.
+            params.systemOfTextBlockParams(List.of(TextBlockParam.builder()
+                    .text(system)
+                    .cacheControl(CacheControlEphemeral.builder().build())
+                    .build()));
+        }
+
+        long started = System.currentTimeMillis();
+        try {
+            Message message = anthropicClient().messages().create(params.build(),
+                    RequestOptions.builder().timeout(Duration.ofSeconds(timeoutSeconds)).build());
+            long elapsed = System.currentTimeMillis() - started;
+
+            StopReason stop = message.stopReason().orElse(null);
+            String stopText = stop == null ? null : stop.asString();
+            String text = textOf(message);
+            String kept = text.isBlank() ? null : text;
+            Long[] usage = usageOf(message);
+
+            String kind = null;
+            String error = null;
+            if (StopReason.REFUSAL.equals(stop)) {
+                // 안전 분류기 거절(HTTP 200). 다른 모델로 넘기지 않고(D5) 사유만 남깁니다.
+                kind = "REFUSAL";
+                error = "Claude가 이 요청을 거절했습니다(refusal): " + refusalReason(message);
+            } else if (StopReason.MAX_TOKENS.equals(stop)) {
+                kind = "MAX_TOKENS";
+                error = kept == null
+                        ? "출력 한도(%d 토큰)에 걸려 답을 쓰기 전에 끝났습니다".formatted(STRUCTURED_MAX_TOKENS)
+                        : "출력 한도(%d 토큰)에 걸려 응답이 중간에 잘렸습니다".formatted(STRUCTURED_MAX_TOKENS);
+            } else if (kept == null) {
+                kind = "EMPTY";
+                error = "응답 텍스트 추출 실패 (stop_reason=" + stopText + ")";
+            }
+            if (kind != null) {
+                log.warn("Claude 구조화 출력 실패 ({}): {} — {}", model, kind, error);
+            }
+            return new StructuredResult(kind == null, kept, stopText, kind, error, true,
+                    usage[0], usage[1], usage[2], usage[3], elapsed);
+        } catch (RuntimeException e) {
+            long elapsed = System.currentTimeMillis() - started;
+            AnthropicError failure = classifyAnthropic(e, model, timeoutSeconds);
+            // 리포트용 문구 중 "다른 엔진을 고르세요"·"자동 탐색" 안내는 이 경로에 맞지 않아(엔진 선택 없음, D5) 바꿉니다.
+            String message = switch (failure.kind()) {
+                case "RATE_LIMIT" -> "호출 한도에 걸렸습니다(429).";
+                case "TIMEOUT" -> "%d초 안에 응답하지 않았습니다(대기 한도 초과).".formatted(timeoutSeconds);
+                default -> failure.message();
+            };
+            // 예외 문구에는 키가 들어가지 않지만, 요청 주소는 지웁니다(describe와 같은 규칙, QA-025).
+            log.warn("Claude 구조화 출력 호출 실패 ({}): {} — {}", model, failure.kind(), withoutUrls(e.getMessage()));
+            return new StructuredResult(false, null, null, failure.kind(), message, failure.charged(),
+                    null, null, null, null, elapsed);
+        }
+    }
+
+    /** effort 문자열 → SDK 값. null·빈 값은 high(C2 기본). 모르는 값은 보내 보고 400을 받는 대신 바로 멈춥니다. */
+    static OutputConfig.Effort effortOf(String effort) {
+        if (effort == null || effort.isBlank()) {
+            return OutputConfig.Effort.HIGH;
+        }
+        return switch (effort.strip().toLowerCase(java.util.Locale.ROOT)) {
+            case "low" -> OutputConfig.Effort.LOW;
+            case "medium" -> OutputConfig.Effort.MEDIUM;
+            case "high" -> OutputConfig.Effort.HIGH;
+            case "xhigh" -> OutputConfig.Effort.XHIGH;
+            case "max" -> OutputConfig.Effort.MAX;
+            default -> throw new IllegalArgumentException(
+                    "effort는 low·medium·high·xhigh·max 중 하나여야 합니다: " + effort);
+        };
+    }
+
+    /**
+     * 토큰 사용량 {입력, 출력, 캐시 읽기, 캐시 쓰기}. 응답에 usage가 없거나 모양이 틀리면 null로 둡니다 — 사용량 기록이
+     * 0으로 채워져 "공짜 호출"로 보이지 않게 합니다.
+     */
+    private static Long[] usageOf(Message message) {
+        Long[] out = new Long[4];
+        try {
+            Usage usage = message.usage();
+            out[0] = usage.inputTokens();
+            out[1] = usage.outputTokens();
+            out[2] = usage.cacheReadInputTokens().orElse(null);
+            out[3] = usage.cacheCreationInputTokens().orElse(null);
+        } catch (AnthropicInvalidDataException e) {
+            log.warn("Claude 응답의 토큰 사용량을 읽지 못했습니다: {}", withoutUrls(e.getMessage()));
+        }
+        return out;
     }
 
     private Map<String, Object> anthropicFailure(String label, long started, String message, Exception e,
