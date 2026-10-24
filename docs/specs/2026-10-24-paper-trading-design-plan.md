@@ -2,7 +2,8 @@
 
 > 명세: [2026-10-24-paper-trading-spec.md](2026-10-24-paper-trading-spec.md). 결정에 따라 정해진 곳은 "(D#)"로 표시했습니다.
 >
-> - 상태: **승인 대기**(2026-10-24, 2차 — 트랙레코드 기반 기관 선정·게이트 비구속 반영). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
+> - 상태: **구현 중**(2026-10-24, 3차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
+> - 단계 0 근거 표: [2026-10-24-paper-trading-step0.md](2026-10-24-paper-trading-step0.md). 요약은 §13.
 > - 이 문서는 **어떻게, 어떤 순서로** 만들지 정합니다. 파일·클래스 이름은 구현 때 바뀔 수 있지만 배치 규칙(§1)은 바뀌지 않습니다.
 
 ---
@@ -29,19 +30,20 @@
 
 이 기능의 모든 커밋은 `claude/paper-trading-2026-10`에만 있다. `make test`는 로컬에서 돌리고, 운영은 이 브랜치에서 `make up`. main이 앞서가면 브랜치를 `git rebase main`으로 따라간다. 절차는 §12-3.
 
-### 0-6. 수집기 변경 — 후보 기관 13F 30분기와 가격 이력 10년 (D6·D23)
+### 0-6. 수집기 변경 — 후보 기관 13F 30분기, 모의 매매 유니버스의 시세·10년 이력 (D6·D23·D25)
 
-이 기능이 수집기를 바꾸는 유일한 곳이다.
+이 기능이 수집기를 바꾸는 유일한 곳이다. **기존 태스크·저장본(`equity.price_history` 5년·138종목, `sec.13f.{cik}.q8`)과 그 화면은
+그대로 둔다** — 단계 0에서 10년·550여 종목을 한 저장본에 넣으면 16MB 기준과 백엔드 메모리를 넘는다는 것을 쟀다(D23, §13).
 
 | 변경 | 내용 | 영향 범위 |
 |---|---|---|
-| 새 태스크 `sec_13f_track_record` (`weekly`) | `indicators.TRACK_RECORD_FILERS`(후보 20여 곳)의 13F를 기관당 **30분기**까지 받아 `sec.13f.{cik}.q30`에 저장. 실행마다 **예산**(기본 60건) 안에서 아직 없는 공시만 채우고 나머지는 다음 실행에 | 기존 `sec_13f`(12곳·q8)와 13F 화면은 그대로. 같은 서비스(`services/sec13f.collect_13f`)를 쓴다 |
-| `collect_13f`에 `reuse_stored=True` 옵션 | 저장본에 있는 `filingDate`는 다시 받지 않는다(지금은 매번 전부 받음). 기존 호출은 기본값으로 동작 변화 없음 | 서비스 한 곳 |
-| `_parse_filing_links`의 `count` 40 → 매개변수(기본 40, 트랙레코드 100) | 30분기 + 정정 공시가 40행을 넘는다 | 서비스 한 곳 |
-| `equities.PRICE_HISTORY_PERIOD` `"5y"` → `"10y"` | 7년 창 + 공시 지연 여유 | `equity.price_history` 저장본 약 2배(단계 0에서 크기 측정) |
-| `equities.EQUITY_MAP` 확장 | 후보 기관 상위 보유 이름 → 티커(수동, §4-0 ③) | `equity_history`가 받는 티커 수 증가 |
-| `catalog.TRACK_RECORD_QUARTERS = 30` + `Datasets.TRACK_RECORD_QUARTERS` | 이름 상수 둘을 같이(`DatasetsParityTest`) | |
-| `registry.py` 등록, `docs/DATA_SOURCES.md` 태스크 21개 | | |
+| 새 태스크 `sec_13f_track_record` (`weekly`) | `indicators.TRACK_RECORD_FILERS`(후보 27곳, 선행 CIK 포함)의 13F를 기관당 **30분기**까지 받아 `sec.13f.{cik}.q30`에 저장. 실행마다 **예산**(기본 400건, 공시 하나 약 0.4초) 안에서 아직 없는 공시만 채우고 나머지는 다음 실행에. 선행 CIK가 있으면 선행 CIK의 마지막 분기까지 + 현재 CIK의 그 뒤 분기를 잇는다 | 기존 `sec_13f`(12곳·q8)와 13F 화면은 그대로. 같은 서비스(`services/sec13f.collect_13f`)를 쓴다 |
+| `collect_13f`에 `reuse_stored=True`·`list_count` 옵션 | 저장본에 있는 `filingDate`는 다시 받지 않는다. 목록은 `count=100`(단계 0: 27곳 모두 한 페이지에 원본 30건), 모자라면 `start=` 다음 페이지(최대 3쪽). 기존 호출은 기본값으로 동작 변화 없음 | 서비스 한 곳 |
+| 새 매핑표 `equities_cusip.TRACK_RECORD_CUSIPS` (CUSIP → 야후 티커, D25) | 후보 기관 보유 상위 600개 CUSIP을 OpenFIGI·SEC `company_tickers.json`·야후 이력으로 대조해 채택한 445개(§4-0 ③). **`q30` 저장본에만** 붙인다(`attach_tickers(…, cusip_map=…)`) | 기존 `EQUITY_MAP`·`q8` 티커는 그대로 |
+| 새 태스크 `paper_quotes` (`slow`, 1시간) | 모의 매매 유니버스(`EQUITY_MAP` 티커 + `TRACK_RECORD_CUSIPS` 티커 + 유니버스 ETF 17 + SPY·QQQ) 최근 3개월 일봉 → 스냅샷 `paper.quotes`. 장중에는 마지막 봉이 지연 시세 | 장부 관측치의 유일한 출처(§3-1) |
+| 새 태스크 `paper_price_history` (`weekly`, 12시간) | 같은 유니버스 10년 일봉(수정주가) → `timeseries` 데이터셋 `equity_close`(종목 = `series_id`). `put_timeseries` upsert라 배당·분할로 바뀐 과거 값만 다시 쓴다 | 트랙레코드·모멘텀·분할 감지의 이력(백엔드는 필요한 종목만 범위로 읽음) |
+| `catalog.TRACK_RECORD_QUARTERS = 30`·`SNAP_PAPER_QUOTES`·`TS_EQUITY_CLOSE` + `Datasets` 같은 상수 | 이름 상수를 같이(`DatasetsParityTest`) | |
+| `registry.py` 등록, `docs/DATA_SOURCES.md` 태스크 23개 | | |
 
 ---
 
@@ -49,8 +51,8 @@
 
 ```
 ┌──────────────────────────── Collector ─────────────────────────────────────────┐
-│ equity.price_history(1h, 10y) · sector.etf_history(1h) · macro.collected(5m)    │
-│ fred.series.*(1h) · sec.13f.{cik}.q8(기존 12곳) · sec.13f.{cik}.q30(후보, 새 태스크)│
+│ paper.quotes(1h, 3개월, 유니버스) · timeseries equity_close(12h, 10y) · macro.collected(5m)│
+│ fred(1h) · fx_history(1h) · sec.13f.{cik}.q30(후보 27곳, 새 태스크) · regime_log(백엔드)│
 └───────────────────────────────┬────────────────────────────────────────────────┘
                                 ▼  (읽기만, quietly)
 ┌──────────────────────────── Backend feature/paper ─────────────────────────────┐
@@ -62,7 +64,7 @@
 │                                                                 └ 평가·순자산    │
 │                                                                                │
 │  PaperDecisionJob(10m) ── 거래일 확정 종가 확인 ──┬─▶ GateIndicator → paper_gate_log│
-│                                                  ├─▶ TrackRecordService(재선정일)│
+│                                                  ├─▶ PaperSelectionService(재선정일)│
 │                                                  │     TrackRecord13F → 순위·선정 │
 │                                                  ├─▶ RuleBookService → 주문       │
 │                                                  └─▶ ClaudeBookService           │
@@ -95,8 +97,8 @@
 | | `OrderValidator` | Claude 제안 주문의 하드 규칙(C4, §5-4) |
 | | `PaperStats` | 누적·CAGR·변동성·MDD·샤프·초과·베타(L10) |
 | `store` | `PaperStore` | `paper_*` 읽기·쓰기 전부. `TransactionTemplate`로 `atomically(Supplier)`. `ready()` |
-| `feature/paper` | `PaperMarketData` | 저장본 읽기: 관측치, 가격 시계열(기준일 이전으로 자르기), 매크로 카드, FRED, 환율, 13F 원본(CUSIP→ticker, q8·q30 모두) |
-| | `TrackRecordService` | 후보 기관 전부의 트랙레코드 계산·캐시(`paper_track_record`)·선정(`paper_selection_log`)·수집 진행률 |
+| `feature/paper` | `PaperMarketData` | 저장본 읽기: 관측치(`paper.quotes` 마지막 봉), 가격 이력(`timeseries` `equity_close`, 기준일 이전으로 자르기), 매크로 카드, FRED, 환율, 13F 원본(`q30`, 저장본의 `ticker`) |
+| | `PaperSelectionService` | 후보 기관 전부의 트랙레코드 계산·캐시(`paper_track_record`)·선정(`paper_selection_log`)·수집 진행률. 기존 `feature/insight/TrackRecordService`(국면 판정 성과)와 빈 이름이 겹치지 않게 이름을 바꿈 |
 | | `PaperLedgerService` | 관측치 하나를 네 책에 적용. 멱등 |
 | | `RuleBookService` | 규칙 책 일일 결정(R1~R6) |
 | | `ClaudeBookService`, `PacketBuilder` | 패킷→호출→검증→주문→기록(C1~C11) |
@@ -105,9 +107,9 @@
 | | `PaperController`, `PaperFrameworkController`, `PaperSettingsController` | HTTP 경계(§7) |
 | `feature/ai` | `AiService.structured(...)` 추가 | §5-1 |
 | `web`/`config` | `AccessPolicy`에 `owner(...)` 29개, `dashboard.paper.*` `@Value` | |
-| collector | `tasks/filings.py::task_sec_13f_track_record`, `indicators.TRACK_RECORD_FILERS`, `catalog.TRACK_RECORD_QUARTERS` | §0-6 |
+| collector | `tasks/filings.py::task_sec_13f_track_record`, `tasks/paper.py::task_paper_quotes`·`task_paper_price_history`, `indicators.TRACK_RECORD_FILERS`·`PAPER_ETFS`, `equities_cusip.TRACK_RECORD_CUSIPS`, `catalog.TRACK_RECORD_QUARTERS`·`SNAP_PAPER_QUOTES`·`TS_EQUITY_CLOSE` | §0-6 |
 
-**[확인 필요]** `analytics` 하위 패키지가 `ArchitectureRulesTest.analyticsIsPure`에 걸리는지. 걸리면 `analytics/`에 평평하게(기본안).
+`analytics` 하위 패키지도 `analyticsIsPure`는 통과하지만(같은 접두), 기존 관례대로 `analytics/`에 평평하게 둔다.
 
 ### 1-2. ADR 준수 표
 
@@ -119,7 +121,7 @@
 | 0008 백엔드 테이블·정기 작업 | `paper_*`는 백엔드만. V8. `quietly`. 유일 제약. `SchemaCheck` |
 | 0009 Point-in-Time | 트랙레코드는 공시일 **다음 영업일**부터 복제. 10-23 초기 패킷은 기준일 이전 값만. FRED는 `PointInTime.asKnownOn` |
 | 0010 접근 정책 | 29개 경로 모두 `OWNER`. `OWNER_ONLY_MENUS`에 `/paper` |
-| 0015 13F 증권 식별 | 티커 매핑은 기존 두 단계 규칙(정확 일치 → 법인격 제거 일치)만. 비슷한 이름에 임의로 붙이지 않는다 |
+| 0015 13F 증권 식별 | 기존 두 단계 규칙(정확 일치 → 법인격 제거 일치)은 그대로. `q30`에만 **CUSIP 정확 일치 매핑표**를 앞에 더한다(D25) — 같은 CUSIP = 같은 증권(결정 1)이라 이름 규칙보다 엄격하다. 채권·우선주·워런트 배제 규칙은 그대로 먼저 적용 |
 | 0016 로컬 무로그인 | 변화 없음 |
 
 ---
@@ -130,9 +132,9 @@
 
 | 테이블 | 열(요지) | 제약·비고 |
 |---|---|---|
-| `paper_books` | `code TEXT PK`, `kind` CHECK(RULES·CLAUDE·BENCHMARK), `label`, `initial_cash`, `started_on`, `status` CHECK(ACTIVE·PAUSED), `created_at` | 네 행 |
+| `paper_books` | `code TEXT PK`, `kind` CHECK(RULES·CLAUDE·BENCHMARK), `label`, `initial_cash`, `started_on`, `status` CHECK(NOT_STARTED·ACTIVE·PAUSED), `created_at` | 네 행. 규칙·Claude 책은 사용자가 "시작"을 누르기 전 `NOT_STARTED`(L2) |
 | `paper_book_state` | `book_code PK FK`, `cash`, `nav`, `equity_value`, `exposure_pct`, `last_observed_at`, `last_processed_collected_at`, `last_nav_trading_date`, `updated_at` | 멱등 키 `last_processed_collected_at` |
-| `paper_positions` | `book_code`, `ticker`, `qty INTEGER`, `avg_cost`, `opened_on`, `opened_at`, `high_watermark`, `watermark_at`, `last_price`, `last_price_at`, `price_stale`, `fill_ref_date`, `fill_ref_close`, `updated_at` | `PK (book_code, ticker)` |
+| `paper_positions` | `book_code`, `ticker`, `qty INTEGER`, `avg_cost`, `opened_on`, `opened_at`, `high_watermark`, `watermark_at`, `last_price`, `last_price_at`, `price_stale`, `fill_ref_date`, `fill_ref_close`, `split_note`, `updated_at` | `PK (book_code, ticker)` |
 | `paper_lockouts` | `book_code`, `ticker`, `until_trading_date`, `reason`, `created_at` | `PK (book_code, ticker)` |
 | `paper_orders` | `id`, `book_code`, `decision_id FK NULL`, `ticker`, `side`, `qty NULL`, `target_weight_pct NULL`, `sell_fraction NULL`, `timing` CHECK(NEXT_OBSERVATION·NEXT_CLOSE·IMMEDIATE·BACKFILL), `source` CHECK(RULE·CLAUDE·STOP·BENCHMARK·INITIAL), `status` CHECK(PROPOSED·REJECTED·PENDING·FILLED·EXPIRED·CANCELLED), `reject_reason`, `reason JSONB`, `as_of_trading_date`, `created_at`, `expires_on`, `filled_at` | 인덱스 `(book_code, status)` |
 | `paper_fills` | `id`, `order_id FK`, `book_code`, `ticker`, `side`, `qty`, `price`, `raw_price`, `slippage_bp`, `gross`, `observed_at`, `observation_date`, `price_source`, `is_backfill`, `created_at` | `UNIQUE (order_id)` |
@@ -154,7 +156,7 @@
 
 ### 3-1. 관측치와 체결 (L3·L4)
 
-**관측치** = 두 저장본에서 티커별 `(barDate = dates[-1], price = close[-1], isStale)`과 저장본 `collected_at`.
+**관측치** = `paper.quotes` 저장본에서 티커별 `(barDate = dates[-1], price = close[-1], isStale)`과 저장본 `collected_at`(D23 — 종목·ETF 모두 이 저장본 하나). 분할 감지·모멘텀의 과거 종가는 `timeseries` `equity_close`.
 
 **체결 가능 조건**(모두 만족):
 1. `observation.collected_at > order.created_at`.
@@ -211,16 +213,17 @@ STOP: 생성과 동시에 FILLED      일시정지·리셋: PENDING → CANCELLE
 
 ### 4-0. 기관 선정 — 7년 롤링 트랙레코드 (R1·R7~R10, D6·D20~D24)
 
-#### ① 후보 기관 (D21) — CIK는 단계 0에서 EDGAR로 확인
+#### ① 후보 기관 (D21) — CIK는 단계 0에서 EDGAR로 확인(27곳, [단계 0 표 A](2026-10-24-paper-trading-step0.md))
 
 | 분류 | 후보 | 비고 |
 |---|---|---|
 | 가치·집중 | Berkshire Hathaway, Baupost Group, Pershing Square, Third Point, Greenlight Capital, Appaloosa, Akre Capital, Ruane Cunniff(Sequoia), Dodge & Cox, Davis Selected Advisers, Markel, Himalaya Capital, Gardner Russo & Quinn, Scion Asset Management | 사이언은 2025-11 뒤 공시 없음 → 재선정일에 최신 공시가 없으면 그 분기 제외(R5) |
 | 성장·테크 | Tiger Global, Lone Pine, Viking Global, Coatue, Altimeter, D1 Capital, Maverick Capital, Baillie Gifford, Duquesne Family Office, Fisher Asset Management | |
 | 매크로 | Bridgewater Associates, Soros Fund Management, Tudor Investment | 매크로 펀드의 13F는 주식 롱 사이드만 보인다 — 롱온리 한계 문구 |
+| 선행 CIK | Greenlight Capital = DME Capital Management(0001489933, 2024-03-31 분기부터) ← Greenlight Capital Inc(0001079114, 2023-12-31까지). Pershing Square = Pershing Square Inc.(0002026053, 2026-06-30 분기부터) ← Pershing Square Capital Management(0001336528, 2026-03-31까지) | 선행 CIK의 마지막 보고 분기까지 + 현재 CIK의 그 뒤 분기. 겹치는 분기는 선행 CIK(퍼싱의 2025-06-30~2026-03-31 PSI 공시는 하워드 휴스 지분 한 종목뿐) |
 | **제외** | 뱅가드·블랙록·스테이트스트리트·노르웨이·국민연금·CPPIB·APG(인덱스·준인덱스), 시타델·밀레니엄·르네상스·투시그마·DE쇼·서스쿼해나·제인스트리트(퀀트·멀티전략·마켓메이커) | 13F 롱온리가 실체를 왜곡 |
 
-기존 12곳 중 액티브 5곳은 후보에 포함되므로 `sec.13f.{cik}.q8`(기존)과 `q30`(새)이 함께 존재한다. 백엔드는 트랙레코드에 `q30`을, 기존 13F 화면은 `q8`을 읽는다.
+기존 12곳 중 액티브 5곳은 후보에 포함되므로 `sec.13f.{cik}.q8`(기존)과 `q30`(새)이 함께 존재한다. 백엔드는 트랙레코드·신호에 `q30`을, 기존 13F 화면은 `q8`을 읽는다. 커버리지 미달 5곳(단계 0 표 C)도 후보 목록에 남겨, 기관 선정 탭에 미달 사유와 함께 보인다(R9) — 자격이 없으니 선정되지 않는다.
 
 #### ② 수집 (`task_sec_13f_track_record`, §0-6)
 
@@ -229,16 +232,18 @@ for filer in TRACK_RECORD_FILERS (저장본이 가장 적은 기관부터):
     stored = previous_payload(snap_sec_13f(cik, 30))
     quarters = collect_13f(cik, max_quarters=30, previous_quarters=stored.quarters,
                            reuse_stored=True, list_count=100)   # 저장된 filingDate는 재다운로드 없음
-    attach_tickers(quarters); put_snapshot(..., {"cik", "quarters", "complete": len(quarters) >= 30 or no_more})
+    for pred in filer.predecessors: quarters = chain(quarters, collect_13f(pred, …))   # 선행 CIK 잇기
+    attach_tickers(quarters, cusip_map=TRACK_RECORD_CUSIPS)
+    put_snapshot(..., {"cik", "quarters", "predecessors", "complete": len(quarters) >= 30 or no_more})
     budget -= 새로 받은 공시 수;  if budget <= 0: break
 ```
-- 예산 기본 60건/실행(`TRACK_RECORD_FETCH_BUDGET`), SEC 10req/s 제한은 기존 `sec_rate_limit`. 후보 25곳 × 30분기 = 750건 → 12시간 주기면 약 6일, 수동 `make collect-all` 반복으로 하루 안에 채울 수 있다. 화면 "기관 선정" 탭에 기관별 `저장 분기/30`·`complete` 진행률.
+- 예산 기본 400건/실행(`TRACK_RECORD_FETCH_BUDGET`), SEC 10req/s 제한은 기존 `sec_rate_limit`. 단계 0 측정: 기관당 30분기 10~18초(공시 하나 약 0.4초), 27곳 약 810건 ≈ 6분 → 두 번의 실행으로 다 채운다(태스크 상한 `weekly` 1,800초). 화면 "기관 선정" 탭에 기관별 `저장 분기/30`·`complete` 진행률.
 - 실패·빈 공시 처리는 기존 규칙(`UNUSABLE_FILING` 건너뜀, 일시 실패는 저장본 유지).
 - `complete=false`인 기관은 트랙레코드에서 "수집 중"으로 표시되고 자격 판정에서 빠진다(구간 수 부족).
 
 #### ③ 티커 매핑 확장 (R9, ADR 0015)
 
-후보 기관의 최신 분기 보유 중 평가액 상위 이름을 모아 `EQUITY_MAP`에 **수동으로** 추가한다. 절차: 단계 0에서 `(이름, 평가액 합, 몇 기관이 보유)` 표를 뽑고 → 상위 200개 이름을 사람이 SEC `company_tickers.json`(CIK·티커·이름)과 대조해 **정확히 같은 발행사**만 티커를 적는다 → `test_equities.py`(섹터 이름 대조) 통과 → `make collect-all`. 비슷한 이름에 임의로 붙이지 않는다. 커버리지 70% 미달이 남는 기관은 후보에서 뺀다(설정에서).
+단계 0에서 바꿨다(D25). 이름(`EQUITY_MAP`)으로는 같은 증권의 표기가 너무 많고('FACEBOOK INC'·'META PLATFORMS, INC., CLASS A' — 같은 CUSIP 30303M102), 'ISHARES TR' 한 이름 아래 ETF가 수백 개라 **CUSIP으로 붙인다**. 절차: ① 7년 창 분기에서 지금 매핑표로 덮이지 않는 지분 증권을 CUSIP별로 모아 기관 내 비중 합으로 순위 → ② 상위 600개를 OpenFIGI `v3/mapping`(CUSIP → US 합성 티커·이름·종류)으로 조회 → ③ SEC `company_tickers.json` 등록 이름과 야후 10년 이력(첫·마지막 날짜)을 붙여 이름 토큰을 대조 → ④ 사람(에이전트 검토 포함)이 "다른 증권인 행"을 찾아 뺀다 → `equities_cusip.TRACK_RECORD_CUSIPS`(CUSIP → 야후 티커)에 적는다. OpenFIGI가 US 티커를 주지 않는 CUSIP(상장폐지·인수·외국 원주 154개)은 붙이지 않는다 — 가격도 구할 수 없다. 이 표는 `q30`에만 쓰고, 채권·우선주·워런트 배제(`classify_holding`)를 먼저 적용한다. 결과: 600개 중 445개 채택, 커버리지 기준(D22) 통과 27곳 중 22곳(단계 0 표 C·E).
 
 #### ④ 계산 (`TrackRecord13F`, R7)
 
@@ -286,7 +291,7 @@ eligible = periods_used ≥ 24 && min(coverage) ≥ 0.5 && avg(coverage) ≥ 0.7
 decideRules(asOf):
   gate = GateIndicator.evaluate(inputs(asOf), prevLog)             → paper_gate_log  (지표만)
   if isReselectionDay(asOf):                                        # 공시 기한 다음 거래일
-      tr  = TrackRecordService.compute(asOf)                        → paper_track_record
+      tr  = PaperSelectionService.compute(asOf)                     → paper_track_record
       sel = select(tr)                                              → paper_selection_log
   sel = latest selection
   sig = Signal13F.collect(sel.ciks, asOf)
@@ -324,9 +329,11 @@ decideRules(asOf):
 
 ## 5. Claude 재량 책
 
-### 5-1. 호출 방식 (`AiService.structured`, C2·C3) — 변경 없음
+### 5-1. 호출 방식 (`AiService.structured`, C2·C3)
 
-`MessageCreateParams.builder().model(model).maxTokens(16_000).systemOfTextBlockParams([TextBlockParam(system, cacheControl=ephemeral)]).addUserMessage(packet).outputConfig(OutputConfig.builder().effort(effort).format(JsonOutputFormat(schema)))`. 스키마는 `src/main/resources/paper/*.schema.json`을 Jackson 3로 읽어 `JsonValue.from(...)`으로(**[확인 필요]**, 대안 `outputConfig(Class<T>)`). `thinking`·`temperature`·`fallbacks` 없음. 오류 분류는 기존 표. `REFUSAL`은 `stopDetails`. `Usage.cacheReadInputTokens` 기록.
+`MessageCreateParams.builder().model(model).maxTokens(16_000).systemOfTextBlockParams([TextBlockParam(system, cacheControl=ephemeral)]).addUserMessage(packet).outputConfig(OutputConfig.builder().effort(effort).format(JsonOutputFormat(schema)))`. 스키마는 `src/main/resources/paper/*.schema.json`을 Jackson 3로 읽어 키마다 `JsonOutputFormat.Schema.builder().putAdditionalProperty(키, JsonValue.from(값))`으로 넣는다(단계 0 확인). `thinking`·`temperature`·`fallbacks` 없음(D5 자동 전환 없음). 오류 분류는 기존 표. `REFUSAL`은 `stopDetails`. `Usage.cacheReadInputTokens`·`cacheCreationInputTokens` 기록.
+
+**스키마 제약은 둘로 나눈다(단계 0).** API는 숫자 `minimum`·`maximum`을 400으로 거절하고, 문자열 `minLength`·`maxLength`·배열 크기 제한도 지원하지 않는다(모든 객체에 `additionalProperties: false` 필요). 그래서 스키마 파일은 전체 제약을 그대로 담고, 보낼 때는 `StructuredSchema.forApi`가 지원하지 않는 키를 걷어 낸다. 응답은 같은 스키마 파일 전체로 `StructuredSchema.validate`가 검사하고(형·enum·const·required·추가 키·범위·길이·개수·pattern), 어기면 C3 "응답 형식 오류"다.
 
 ### 5-2. 입력 패킷 (C5·C11)
 
@@ -374,7 +381,7 @@ decideRules(asOf):
         "invalidation": {"type": "string", "maxLength": 300}
       }}},
     "noTradeReason": {"type": ["string", "null"], "maxLength": 600},
-    "watchlist": {"type": "array", "maxItems": 10, "items": {"type": "object",
+    "watchlist": {"type": "array", "maxItems": 10, "items": {"type": "object", "additionalProperties": false,
       "required": ["ticker", "condition"], "properties": {"ticker": {"type": "string"}, "condition": {"type": "string", "maxLength": 300}}}},
     "confidence": {"type": "number", "minimum": 0, "maximum": 1}
   }
@@ -405,7 +412,7 @@ decideRules(asOf):
 
 ### 5-6. 10-23 초기 결정 (C6)
 
-가격·FRED·환율·13F·**트랙레코드**를 `≤ 2026-10-23`으로. 매크로 카드는 `asOfMismatch`. 게이트 지표는 FRED DGS10(10-23)로 참고 계산. 통과 주문은 `BACKFILL` 체결.
+가격·FRED·환율·13F·**트랙레코드**를 `≤ 2026-10-23`으로. 매크로 카드는 `asOfMismatch`. 게이트 지표는 10-23에 알려진 FRED DGS10(10-22 관측 4.96%, `asKnownOn`)으로 참고 계산. 통과 주문은 `BACKFILL` 체결.
 
 ### 5-7. 프레임 저장 구조와 렌더링 (F1~F5)
 
@@ -487,10 +494,10 @@ run():
 | 단계 | 내용 | 규모 | 끝났다는 기준 |
 |---|---|---|---|
 | **0. 선행 확인** | 명세 §7 여덟 항목: 장중 저장본, **후보 CIK 확인**, **EDGAR 목록 깊이·수집 시간 측정**, **커버리지 집계**, **10년 가격 저장본 크기**, Sonnet 호출, SDK 스키마 주입, 10-23 값 | S~M | 결과를 §13에 기록. 커버리지 미달 기관 목록과 매핑 추가 후보 200개 표 확보 |
-| **1. 장부 코어** | V8, `PaperStore`, `UsMarketCalendar`(공시 기한 포함)·`PaperLedger`·`TrailingStop`·`SplitDetector`·`PaperStats`·`GateIndicator`, `PaperMarketData`, `PaperLedgerService`, `PaperRiskJob`, `PaperAdminService.init`(네 책 + 벤치마크 10-23 사후 체결, 규칙·Claude 책은 현금만), `PaperQueryService`, API(overview·positions·orders·fills·nav·status·init·books status/reset·run/risk), 화면 개요·보유 탭 | M | 벤치마크 순자산이 SPY·SHY와 맞음. 체결 룩어헤드 테스트 통과. 스탑·분할 테스트 통과 |
-| **1b. 13F 트랙레코드** | 수집기: `TRACK_RECORD_FILERS`·`TRACK_RECORD_QUARTERS`·`task_sec_13f_track_record`·`collect_13f(reuse_stored, list_count)`·`PRICE_HISTORY_PERIOD=10y`·매핑표 확장·`Datasets` 상수·DATA_SOURCES. 백엔드: `TrackRecord13F`·`TrackRecordService`·`paper_track_record`·`paper_selection_log`·API 2개·기관 선정 탭. 수집을 돌려 후보 전원 `complete` | L | 수집 완료. 손계산 테스트(구간 수익률·CAGR·룩어헤드·커버리지·자격). 2026-10-23 기준 순위표가 화면에 보이고 상위 5가 기록됨 |
+| **1. 장부 코어** | 수집기 `paper_quotes`·`paper_price_history`(D23, 유니버스는 지금 `EQUITY_MAP` + ETF로 시작하고 1b에서 CUSIP 매핑 티커를 더함), V8, `PaperStore`, `UsMarketCalendar`(공시 기한 포함)·`PaperLedger`·`TrailingStop`·`SplitDetector`·`PaperStats`·`GateIndicator`, `PaperMarketData`, `PaperLedgerService`, `PaperRiskJob`, `PaperAdminService.init`(네 책 + 벤치마크 10-23 사후 체결, 규칙·Claude 책은 현금만), `PaperQueryService`, API(overview·positions·orders·fills·nav·status·init·books status/reset·run/risk), 화면 개요·보유 탭 | M | 벤치마크 순자산이 SPY·SHY와 맞음. 체결 룩어헤드 테스트 통과. 스탑·분할 테스트 통과 |
+| **1b. 13F 트랙레코드** | 수집기: `TRACK_RECORD_FILERS`(선행 CIK)·`TRACK_RECORD_QUARTERS`·`task_sec_13f_track_record`·`collect_13f(reuse_stored, list_count)`·`TRACK_RECORD_CUSIPS`(D25)·유니버스 확장·`Datasets` 상수·DATA_SOURCES. 백엔드: `TrackRecord13F`·`PaperSelectionService`·`paper_track_record`·`paper_selection_log`·API 2개·기관 선정 탭. 수집을 돌려 후보 전원 `complete` | L | 수집 완료. 손계산 테스트(구간 수익률·CAGR·룩어헤드·커버리지·자격). 2026-10-23 기준 순위표가 화면에 보이고 상위 5가 기록됨. 단계 0 원형 계산(단계 0 표 D)과 대조 |
 | **2. 규칙 책** | `Signal13F`, `RuleBookService`, `PaperDecisionJob`(규칙 책까지, 재선정일 분기), 초기화에 규칙 책 10-23 사후 체결(선정 5곳 신호), 결정 로그 탭(규칙 책) | M | 10-23 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·순위·행동 기록. 재선정일 외 매수 없음 테스트 |
-| **3a. Claude 책 — 결정** | `AiService.structured`, 스키마 2개, `PacketBuilder`(게이트 참고·트랙레코드 섹션 포함), `OrderValidator`(예산 규칙 없음), `ClaudeBookService`, `paper_api_usage`, 설정 테이블·API·탭, 결정 로그 탭(패킷·응답·검증·노출), `run/decision`·`run/initial-decision` | L | 가짜 서버 4종. 검증기 규칙별 테스트 + "노출 0%·100% 모두 통과" 테스트. 초기 결정 패킷에 10-23 이후 값 없음. 실제 키로 10-23 초기 결정 1회 |
+| **3a. Claude 책 — 결정** | `AiService.structured`, 스키마 2개, `PacketBuilder`(게이트 참고·트랙레코드 섹션 포함), `OrderValidator`(예산 규칙 없음), `ClaudeBookService`, `paper_api_usage`, 설정 테이블·API·탭, 결정 로그 탭(패킷·응답·검증·노출), `run/decision`·`run/initial-decision` | L | 가짜 서버 4종. 검증기 규칙별 테스트 + "노출 0%·100% 모두 통과" 테스트. 초기 결정 패킷에 10-23 이후 값 없음. 실제 키로 10-23 초기 결정 미리보기 1회(장부를 바꾸지 않음 — 책 시작은 사용자가 누름, L2) |
 | **3b. 프레임·메모** | `paper_framework_*`·`paper_notes`, `FrameworkService`(v1 시드 — 매크로 축은 지침 문장으로)·`NoteService`, API, 탭 | M | 승인 전후 테스트. 만료 메모 제외. v1 규칙 목록 사람이 검토 |
 | **4. 마무리** | ADR 0018, ARCHITECTURE·API.md·DATA_SOURCES·README·`.env.example`·compose(`PAPER_ENABLED`), 이 문서 구현 결과 표 | S | `make test` 통과, `/paper` 여섯 탭 동작, `git branch -r --contains HEAD` 빈 결과 |
 
@@ -507,7 +514,7 @@ run():
 - `OrderValidatorTest`: §5-4 규칙마다 1건 + `OVER_ALLOCATED` 큰 비중 우선 + 노출 0%·100% 통과.
 
 **서비스(모의 저장소)**
-- `TrackRecordServiceTest`: `complete=false` 제외, 재선정일 판정, 수동 재계산이 선정을 바꾸지 않음, 10-23 기준 자르기.
+- `PaperSelectionServiceTest`: `complete=false` 제외, 재선정일 판정, 수동 재계산이 선정을 바꾸지 않음, 10-23 기준 자르기.
 - `PaperMarketDataTest`·`PacketBuilderTest`(게이트 참고 문구·트랙레코드 섹션·10-23 자르기)·`ClaudeBookServiceTest`·`RuleBookServiceTest`(재선정일 분기)·`FrameworkServiceTest`·`PaperDecisionJobTest`·`PaperRiskJobTest`.
 
 **AI**: `AiServiceStructuredTest`(가짜 서버) — 이전과 같음.
@@ -570,18 +577,21 @@ run():
 
 ---
 
-## 13. 단계 0 결과 (구현 시작 때 채움)
+## 13. 단계 0 결과 (2026-10-24)
+
+근거 표·측정 방법은 [2026-10-24-paper-trading-step0.md](2026-10-24-paper-trading-step0.md). 운영 DB에는 쓰지 않았다.
 
 | 항목 | 결과 | 영향 |
 |---|---|---|
-| 미국 장중 저장본의 마지막 봉 | | |
-| 후보 기관 CIK (25곳) | | |
-| EDGAR 목록 깊이·기관당 30분기 수집 시간 | | |
-| 후보 기관 티커 커버리지 (기관별 %) | | |
-| 10년 가격 저장본 크기·개요 응답 시간 | | |
-| Sonnet 5.5 호출 | | |
-| SDK 스키마 주입 | | |
-| 10-23 FRED·환율 값 | | |
+| 미국 장중 저장본의 마지막 봉 | 토요일이라 직접 비교 불가, 지난 장중 저장본도 남아 있지 않음. 같은 수집 함수로 열린 시장(BTC-USD)을 75초 간격으로 받으면 마지막 봉이 오늘 날짜이고 값이 바뀜 | 설계 그대로(D3). 장중 봉이 없어도 체결 조건 2로 `NEXT_OBSERVATION`이 다음 확정 종가 체결이 됨. **[확인 필요]** 10-26(월) KST 22:30 뒤 `PaperRiskJob` 기록으로 확인 |
+| 후보 기관 CIK (27곳) | 27곳 모두 13F-HR 이력 있음. 선행 CIK가 필요한 곳 2(Greenlight → DME Capital Management, Pershing PSCM → Pershing Square Inc.). Scion은 2025-09-30 분기가 마지막 | 후보 27곳 그대로(D21). `TRACK_RECORD_FILERS`에 선행 CIK(§4-0 ①·②) |
+| EDGAR 목록 깊이·기관당 30분기 수집 시간 | `count=100` 한 페이지에서 27곳 모두 원본 30건. 기관당 10.0~17.5초, 27곳 약 6분 | 예산 기본 400건/실행(§4-0 ②). 다음 페이지(`start=`)는 안전장치로만 |
+| 후보 기관 티커 커버리지 (기관별 %) | 지금 매핑표로는 D22 자격 1곳(버크셔). CUSIP 매핑 445개를 더하면 22곳 자격, 미달 5곳(Baupost·Greenlight·Scion·Soros·Tudor) | **D22 그대로.** 매핑은 이름이 아니라 CUSIP으로(D25, §4-0 ③). 미달 5곳은 목록에 남기고 사유를 보임 |
+| 10년 가격 저장본 크기·개요 응답 시간 | 138종목 10년 JSONB 4.49MB, 응답 시간 비슷, 백엔드 메모리 +130MiB. 550여 종목이면 약 18MB·힙 초과 예상 | **D23 변경**: `equity.price_history`는 그대로(5년·138종목), 10년 이력은 `timeseries` `equity_close`, 관측치는 `paper.quotes`(§0-6·§3-1) |
+| Sonnet 5.5 호출 | `claude-sonnet-5-5`·`claude-haiku-5-5` 모두 구조화 출력으로 정상(4.6초·2.4초) | 모델 ID 그대로(D5) |
+| SDK 스키마 주입 | Jackson 3 `Map` → `Schema.putAdditionalProperty` + `JsonValue.from` 동작. 단 `minimum`·`maximum`은 400, 길이·개수 제약도 미지원 | 스키마 제약을 API용·검증용으로 나눔(§5-1) |
+| 10-23 FRED·환율 값 | `DGS10` 10-23 값 아직 없음(10-22 = 4.96%), `T10Y3M`·`T10YIE`는 10-23까지, USD/JPY 10-23 = 156.814 | 초기 패킷은 `asKnownOn`으로 10-22 관측치(10-23에 알려진 최신)를 씀(§5-6) |
+| 2026-10-23 기준 예상 상위 5(원형 계산) | Duquesne(CAGR 28.8%)·Appaloosa(21.8%)·Viking(18.0%)·Coatue(17.0%)·Himalaya(16.8%). 같은 창 SPY 누적 180% | 단계 1b의 자바 계산과 대조(단계 0 표 D) |
 
 ---
 
