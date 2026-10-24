@@ -159,7 +159,7 @@ public class NoteService {
         if (FrameworkService.codePoints(t) > TITLE_MAX) {
             throw new InvalidRequestException("메모 제목은 " + TITLE_MAX + "자 이내여야 합니다.");
         }
-        String b = FrameworkService.multiLine(body);
+        String b = FrameworkService.paragraphs(body);   // 문단 구분(빈 줄)은 지킴 — 원문을 그대로 남기는 곳
         if (b.isEmpty()) {
             throw new InvalidRequestException("메모 본문(body)이 비었습니다.");
         }

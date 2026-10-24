@@ -306,6 +306,31 @@ public class FrameworkService {
     }
 
     /**
+     * 메모 본문 정규화 — {@link #multiLine}과 같되 빈 줄은 문단 구분으로 하나만 남깁니다(이어진 빈 줄은 하나로, 앞뒤 빈 줄은 지움).
+     * 메모는 OS 원문·시황 글을 그대로 남기는 곳이라 문단 구조를 지킵니다.
+     */
+    static String paragraphs(String text) {
+        if (text == null) {
+            return "";
+        }
+        List<String> out = new ArrayList<>();
+        boolean gap = false;
+        for (String line : text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1)) {
+            String trimmed = line.stripTrailing();
+            if (trimmed.isBlank()) {
+                gap = !out.isEmpty();
+                continue;
+            }
+            if (gap) {
+                out.add("");
+                gap = false;
+            }
+            out.add(trimmed);
+        }
+        return String.join("\n", out).strip();
+    }
+
+    /**
      * 토큰 수 어림 — <b>근사</b>입니다(실제 토크나이저가 아님): ASCII 밖 글자(한글 등)는 1자 ≈ 1토큰, ASCII는 4자 ≈ 1토큰(올림).
      * 크기 예산 경고(F4)에만 씁니다.
      */
