@@ -14,9 +14,9 @@ import {
   fillBadges,
   formatSharePrice,
   heldText,
-  jsonSummary,
   jsonTitle,
   notStartedNote,
+  orderReasonText,
   orderSizeText,
   orderStatusBadge,
   PAPER_SOURCES,
@@ -282,12 +282,14 @@ export function HoldingsSection({ books, onChanged }: { books: PaperBookSummary[
               { key: "asOf", header: "기준 거래일", render: (row) => row.asOfTradingDate ?? EMPTY },
               { key: "expires", header: "만료", render: (row) => row.expiresOn ?? EMPTY },
               { key: "filledAt", header: "체결 시각", render: (row) => formatKst(row.filledAtKst) },
+              // 규칙 책 근거는 `rule · signal · kind`가 앞이라 키 순서대로 80자에서 자르면 문장(text)이 안 보입니다 — 결정 로그
+              // 탭과 같은 orderReasonText로 문장(없으면 점수 기여)을 먼저 보이고, 전체 JSON은 마우스를 올려 봅니다.
               {
                 key: "reason",
                 header: "근거",
                 render: (row) => (
                   <span className="text-xs text-muted" title={jsonTitle(row.reason)}>
-                    {jsonSummary(row.reason, 80)}
+                    {orderReasonText(row.reason, 80)}
                   </span>
                 ),
               },

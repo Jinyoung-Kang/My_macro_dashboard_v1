@@ -104,6 +104,102 @@ export interface PaperOverviewResponse {
    * 이 필드를 아직 보내지 않는 백엔드에서는 빈 목록으로 봅니다.
    */
   pendingBackfill?: string[];
+  /** 가장 최근 기관 선정(선정 순위 순, 이름·순위는 선정 때 값). 아직 선정이 없으면 null. */
+  selection?: PaperOverviewSelection | null;
+  /**
+   * 가장 최근 거래일의 OS 게이트 **지표**(paper_gate_log). 규칙 책·Claude 책 어느 쪽도 구속하지 않습니다(명세 D7·D19).
+   * 결정 작업이 아직 한 번도 기록하지 않았으면 null — 이 필드를 아직 보내지 않는 백엔드에서도 null로 봅니다.
+   */
+  gate?: PaperGateIndicator | null;
+}
+
+/** 선정된 기관 하나(개요). 이름·순위를 모르면 null — 화면은 CIK를 대신 적습니다. rank는 그 그룹 안의 순위입니다. */
+export interface PaperSelectedFiler {
+  cik: string;
+  name: string | null;
+  rank: number | null;
+}
+
+/**
+ * 신호 기관 그룹(명세 R1·D27). A = 후보 기관 27곳의 7년 롤링 트랙레코드 상위(기본 5곳),
+ * B = 기존 '기관 13F 포트폴리오 분석' 메뉴 12곳의 최근 2년 복제 수익률 상위(기본 4곳). 한 기관이 두 그룹에 모두 들 수 있습니다.
+ */
+export type PaperFilerGroup = "A" | "B";
+
+/**
+ * 개요의 신호 풀 기관 하나(A ∪ B, 겹치면 한 번). groups는 그 기관이 든 그룹(둘 다면 `["A","B"]`).
+ * weight는 기관 가중(Signal13F.blendWeights) — **0~1 비율**이고 풀 전체 합이 1입니다. 모르면 null.
+ */
+export interface PaperOverviewPoolFiler {
+  cik: string;
+  name: string | null;
+  groups: (PaperFilerGroup | string)[];
+  weight: number | null;
+}
+
+/**
+ * 개요의 가장 최근 선정(paper_selection_log) — 두 그룹(선정 순위 순)과 신호 풀(풀 순서 = A 순서 뒤에 B에만 있는 기관).
+ * `selected`는 그룹 섞기(D27) 전 모양(선정 = 그룹 A)이라, 그 필드만 오는 백엔드에서는 화면이 그룹 A로 읽습니다.
+ */
+export interface PaperOverviewSelection {
+  asOfDate: string;
+  groupA?: PaperSelectedFiler[];
+  groupB?: PaperSelectedFiler[];
+  pool?: PaperOverviewPoolFiler[];
+  selected?: PaperSelectedFiler[];
+}
+
+/** 게이트 단계 — L0 동결 · L1 1단계 해제 · L2 전면 해제 · UNKNOWN(입력이 빠져 판정하지 않음, L0로 보지 않음). */
+export type PaperGateLevel = "L0" | "L1" | "L2" | "UNKNOWN";
+
+/**
+ * 게이트 입력 하나 — 매크로 카드(macro.collected)의 그날 값. 값을 모르면 value가 null입니다(0으로 채우지 않음).
+ * 입력 키는 us10y(미국 10년물 %) · brent · wti(달러/배럴) · usdjpy(엔/달러).
+ */
+export interface PaperGateInput {
+  value: number | null;
+  /** 값을 읽은 저장본(예: "macro.collected"). */
+  source?: string | null;
+  /** 그 카드의 마지막 시세 시각(수집기 표기 그대로). */
+  lastTs?: string | null;
+  /** 수집에 실패해 지난 값을 이어 쓴 카드인가. */
+  isStale?: boolean | null;
+  /**
+   * 그날 조건·연속 일수 계산에 넣었나. 이어 쓴 값이거나 카드 시각이 그 거래일보다 앞이면 false — 값은 기록에 남지만 그 조건은
+   * 모르는 값(단계 UNKNOWN)입니다. 이 필드가 생기기 전 기록은 없음.
+   */
+  counted?: boolean | null;
+}
+
+/** 게이트 임계치(GateIndicator.Thresholds, 설정 gate.*). 보내지 않으면 화면은 숫자 없이 조건 이름만 적습니다. */
+export interface PaperGateThresholds {
+  us10yStage1: number;
+  us10yFull: number;
+  brentMax: number;
+  wtiMax: number;
+  usdjpyMin: number;
+  confirmDays: number;
+}
+
+/**
+ * OS 문자 그대로의 게이트 지표(GateIndicator.Result + 입력) — **참고, 구속하지 않음**.
+ * 조건: G1 10Y<1단계 기준, G2 10Y≤전면 기준, G3 브렌트≤상한, G4 WTI≤상한, G5 USD/JPY≥기준(참고 조건, 단계에 쓰지 않음).
+ * 입력이 없는 조건은 conditions·streaks가 null입니다.
+ */
+export interface PaperGateIndicator {
+  /** 그 지표의 거래일(미국 동부 세션 날짜). */
+  tradingDate?: string | null;
+  level: PaperGateLevel | string;
+  conditions?: Record<string, boolean | null> | null;
+  /** 조건이 참인 거래일 연속 수(거짓이면 0, 입력이 없으면 null). */
+  streaks?: Record<string, number | null> | null;
+  /** 입력 키 → 값. 값만 숫자로 오는 기록도 받습니다(예전 기록·결정 응답의 축약). */
+  inputs?: Record<string, PaperGateInput | number | null> | null;
+  /** 없는 입력 이름(us10y·brent·wti·usdjpy 순). */
+  missing?: string[] | null;
+  thresholds?: PaperGateThresholds | null;
+  /** 서버 문구(예: "과거 OS가 쓴 트리거 수준 — 구속하지 않음"). */
+  note?: string | null;
 }
 
 /** GET /api/paper/status */
@@ -178,6 +274,10 @@ export interface PaperOrder {
   ticker: string;
   side: "BUY" | "SELL";
   qty: number | null;
+  /**
+   * 매수 크기 — 이름과 달리 목표 비중이 아니라 "체결 시점 순자산 대비 살 금액(%)"입니다(장부가 그렇게 읽음). 규칙 책은 이미 든
+   * 종목이면 모자란 만큼(목표 − 현재), SHY면 늘릴 만큼을 넣고, 목표 비중은 근거 `reason.targetWeightPct`에 남깁니다.
+   */
   targetWeightPct: number | null;
   sellFraction: number | null;
   timing: "NEXT_OBSERVATION" | "NEXT_CLOSE" | "IMMEDIATE" | "BACKFILL";
@@ -360,9 +460,48 @@ export interface PaperTrackRecordCandidate {
   /** 저장본(sec.13f.{cik}.q30)에 든 분기 수. */
   storedQuarters: number | null;
   complete: boolean;
-  /** 그 기준일의 선정(paper_selection_log)에 든 기관인가. */
+  /** 그 기준일의 선정(paper_selection_log)에 든 기관인가(그룹 B 표에서는 그룹 B 선정). */
   selected: boolean;
   periods: PaperTrackRecordPeriod[];
+  /**
+   * 그룹 B만 — 계산에 쓴 저장본. `q30` = 후보 수집 저장본(sec.13f.{cik}.q30, CUSIP 매핑 티커)이 있으면 그것,
+   * 없으면 `q8` = 기존 13F 메뉴 저장본(이름 매핑 티커). 그룹 A 후보에는 없습니다.
+   */
+  source?: "q30" | "q8" | string | null;
+  /** 그룹 B만 — 기존 13F 메뉴의 기관 설명(예: "가치투자 포트폴리오, 핵심 우량주 집중"). */
+  desc?: string | null;
+}
+
+/**
+ * 그룹 B(D27) — 기존 13F 메뉴 12곳을 그룹 A와 같은 방법으로 최근 2년 창에서 잰 트랙레코드.
+ * 자격 기준의 커버리지는 그룹 A와 같고 창·구간 수만 다릅니다(blend.groupB.windowYears·minPeriods).
+ */
+export interface PaperTrackRecordGroupB {
+  /** 그 기준일에 그룹 B를 계산했는가. false면 candidates가 비어 있고 기준(windowYears 등)은 지금 설정입니다. */
+  computed?: boolean;
+  /** 선정 수(설정 blend.groupB.topN). */
+  topN?: number | null;
+  windowYears: number | null;
+  minPeriods: number | null;
+  metric?: PaperTrackRecordMetric | string | null;
+  /** 서버가 그룹 B 기준을 통째로 보내면 그것. 없으면 화면은 windowYears·minPeriods + 그룹 A의 커버리지 기준으로 적습니다. */
+  criteria?: PaperTrackRecordCriteria | null;
+  candidates: PaperTrackRecordCandidate[];
+  /** 그 기준일에 유효한 선정의 그룹 B CIK(그룹 B 순위 순). */
+  selected: string[];
+}
+
+/**
+ * 신호 풀 기관 하나(선정 행의 ranking.pool) — 그룹 A ∪ B. rankA·rankB는 그 그룹 안의 순위(그 그룹에 없으면 null),
+ * weight는 기관 가중(0~1 비율, 풀 합 1): w = g·a(rankA) + (1−g)·b(rankB), g = groupWeightA(설계 §4-1).
+ */
+export interface PaperSignalPoolEntry {
+  cik: string;
+  name: string | null;
+  groups: (PaperFilerGroup | string)[];
+  rankA: number | null;
+  rankB: number | null;
+  weight: number | null;
 }
 
 /** 자격 기준(TrackRecord13F.Criteria, 명세 R9·D22). 커버리지는 0~1 비율. */
@@ -376,7 +515,11 @@ export interface PaperTrackRecordCriteria {
 /** 선정 한 번(paper_selection_log). 선정은 재선정일·초기 선정 때 한 번 남고, 수동 재계산은 바꾸지 않습니다. */
 export interface PaperSelectionHistoryEntry {
   asOfDate: string;
+  /** 섞은 뒤(D27) 선정이면 신호 풀(A 순서 뒤에 B에만 있는 기관), 그 전이면 선정 기관. */
   selectedCiks: string[];
+  /** 그룹별 선정(섞기 전 선정은 groupA만, groupB는 빈 목록). 보내지 않는 백엔드도 있습니다. */
+  groupA?: string[];
+  groupB?: string[];
 }
 
 /**
@@ -413,6 +556,14 @@ export interface PaperTrackRecordResponse {
   collection?: PaperTrackRecordCollection | null;
   /** 트랙레코드의 한계 — 복제 수익률·생존 편향·커버리지 문구(순서대로). */
   limits?: string[];
+  /** 위 선정(selected)의 기준일. */
+  selectedAsOfDate?: string | null;
+  /** 그룹 B(D27). 이 필드를 아직 보내지 않는 백엔드에서는 없습니다 — 화면은 그룹 B 표를 그리지 않습니다. */
+  groupB?: PaperTrackRecordGroupB | null;
+  /** 그 기준일에 유효한 선정의 신호 풀(풀 순서). 선정이 없으면 빈 목록, 섞기 전 선정이면 그룹 A만(그룹 A 순위 가중)입니다. */
+  pool?: PaperSignalPoolEntry[];
+  /** 기관 가중의 그룹 A 몫 g(0~1, 설정 blend.groupWeightA). 보내지 않으면 화면은 숫자 없이 g로 적습니다. */
+  groupWeightA?: number | null;
 }
 
 /**
@@ -431,5 +582,191 @@ export interface PaperRerankResult {
   selectedUnchanged?: boolean;
   /** 계산하지 못한 이유(후보 목록 저장본 없음·설정 후보가 수집 목록과 겹치지 않음 등). 계산했으면 null. */
   skippedReason?: string | null;
+  message?: string;
+}
+
+// ---------------------------------------------------------------- 결정 기록(paper_decisions)
+
+/** 결정 종류 — 정기(거래일마다) · 수동(버튼) · 재선정일(분기 13F 공시 기한 다음 거래일) · 초기 결정(출발일). */
+export type PaperDecisionKind = "SCHEDULED" | "MANUAL" | "REBALANCE" | "INITIAL";
+
+/**
+ * 결정 상태. 규칙 책은 OK(주문 있음)·NO_TRADE(주문 없음)·SKIPPED(일시정지 중이라 주문을 내지 않음)를 씁니다. 나머지는
+ * Claude 책(단계 3a)의 실패 종류입니다.
+ */
+export type PaperDecisionStatus = "OK" | "NO_TRADE" | "REFUSED" | "FORMAT_ERROR" | "API_ERROR" | "SKIPPED";
+
+/**
+ * 결정 한 건의 요약(목록 한 줄). model·frameworkVersion·targetExposurePct는 Claude 책만 채우고 규칙 책은 null입니다.
+ * orderCount·rejectedCount는 그 결정이 낸 주문 수·검증에서 거절된 수(개수).
+ */
+export interface PaperDecisionSummary {
+  id: number;
+  book: string;
+  asOfTradingDate: string;
+  kind: PaperDecisionKind | string;
+  status: PaperDecisionStatus | string;
+  decidedAtKst: string | null;
+  model: string | null;
+  frameworkVersion: number | null;
+  settingsVersion: number | null;
+  /** 그 결정이 신호에 쓴 기관 선정의 기준일. 선정이 없었으면 null. */
+  selectionAsOf: string | null;
+  targetExposurePct: number | null;
+  summary: string | null;
+  orderCount: number | null;
+  rejectedCount: number | null;
+  /** 확정 종가로 낸 결정인가. false면 마감 확정 전 값(결정 마감 시각까지 확정 종가가 오지 않음·수동 실행). */
+  pricesFinal: boolean | null;
+  error: string | null;
+}
+
+/** GET /api/paper/decisions?book=&limit= — 최근 순. */
+export interface PaperDecisionsResponse {
+  available: boolean;
+  message?: string;
+  decisions?: PaperDecisionSummary[];
+}
+
+/** 결정 한 건의 전체 기록 — 요약 + 입력 패킷·응답·사용량. 규칙 책은 packet·usage가 null이고 response가 규칙 책 기록입니다. */
+export interface PaperDecisionDetail extends PaperDecisionSummary {
+  packet: unknown;
+  packetHash: string | null;
+  /** 규칙 책은 PaperRuleDecisionRecord 모양, Claude 책은 검증한 모델 응답(단계 3a). JSON 그대로입니다. */
+  response: unknown;
+  usage: unknown;
+  noteIds: number[] | null;
+  latencyMs: number | null;
+  retryCount: number | null;
+}
+
+/** GET /api/paper/decisions/{id} — orders는 그 결정이 낸 주문 행(보유·체결 탭의 주문 표와 같은 모양). */
+export interface PaperDecisionDetailResponse {
+  available: boolean;
+  message?: string;
+  decision?: PaperDecisionDetail | null;
+  orders?: PaperOrder[];
+}
+
+/** 선정 순위표 한 줄(paper_selection_log.ranking, 상위 10). */
+export interface PaperSelectionRankingEntry {
+  cik: string;
+  name: string | null;
+  rank: number | null;
+  /** 순위 기준(CAGR · EXCESS_VS_SPY · SHARPE). */
+  metric?: string | null;
+  cagrPct: number | null;
+  excessVsSpyPct: number | null;
+  sharpe: number | null;
+  selected: boolean;
+}
+
+/**
+ * 13F 신호 이벤트 하나(Signal13F.Event) — 신호 기관 한 곳의 최신 분기 vs 직전 분기.
+ * action: NEW(신규 편입) · ADDED(주식 수 확대, 기준 이상) · CLOSED(전량 매도). weightPct는 그 기관 13F 총액 대비 %.
+ * rank는 그룹 섞기(D27) 전 기록의 선정 순위, rankA·rankB는 섞은 뒤 기록의 그룹 순위입니다(없으면 화면이 신호 풀에서 찾음).
+ */
+export interface PaperSignalEvent {
+  cik: string;
+  rank?: number | null;
+  rankA?: number | null;
+  rankB?: number | null;
+  ticker: string;
+  action: "NEW" | "ADDED" | "CLOSED" | string;
+  /**
+   * 주식 수 변화(%). ADDED는 (현재−직전)/직전 × 100(두 분기 사이 주식 분할은 직전 주식 수를 분할 뒤 기준으로 맞춘 값),
+   * CLOSED는 −100(보유가 0이 됨), NEW는 null(분모 없음).
+   */
+  sharesChangePct: number | null;
+  weightPct: number | null;
+  previousWeightPct: number | null;
+}
+
+/**
+ * 후보 점수에 기관 한 곳이 보탠 몫(Signal13F.Contribution, D27). 점수 기여 points = filerWeight × conviction.
+ * filerWeight(기관 가중)·conviction(확신도 = min(그 종목의 기관 내 비중, 상한) ÷ 상한)은 둘 다 **0~1 비율**입니다.
+ * name·groups·action·weightPct는 서버가 붙여 보내면 있고, 없으면 화면이 같은 기록의 신호 풀에서 이름·그룹을 찾습니다.
+ */
+export interface PaperSignalContribution {
+  cik: string;
+  name?: string | null;
+  groups?: (PaperFilerGroup | string)[] | null;
+  filerWeight: number | null;
+  conviction: number | null;
+  points: number | null;
+  action?: string | null;
+  weightPct?: number | null;
+}
+
+/**
+ * 매수 후보 하나(Signal13F.Candidate) — 정렬은 서버가 이미 했습니다. 그룹 섞기(D27) 뒤 기록은 점수 ↓ · 매수 기관 수 ↓ · 티커 ↑이고
+ * score(= Σ 점수 기여, 0~1)와 contributions가 있습니다. 그 전 기록은 기관 수 ↓ · 순위 합 ↑ · 합산 비중 ↓이고 rankSum이 있습니다.
+ */
+export interface PaperSignalCandidate {
+  ticker: string;
+  buyerCiks: string[];
+  rankSum?: number | null;
+  score?: number | null;
+  contributions?: PaperSignalContribution[];
+  combinedWeightPct: number | null;
+  events?: PaperSignalEvent[];
+}
+
+/** 배분 방식(설정 blend.allocation, D27) — 확신도 비례(기본) · 동일 비중. */
+export type PaperAllocationMode = "CONVICTION" | "EQUAL";
+
+/**
+ * 규칙 책 결정 기록(paper_decisions.response). 게이트는 **참고**로만 남깁니다 — 규칙 책은 게이트를 읽지 않습니다(D19).
+ * skipped는 고르지 못한 후보와 사유 `[{ticker, reason}]`입니다(docs/API.md). 화면은 자바 Map.Entry를 그대로 직렬화한
+ * `{"티커": "사유"}` 모양도 읽습니다(방어 — 서버는 그 모양을 보내지 않음).
+ *
+ * selection은 그룹 섞기(D27) 뒤 기록이면 groupA·groupB·pool, 그 전 기록이면 ciks·ranking입니다 — 결정 기록은 바뀌지 않는 이력이라
+ * 화면은 두 모양을 다 읽습니다. 배분 방식은 settings.allocation(서버가 그 결정에 쓴 설정값)에 있습니다.
+ */
+export interface PaperRuleDecisionRecord {
+  gate?: PaperGateIndicator | null;
+  selection?: {
+    asOf: string | null;
+    ciks?: string[];
+    ranking?: PaperSelectionRankingEntry[];
+    /** 섞은 뒤 기록 — 그룹마다 선정 때의 순위표 상위 10(줄마다 selected). 화면은 selected인 줄을 그 그룹의 선정으로 봅니다. */
+    groupA?: (PaperSelectionRankingEntry | PaperSelectedFiler)[];
+    groupB?: (PaperSelectionRankingEntry | PaperSelectedFiler)[];
+    pool?: PaperSignalPoolEntry[];
+    groupWeightA?: number | null;
+    /** 그룹을 섞기 전에 남긴 선정으로 낸 결정인가(그때는 그룹 B가 없음). */
+    legacy?: boolean;
+    /** 신호를 대조한 기관마다의 줄(이름·그룹·그룹 순위·가중·출처·대조한 분기). */
+    filers?: Record<string, unknown>[];
+  } | null;
+  signals?: {
+    events: PaperSignalEvent[];
+    candidates: PaperSignalCandidate[];
+    /** 티커 → 그 티커를 전량 매도한 신호 기관 CIK. */
+    closedBy: Record<string, string[]>;
+  } | null;
+  orders?: unknown[];
+  skipped?: unknown[];
+  notes?: string[];
+  /** 그 결정에 쓴 설정값(minHolders·rulesMaxNames·maxWeightStockPct·allocation·convictionCapPct·minTargetPct 등). */
+  settings?: Record<string, unknown> | null;
+}
+
+/** POST /api/paper/run/decision — 본문 `{book}`. 그 책만 종류 MANUAL로 한 번 결정합니다. */
+export interface PaperRunDecisionResult {
+  ok: boolean;
+  decision?: PaperDecisionSummary | null;
+  message?: string;
+}
+
+/**
+ * POST /api/paper/run/initial-decision — 본문 `{book:"rules"}`. 규칙 책을 출발일 기준으로 선정·신호·배분해 출발일 종가로
+ * 사후 체결하고 ACTIVE로 바꿉니다. fills는 사후 체결 행 배열입니다(docs/API.md, 미리보기면 빈 배열). 화면은 건수(숫자)로 와도
+ * 읽습니다(방어). 트랙레코드 수집이 끝나지 않았거나 이미 시작한 책이면 400(서버 문구)입니다.
+ */
+export interface PaperInitialDecisionResult {
+  ok: boolean;
+  decision?: PaperDecisionSummary | null;
+  fills?: PaperFill[] | number | null;
   message?: string;
 }

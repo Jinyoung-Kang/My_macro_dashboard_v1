@@ -6,6 +6,8 @@
  *  - 커버리지 칸이 수익률 칸보다 먼저(왼쪽) — 후보 표와 펼친 구간 표 둘 다
  *  - 숫자 null은 "—"(0.00으로 채우지 않음)
  *  - "지금 재계산"은 POST /api/paper/run/rerank → 경과 초 → 결과(선정은 그대로) + 표 다시 읽기
+ *  - 그룹 B(D27): 같은 칸 + 출처(q30·q8)와 기존 메뉴 설명, complete=false를 "수집 중"으로 보지 않음, 한계에 "그룹 B는 2년 창 — 표본이 짧다"
+ *  - 신호 풀: 기관 · 그룹 배지(A/B/AB) · 그룹 순위 · 기관 가중 %(서버 값 그대로)
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -80,6 +82,39 @@ const COMPUTED = {
     "커버리지(티커 붙은 비중)가 100% 미만이면 '커버 보유분 기준'입니다.",
   ],
 };
+
+/** 그룹 B — 기존 13F 메뉴 기관(2년 창). 후보 수집이 없는 기관은 q8, complete는 늘 거짓. */
+const GROUP_B = {
+  computed: true,
+  topN: 4,
+  windowYears: 2,
+  minPeriods: 6,
+  metric: "CAGR",
+  selected: ["0001536411"],
+  candidates: [
+    candidate("0001536411", "🇺🇸 듀케인 패밀리 오피스 (Duquesne Family Office)", {
+      style: null, desc: "스탠리 드러켄밀러, 테크 트렌드 포착형 매크로 운용", source: "q30", storedQuarters: 30,
+      rank: 1, eligible: true, selected: true, cagrPct: 26.8, periodsUsed: 8, periodsTotal: 8, complete: false,
+      firstFilingDate: "2024-11-14", lastFilingDate: "2026-08-14",
+      periods: [{
+        filingDate: "2026-08-14", reportDate: "2026-06-30", start: "2026-08-17", end: "2026-10-23", returnPct: 4.2, spyReturnPct: 1.05,
+        coverage: 0.95, coveredTickers: 40, holdings: 42,
+      }],
+    }),
+    // 인덱스형 — 수익률이 높아도 커버리지 미달(서버 사유 그대로). q8이고 complete=false지만 "수집 중"이 아님
+    candidate("0001374170", "🇳🇴 노르웨이 국부펀드 (Norges Bank / GPFG)", {
+      style: null, desc: "세계 최대 규모의 글로벌 국부펀드, 인덱스형 거인", source: "q8", storedQuarters: null, complete: false,
+      cagrPct: 18.5, ineligibleReason: "평균 커버리지 57.0% < 70%", periodsUsed: 8, periodsTotal: 8,
+    }),
+  ],
+};
+
+const POOL = [
+  { cik: "0001067983", name: "버크셔 해서웨이 (Berkshire Hathaway)", groups: ["A"], rankA: 1, rankB: null, weight: 0.5 },
+  { cik: "0001536411", name: "🇺🇸 듀케인 패밀리 오피스 (Duquesne Family Office)", groups: ["B"], rankA: null, rankB: 1, weight: 0.5 },
+];
+
+const BLENDED = { ...COMPUTED, selectedAsOfDate: "2026-10-23", groupB: GROUP_B, pool: POOL, groupWeightA: 0.5 };
 
 /** 경로 앞부분 → 응답. 없는 경로는 끝나지 않는 요청. 긴 경로부터 맞춥니다. */
 let reads: Record<string, () => Promise<unknown>> = {};
@@ -215,6 +250,99 @@ describe("계산된 트랙레코드", () => {
     for (const limit of COMPUTED.limits) expect(await screen.findByText(limit)).toBeTruthy();
     expect(screen.getByText("버크셔 해서웨이 (Berkshire Hathaway), 0009999999")).toBeTruthy();
     expect(screen.getByText("후보 27곳 중 수집 완료 20곳 · 저장 공시 700/810건 · 마지막 수집 2026-10-24 03:10")).toBeTruthy();
+  });
+});
+
+describe("두 기관 그룹(D27)", () => {
+  beforeEach(() => {
+    reads["/api/paper/track-record"] = () => Promise.resolve(BLENDED);
+  });
+
+  it("그룹 B 표 — 그룹 A와 같은 칸에 수집 대신 출처, 기준은 2년 창·구간 6개 + 그룹 A의 커버리지 기준", async () => {
+    await openSelectionTab();
+
+    const table = await screen.findByRole("region", { name: /그룹 B 기관 트랙레코드 표/ });
+    expect(headersOf(table)).toEqual([
+      "순위", "기관", "자격", "선정", "출처", "구간", "커버리지 최소", "커버리지 평균",
+      "CAGR", "누적", "SPY 누적", "초과(SPY 대비)", "변동성(연율)", "MDD", "샤프",
+    ]);
+    expect(screen.getByText("그룹 B — 기존 13F 메뉴 기관 트랙레코드 (2년 창)")).toBeTruthy();
+    expect(screen.getByText(
+      "2026-10-23 기준 · 순위 기준 연율 수익률(CAGR) · 자격: 창 2년 · 구간 ≥ 6개 · 최소 커버리지 ≥ 50% · 평균 커버리지 ≥ 70% · 상위 4곳 선정",
+    )).toBeTruthy();
+    // 그룹 A 표는 그대로(제목만 그룹 A)
+    expect(screen.getByText("그룹 A — 후보 기관 트랙레코드 (7년 창)")).toBeTruthy();
+    expect(headersOf(screen.getByRole("region", { name: /후보 기관 트랙레코드 표/ }))[4]).toBe("수집");
+  });
+
+  it("그룹 B 행 — 기존 메뉴 설명·출처, q8·complete=false인 기관은 '수집 중'이 아니라 서버 사유 그대로", async () => {
+    await openSelectionTab();
+
+    const duquesneRow = "🇺🇸 듀케인 패밀리 오피스 (Duquesne Family Office) (그룹 B)";
+    await screen.findByRole("row", { name: duquesneRow });
+    const duquesne = cellsOf(duquesneRow);
+    expect(duquesne[0]).toBe("1");
+    expect(duquesne[1]).toContain("스탠리 드러켄밀러, 테크 트렌드 포착형 매크로 운용 · CIK 0001536411");
+    expect(duquesne[2]).toBe("자격");
+    expect(duquesne[3]).toBe("선정");
+    expect(duquesne[4]).toBe("q30 · 30분기");
+    expect(duquesne[8]).toBe("+26.80%");
+
+    const norges = cellsOf("🇳🇴 노르웨이 국부펀드 (Norges Bank / GPFG) (그룹 B)");
+    expect(norges[0]).toBe("—");
+    expect(norges[2]).toBe("자격 없음평균 커버리지 57.0% < 70%");
+    expect(norges[4]).toBe("q8");
+  });
+
+  it("그룹 B 행을 펼치면 그 행의 구간 표만 — 2년 창 문구", async () => {
+    await openSelectionTab();
+
+    const row = await screen.findByRole("row", { name: "🇺🇸 듀케인 패밀리 오피스 (Duquesne Family Office) (그룹 B)" });
+    fireEvent.click(within(row).getByRole("button", { name: "구간 펼치기" }));
+
+    const periods = screen.getByRole("region", { name: "🇺🇸 듀케인 패밀리 오피스 (Duquesne Family Office) (그룹 B) 구간" });
+    expect(within(periods).getByText(/첫 구간은 2년 창 시작으로/)).toBeTruthy();
+    expect(within(periods).getByText("2026-08-14")).toBeTruthy();
+    // 그룹 A 행은 펼쳐지지 않습니다.
+    expect(screen.queryByRole("region", { name: "버크셔 해서웨이 (Berkshire Hathaway) 구간" })).toBeNull();
+  });
+
+  it("신호 풀 — 기관·그룹 배지·그룹 순위·기관 가중(서버 값), 그룹 A 몫", async () => {
+    await openSelectionTab();
+
+    const pool = await screen.findByRole("region", { name: "신호 풀 표" });
+    expect(headersOf(pool)).toEqual(["기관", "그룹", "그룹 A 순위", "그룹 B 순위", "기관 가중"]);
+    const rows = within(pool).getAllByRole("row").slice(1).map((tr) => within(tr).getAllByRole("cell").map((td) => td.textContent));
+    expect(rows).toEqual([
+      ["버크셔 해서웨이 (Berkshire Hathaway)CIK 0001067983", "A", "1위", "—", "50.0%"],
+      ["🇺🇸 듀케인 패밀리 오피스 (Duquesne Family Office)CIK 0001536411", "B", "—", "1위", "50.0%"],
+    ]);
+    expect(screen.getByText(/2026-10-23 선정 — 규칙 책이 이 기관들의 13F 변화를 신호로 씁니다/)).toBeTruthy();
+    expect(screen.getByText(/그룹 A 50\.0% · 그룹 B 50\.0%/)).toBeTruthy();
+  });
+
+  it("한계에 '그룹 B는 2년 창 — 표본이 짧다'를 덧붙이고, 선정 이력은 그룹 B 이름도 찾는다", async () => {
+    reads["/api/paper/track-record"] = () => Promise.resolve({
+      ...BLENDED, selectionHistory: [{ asOfDate: "2026-10-23", selectedCiks: ["0001067983", "0001536411"] }],
+    });
+    await openSelectionTab();
+
+    const limits = await screen.findByText("트랙레코드의 한계");
+    const card = limits.closest("section") as HTMLElement;
+    const items = within(card).getAllByRole("listitem").map((li) => li.textContent);
+    expect(items.slice(0, 3)).toEqual(COMPUTED.limits);
+    expect(items[3]).toContain("그룹 B는 2년 창 — 표본이 짧다");
+    expect(screen.getByText("버크셔 해서웨이 (Berkshire Hathaway), 🇺🇸 듀케인 패밀리 오피스 (Duquesne Family Office)")).toBeTruthy();
+  });
+
+  it("그룹 B를 아직 보내지 않는 백엔드 — 그룹 B 표·신호 풀 카드·그룹 B 한계 줄이 없다", async () => {
+    reads["/api/paper/track-record"] = () => Promise.resolve(COMPUTED);
+    await openSelectionTab();
+
+    await screen.findByRole("region", { name: /후보 기관 트랙레코드 표/ });
+    expect(screen.queryByRole("region", { name: /그룹 B 기관 트랙레코드 표/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: "신호 풀 표" })).toBeNull();
+    expect(screen.queryByText(/그룹 B는 2년 창/)).toBeNull();
   });
 });
 

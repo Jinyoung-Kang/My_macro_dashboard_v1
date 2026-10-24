@@ -184,6 +184,14 @@ export const endpoints = {
     nav: (code: string) => `/api/paper/books/${segment(code)}/nav`,
     bookStatus: (code: string) => `/api/paper/books/${segment(code)}/status`,
     bookReset: (code: string) => `/api/paper/books/${segment(code)}/reset`,
+    /** 책 하나의 결정 기록(최근 순). book은 rules · claude. */
+    decisions: (book: string, limit: number) => withQuery("/api/paper/decisions", { book, limit }),
+    /** 결정 한 건의 전체 기록(선정·신호·주문·게이트 참고). */
+    decision: (id: number) => `/api/paper/decisions/${segment(String(id))}`,
+    /** 수동 결정 — 본문 `{book}`. 시각 조건 없이 그 책만 종류 MANUAL로 한 번. */
+    runDecision: "/api/paper/run/decision",
+    /** 초기 결정("시작") — 본문 `{book}`. 규칙 책은 출발일 종가로 사후 체결해 시작합니다. */
+    runInitialDecision: "/api/paper/run/initial-decision",
   },
 
   // 🔌 토스증권 연결 테스트 (경로는 /api/ai/toss 이지만 AI와 관계없음)

@@ -16,21 +16,29 @@ import {
   filingSpanText,
   formatCoverage,
   formatExcessPoints,
+  groupBCriteria,
   PAPER_SOURCES,
   periodCoverageText,
   periodsText,
+  type PoolRow,
+  poolWeightNote,
   quartersText,
   rerankResultView,
   selectedBadge,
   type SelectionHistoryRow,
   selectionHistoryRows,
+  signalPoolRows,
   trackMetricLabel,
+  trackRecordLimits,
   trackRecordRows,
+  trackSourceText,
+  windowLabel,
 } from "@/lib/paper";
 import type {
   PaperRerankResult,
   PaperTrackRecordCandidate,
   PaperTrackRecordCollection,
+  PaperTrackRecordGroupB,
   PaperTrackRecordPeriod,
   PaperTrackRecordResponse,
 } from "@/lib/types";
@@ -46,7 +54,8 @@ interface Column {
 }
 
 /**
- * 기관 선정 탭 — 후보 기관의 7년 롤링 13F 트랙레코드(공시일 기준 복제 수익률)와 순위·자격·선정, 선정 이력, 수집 진행률.
+ * 기관 선정 탭 — 두 기관 그룹(D27)의 13F 트랙레코드(공시일 기준 복제 수익률)와 순위·자격·선정, 신호 풀(기관 가중), 선정 이력,
+ * 수집 진행률. 그룹 A는 후보 기관의 7년 롤링, 그룹 B는 기존 13F 메뉴 기관의 최근 2년 창이고 표 모양은 같습니다(그룹 B는 출처 칸).
  *
  * 숫자는 전부 백엔드(TrackRecord13F·PaperSelectionService)가 계산한 값이고, 이 화면은 고르고 이름 붙여 그리기만 합니다(ADR 0004).
  * 커버리지를 수익률보다 먼저(왼쪽) 둡니다 — 복제 수익률은 티커가 붙은 보유분만으로 낸 값이라, 커버리지를 보지 않고 수익률부터 읽으면
@@ -67,8 +76,9 @@ export function SelectionSection() {
   const runRerank = async () => {
     if (await rerank.run()) void reload();
   };
-  const toggle = (cik: string) =>
-    setOpen((current) => (current.includes(cik) ? current.filter((entry) => entry !== cik) : [...current, cik]));
+  // 펼친 행은 "그룹:CIK"로 기억합니다 — 두 그룹에 모두 든 기관(예: 듀케인)을 한쪽에서 펼치면 다른 쪽까지 펼쳐지지 않게.
+  const toggle = (key: string) =>
+    setOpen((current) => (current.includes(key) ? current.filter((entry) => entry !== key) : [...current, key]));
 
   if (loading && !data) return <Loading label="트랙레코드를 읽는 중…" />;
   if (error) return <ErrorState message={error} onRetry={reload} />;
@@ -107,13 +117,15 @@ export function SelectionSection() {
 
   const candidates = trackRecordRows(data.candidates);
   const criteria = criteriaText(data.criteria);
-  const history = selectionHistoryRows(data.selectionHistory, data.candidates);
-  const limits = data.limits ?? [];
+  const groupB = data.groupB ?? null;
+  // 선정 이력은 신호 풀(A 뒤에 B에만 있는 기관)이라 두 그룹 후보 모두에서 이름을 찾습니다(그룹 A 이름이 먼저).
+  const history = selectionHistoryRows(data.selectionHistory, [...(data.candidates ?? []), ...(groupB?.candidates ?? [])]);
+  const limits = trackRecordLimits(data.limits, groupB, data.windowYears);
 
   return (
     <>
       <Card
-        title="후보 기관 트랙레코드"
+        title={`그룹 A — 후보 기관 트랙레코드 (${windowLabel(data.windowYears)})`}
         subtitle={[
           `${data.asOfDate ?? EMPTY} 기준`,
           `순위 기준 ${trackMetricLabel(data.metric)}`,
@@ -133,8 +145,33 @@ export function SelectionSection() {
           보유(커버 보유분)만으로 냅니다 — 커버리지가 100% 미만이면 &quot;커버 보유분 기준&quot;입니다. 행의 &quot;구간 펼치기&quot;로 분기마다의
           값을 봅니다.
         </p>
-        <CandidateTable rows={candidates} targetQuarters={progress.targetQuarters} open={open} onToggle={toggle} />
+        <CandidateTable
+          group="A"
+          rows={candidates}
+          windowYears={data.windowYears ?? null}
+          targetQuarters={progress.targetQuarters}
+          open={open}
+          onToggle={toggle}
+        />
       </Card>
+
+      {groupB && (
+        <GroupBCard
+          groupB={groupB}
+          asOfDate={data.asOfDate ?? null}
+          criteria={criteriaText(groupBCriteria(groupB, data.criteria))}
+          open={open}
+          onToggle={toggle}
+        />
+      )}
+
+      {(groupB || (data.pool ?? []).length > 0) && (
+        <PoolCard
+          rows={signalPoolRows(data.pool)}
+          asOfDate={data.selectedAsOfDate ?? null}
+          groupWeightA={data.groupWeightA ?? null}
+        />
+      )}
 
       {limits.length > 0 && (
         <Card title="트랙레코드의 한계" source={PAPER_SOURCES.trackRecord}>
@@ -164,6 +201,96 @@ export function SelectionSection() {
 
       <CollectionCard collection={data.collection} line={progress.line} />
     </>
+  );
+}
+
+/**
+ * 그룹 B 카드 — 기존 13F 메뉴 기관을 그룹 A와 같은 방법으로 짧은 창에서 잰 트랙레코드. 표 모양은 그룹 A와 같고, 수집 칸 대신
+ * 출처(q30·q8) 칸입니다 — 그룹 B는 30분기 수집이 끝났는지와 상관없이 있는 저장본으로 재므로 "수집 중"이 뜻이 없습니다.
+ */
+function GroupBCard({
+  groupB,
+  asOfDate,
+  criteria,
+  open,
+  onToggle,
+}: {
+  groupB: PaperTrackRecordGroupB;
+  asOfDate: string | null;
+  criteria: string | null;
+  open: readonly string[];
+  onToggle: (key: string) => void;
+}) {
+  const span = windowLabel(groupB.windowYears);
+  return (
+    <Card
+      title={`그룹 B — 기존 13F 메뉴 기관 트랙레코드 (${span})`}
+      subtitle={[
+        `${asOfDate ?? EMPTY} 기준`,
+        `순위 기준 ${trackMetricLabel(groupB.metric ?? null)}`,
+        criteria ? `자격: ${criteria}` : null,
+        typeof groupB.topN === "number" ? `상위 ${groupB.topN}곳 선정` : null,
+      ].filter(Boolean).join(" · ")}
+      source={PAPER_SOURCES.groupB}
+    >
+      <p className="mb-3 text-xs leading-relaxed text-muted">
+        이미 지켜보던 &quot;기관 13F 포트폴리오 분석&quot; 메뉴의 기관을 그룹 A와 같은 방법(공시 다음 거래일 복제, 수정주가)으로
+        잽니다. 출처 q30은 후보 수집 저장본(CUSIP 매핑 티커), q8은 기존 메뉴 저장본(이름 매핑 티커)입니다. 인덱스·연기금은 덮인
+        대형주 쪽만 보여 복제 수익률이 부풀기 쉬워, 수익률이 높아도 커버리지 기준에서 빠질 수 있습니다.{" "}
+        <strong className="text-warn">그룹 B는 {typeof groupB.windowYears === "number" ? span : "짧은 창"} — 표본이 짧다</strong>
+        (아래 한계 참고).
+      </p>
+      <CandidateTable
+        group="B"
+        rows={trackRecordRows(groupB.candidates)}
+        windowYears={groupB.windowYears ?? null}
+        targetQuarters={null}
+        open={open}
+        onToggle={onToggle}
+      />
+    </Card>
+  );
+}
+
+/** 신호 풀 카드 — 선정 기준일의 그룹 A ∪ B와 기관 가중(선정 때 값). 화면은 가중을 다시 계산하지 않습니다. */
+function PoolCard({ rows, asOfDate, groupWeightA }: { rows: PoolRow[]; asOfDate: string | null; groupWeightA: number | null }) {
+  return (
+    <Card
+      title="신호 풀"
+      subtitle={asOfDate
+        ? `${asOfDate} 선정 — 규칙 책이 이 기관들의 13F 변화를 신호로 씁니다(다음 재선정일까지)`
+        : "규칙 책이 13F 신호를 읽는 기관(두 그룹의 선정)"}
+      source={PAPER_SOURCES.pool}
+    >
+      <p className="mb-3 text-xs leading-relaxed text-muted">{poolWeightNote(groupWeightA)}</p>
+      <section aria-label="신호 풀 표">
+        <Table<PoolRow>
+          rows={rows}
+          rowKey={(row) => row.key}
+          emptyMessage="신호 풀이 없습니다 — 이 기준일에 유효한 선정이 아직 없거나, 선정 때 자격 있는 기관이 없었습니다."
+          columns={[
+            {
+              key: "name",
+              header: "기관",
+              render: (row) => (
+                <div className="flex flex-col">
+                  <span className="font-semibold text-bright">{row.name}</span>
+                  <span className="text-[11px] text-muted">CIK {row.cik}</span>
+                </div>
+              ),
+            },
+            {
+              key: "group",
+              header: "그룹",
+              render: (row) => (row.group ? <Badges badges={[row.group]} /> : <span className="text-muted">{EMPTY}</span>),
+            },
+            { key: "rankA", header: "그룹 A 순위", align: "right", render: (row) => row.rankA },
+            { key: "rankB", header: "그룹 B 순위", align: "right", render: (row) => row.rankB },
+            { key: "weight", header: "기관 가중", align: "right", render: (row) => row.weight },
+          ]}
+        />
+      </section>
+    </Card>
   );
 }
 
@@ -205,23 +332,36 @@ function RerankResult({ result }: { result: PaperRerankResult }) {
 }
 
 /**
- * 후보 표. 칸 순서: 순위 · 기관 · 자격 · 선정 · 수집 · 구간 · 커버리지(최소·평균) · 수익률·통계 — 커버리지가 수익률보다 왼쪽입니다.
- * 행의 "구간 펼치기"는 그 행 바로 아래에 구간 표를 엽니다.
+ * 후보 표. 칸 순서: 순위 · 기관 · 자격 · 선정 · 수집(그룹 B는 출처) · 구간 · 커버리지(최소·평균) · 수익률·통계 —
+ * 커버리지가 수익률보다 왼쪽입니다. 행의 "구간 펼치기"는 그 행 바로 아래에 구간 표를 엽니다.
+ * 그룹 B 행은 기관 칸에 기존 13F 메뉴의 설명을 적습니다(없으면 분류).
  */
 function CandidateTable({
+  group,
   rows,
+  windowYears,
   targetQuarters,
   open,
   onToggle,
 }: {
+  group: "A" | "B";
   rows: PaperTrackRecordCandidate[];
+  windowYears: number | null;
   targetQuarters: number | null;
   open: readonly string[];
-  onToggle: (cik: string) => void;
+  onToggle: (key: string) => void;
 }) {
   if (rows.length === 0) {
-    return <p className="text-sm text-muted">후보 기관이 없습니다 — 수집기의 후보 목록(sec.13f.track_record_index)이 비어 있습니다.</p>;
+    return (
+      <p className="text-sm text-muted">
+        {group === "A"
+          ? "후보 기관이 없습니다 — 수집기의 후보 목록(sec.13f.track_record_index)이 비어 있습니다."
+          : "그룹 B 후보가 없습니다 — 기존 13F 메뉴 기관의 저장본(q30·q8)이 아직 없거나 이 기준일에 계산하지 않았습니다."}
+      </p>
+    );
   }
+  const openKey = (row: PaperTrackRecordCandidate) => `${group}:${row.cik}`;
+  const span = windowLabel(windowYears);
 
   const columns: Column[] = [
     { key: "rank", header: "순위", align: "right", render: (row) => (row.rank === null ? EMPTY : formatNumber(row.rank, 0)) },
@@ -229,12 +369,13 @@ function CandidateTable({
       key: "name",
       header: "기관",
       render: (row) => {
-        const expanded = open.includes(row.cik);
+        const expanded = open.includes(openKey(row));
+        const about = group === "B" ? (row.desc ?? row.style) : row.style;
         return (
           <div className="flex min-w-[12rem] flex-col items-start gap-1">
             <span className="font-semibold text-bright">{row.name}</span>
-            <span className="text-[11px] text-muted">{row.style ?? EMPTY} · CIK {row.cik}</span>
-            <Button variant="ghost" expanded={expanded} onClick={() => onToggle(row.cik)}>
+            <span className="text-[11px] text-muted">{about ?? EMPTY} · CIK {row.cik}</span>
+            <Button variant="ghost" expanded={expanded} onClick={() => onToggle(openKey(row))}>
               {expanded ? "구간 접기" : "구간 펼치기"}
             </Button>
           </div>
@@ -246,7 +387,7 @@ function CandidateTable({
       header: "자격",
       render: (row) => (
         <div className="flex min-w-[9rem] flex-col items-start gap-1">
-          <Badges badges={[eligibilityBadge(row)]} />
+          <Badges badges={[eligibilityBadge(row, group)]} />
           {!row.eligible && row.ineligibleReason && <span className="text-[11px] leading-snug text-warn">{row.ineligibleReason}</span>}
         </div>
       ),
@@ -259,12 +400,22 @@ function CandidateTable({
         return badge ? <Badges badges={[badge]} /> : <span className="text-muted">{EMPTY}</span>;
       },
     },
-    { key: "quarters", header: "수집", render: (row) => <span className="whitespace-nowrap">{quartersText(row, targetQuarters)}</span> },
+    group === "A"
+      ? { key: "quarters", header: "수집", render: (row) => <span className="whitespace-nowrap">{quartersText(row, targetQuarters)}</span> }
+      : {
+        key: "source",
+        header: "출처",
+        title: "q30 = 후보 수집 저장본(CUSIP 매핑 티커), q8 = 기존 13F 메뉴 저장본(8분기, 이름 매핑 티커)",
+        render: (row) => {
+          const source = trackSourceText(row);
+          return <span className="whitespace-nowrap" title={source.title}>{source.label}</span>;
+        },
+      },
     {
       key: "periods",
       header: "구간",
       align: "right",
-      title: "수익률이 있는 구간 / 7년 창 안의 구간",
+      title: `수익률이 있는 구간 / ${span} 안의 구간`,
       render: (row) => (
         <div className="flex flex-col items-end">
           <span>{periodsText(row)}</span>
@@ -303,7 +454,12 @@ function CandidateTable({
   return (
     <>
       <p className="mb-1 text-[11px] text-muted sm:hidden">← 표를 좌우로 넘겨 보세요</p>
-      <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="후보 기관 트랙레코드 표 (좌우 스크롤)">
+      <div
+        className="overflow-x-auto"
+        tabIndex={0}
+        role="region"
+        aria-label={group === "A" ? "후보 기관 트랙레코드 표 (좌우 스크롤)" : "그룹 B 기관 트랙레코드 표 (좌우 스크롤)"}
+      >
         <table className="w-full min-w-[1100px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-border text-xs uppercase tracking-wide text-muted">
@@ -317,17 +473,17 @@ function CandidateTable({
           <tbody>
             {rows.map((row) => (
               <Fragment key={row.cik}>
-                <tr className="border-b border-border/50 align-top hover:bg-surface-hover/60" aria-label={row.name}>
+                <tr className="border-b border-border/50 align-top hover:bg-surface-hover/60" aria-label={`${row.name}${group === "B" ? " (그룹 B)" : ""}`}>
                   {columns.map((column) => (
                     <td key={column.key} className={`px-3 py-2 tabular-nums ${align(column)}`}>
                       {column.render(row)}
                     </td>
                   ))}
                 </tr>
-                {open.includes(row.cik) && (
+                {open.includes(openKey(row)) && (
                   <tr className="border-b border-border/50 bg-canvas">
                     <td colSpan={columns.length} className="px-3 py-3">
-                      <PeriodTable name={row.name} periods={row.periods ?? []} />
+                      <PeriodTable name={`${row.name}${group === "B" ? " (그룹 B)" : ""}`} span={span} periods={row.periods ?? []} />
                     </td>
                   </tr>
                 )}
@@ -341,17 +497,17 @@ function CandidateTable({
 }
 
 /** 한 기관의 구간 표 — 공시마다 언제 사서 언제 팔았는지, 커버리지, 복제 수익률과 같은 기간의 SPY. */
-function PeriodTable({ name, periods }: { name: string; periods: PaperTrackRecordPeriod[] }) {
+function PeriodTable({ name, span, periods }: { name: string; span: string; periods: PaperTrackRecordPeriod[] }) {
   return (
     <section aria-label={`${name} 구간`} className="flex flex-col gap-2">
       <p className="text-xs text-muted">
-        {name} — 공시 다음 거래일 종가에 사서 다음 공시의 다음 거래일 종가까지(마지막 구간은 기준일까지). 첫 구간은 7년 창 시작으로
+        {name} — 공시 다음 거래일 종가에 사서 다음 공시의 다음 거래일 종가까지(마지막 구간은 기준일까지). 첫 구간은 {span} 시작으로
         자릅니다. 수익률이 &quot;—&quot;인 구간은 커버된 보유가 없어 누적·통계에서 뺐습니다.
       </p>
       <Table<PaperTrackRecordPeriod>
         rows={periods}
         rowKey={(period, index) => `${period.filingDate}-${index}`}
-        emptyMessage="7년 창 안의 구간이 없습니다."
+        emptyMessage={`${span} 안의 구간이 없습니다.`}
         columns={[
           { key: "filingDate", header: "공시일", render: (period) => period.filingDate },
           { key: "reportDate", header: "보고 분기", render: (period) => period.reportDate },

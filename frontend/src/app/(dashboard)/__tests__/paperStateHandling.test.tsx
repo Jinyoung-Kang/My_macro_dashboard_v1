@@ -8,6 +8,7 @@
  *  - 주당 가격은 소수 4자리(싼 종목의 5bp 슬리피지가 보이게)
  *  - 숫자 null은 "—"(0.00으로 채우지 않음), 가격 없는 보유는 배지
  *  - 책 초기화는 책 코드를 정확히 입력해야 눌린다
+ *  - 주문 표의 근거는 문장(reason.text)을 자르지 않고 먼저 — 없으면 키: 값 요약, 전체 JSON은 title
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -195,7 +196,7 @@ describe("초기화 전", () => {
     expect(screen.getByRole("button", { name: "리스크 지금 실행" })).toBeTruthy();
   });
 
-  it("보유·체결 탭은 책이 없다고 안내하고, 다음 단계 탭은 '다음 단계에서 엽니다'", async () => {
+  it("보유·체결 탭은 책이 없다고 안내하고, 아직 준비 중인 탭은 '다음 단계에서 엽니다'", async () => {
     reads["/api/paper/overview"] = () =>
       Promise.resolve({ available: true, initialized: false, startDate: "2026-10-23", limits: LIMITS, books: [], jobs: [] });
 
@@ -204,7 +205,8 @@ describe("초기화 전", () => {
     expect(screen.getByText(/아직 책이 없습니다/)).toBeTruthy();
     expect(screen.getByRole("tab", { name: "보유·체결" }).getAttribute("aria-selected")).toBe("true");
 
-    fireEvent.click(screen.getByRole("tab", { name: /결정 로그/ }));
+    // 결정 로그는 단계 2에서 열렸습니다 — 아직 준비 중인 탭(프레임·메모)으로 자리 문구를 봅니다.
+    fireEvent.click(screen.getByRole("tab", { name: /프레임·메모/ }));
     expect(screen.getByText(/탭은 다음 단계에서 엽니다/)).toBeTruthy();
   });
 });
@@ -330,6 +332,56 @@ describe("주당 가격", () => {
   });
 });
 
+describe("주문 근거", () => {
+  it("규칙 책 주문의 근거는 문장(reason.text)을 자르지 않고 보이고, 문장이 없으면 키: 값 요약 — 전체 JSON은 마우스를 올려 본다", async () => {
+    const active = {
+      ...INITIALIZED,
+      books: INITIALIZED.books.map((entry) => (entry.code === "rules" ? { ...entry, status: "ACTIVE", startedOn: "2026-10-23" } : entry)),
+    };
+    const buyText = "2곳 동시 매수(점수 0.8333): A1 기관 A(0000000001) 신규(가중 0.5000 × 확신도 1.00), "
+      + "A2 기관 B(0000000002) 신규(가중 0.3333 × 확신도 1.00)";
+    const parkText = "남는 현금 9.99%가 기준 2.0%를 넘어 9.50%를 SHY에(여유 0.5%p) — 신호 매수가 아닌 현금 관리";
+    const order = (id: number, ticker: string, side: "BUY" | "SELL", reason: unknown) => ({
+      id, ticker, side, qty: null, targetWeightPct: side === "BUY" ? 5 : null, sellFraction: null, timing: "NEXT_OBSERVATION",
+      source: "RULE", status: "PENDING", rejectReason: null, reason, asOfTradingDate: "2026-10-26",
+      createdAtKst: "2026-10-27 07:31", expiresOn: "2026-10-29", filledAtKst: null,
+    });
+    reads["/api/paper/overview"] = () => Promise.resolve(active);
+    reads["/api/paper/books/rules/positions"] = () =>
+      Promise.resolve({ available: true, book: active.books[0], cash: 100000, lockouts: [], positions: [] });
+    reads["/api/paper/books/rules/orders"] = () => Promise.resolve({
+      available: true,
+      orders: [
+        // 규칙 책 매수 근거 — 키 순서는 rule · signal · kind · text …(서버 그대로). 80자에서 자르면 문장이 앞 키에 밀려 잘립니다.
+        order(1, "CCC", "BUY", { rule: "R2·R4", signal: "BUY", kind: "REBALANCE", text: buyText, score: 0.833333, rankInPlan: 1 }),
+        // 재선정일이 아닌 날의 남는 현금 SHY(현금 관리)
+        order(2, "SHY", "BUY", {
+          rule: "park_cash", signal: "PARKING", kind: "SCHEDULED", parking: true, spareCashPct: 9.9965, bufferPct: 0.5,
+          currentWeightPct: 0, selectionAsOf: "2026-10-23", thresholdPct: 2, text: parkText, targetWeightPct: 9.4965,
+        }),
+        // 문장이 없는 근거(장부가 덧붙인 키뿐)
+        order(3, "OLD", "SELL", { cashLimited: true, note: "현금 부족" }),
+      ],
+    });
+    reads["/api/paper/books/rules/fills"] = () => Promise.resolve({ available: true, fills: [] });
+
+    render(<PaperPage />);
+    fireEvent.click(await screen.findByRole("tab", { name: "보유·체결" }));
+
+    expect((screen.getByLabelText("책 고르기") as HTMLSelectElement).value).toBe("rules");
+    const buy = await screen.findByText(buyText);
+    expect(buyText.length).toBeGreaterThan(80);   // 예전 jsonSummary(…, 80)였으면 "rule: R2·R4 · signal: BUY · …"에서 잘림
+    expect(buy.textContent).toBe(buyText);
+    expect(buy.getAttribute("title")).toContain('"rule":"R2·R4"');
+    const buyCells = within(buy.closest("tr") as HTMLElement).getAllByRole("cell");
+    expect(buyCells[buyCells.length - 1].textContent).toBe(buyText);   // 근거는 마지막 칸
+
+    expect(screen.getByText(parkText).getAttribute("title")).toContain('"rule":"park_cash"');
+    expect(screen.getByText("cashLimited: true · note: 현금 부족")).toBeTruthy();
+    expect(screen.queryByText(/^rule: /)).toBeNull();
+  });
+});
+
 describe("리스크 지금 실행", () => {
   beforeEach(() => {
     reads["/api/paper/overview"] = () => Promise.resolve(INITIALIZED);
@@ -437,7 +489,8 @@ describe("책 버튼", () => {
 
     fireEvent.change(screen.getByLabelText("책 고르기"), { target: { value: "rules" } });
     expect(screen.queryByRole("button", { name: "일시정지" })).toBeNull();
-    expect(screen.getByText(/시작 전인 책은 다음 단계의 초기 결정으로 시작합니다/)).toBeTruthy();
+    // 규칙 책은 단계 2부터 개요의 '규칙 책 시작'(초기 결정)으로 시작합니다.
+    expect(screen.getByText(/시작 전인 규칙 책은 개요 탭의 '규칙 책 시작'\(초기 결정\)으로 시작합니다/)).toBeTruthy();
     // 다른 책으로 바꾸면 앞 책의 결과 문구를 새 책 이름 아래 남기지 않습니다.
     expect(screen.queryByText("SPY 100%: 일시정지 · 대기 주문 2건 취소")).toBeNull();
   });

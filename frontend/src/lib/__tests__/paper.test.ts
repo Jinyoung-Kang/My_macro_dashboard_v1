@@ -216,13 +216,27 @@ describe("보유 표", () => {
 });
 
 describe("주문 표", () => {
-  it("크기 — 수량 > 목표 비중 > 매도 비율, 매도에 셋 다 없으면 전량, 매수는 —", () => {
+  it("크기 — 수량 > 살 금액 > 매도 비율, 매도에 셋 다 없으면 전량, 매수는 —", () => {
     const base = { qty: null, targetWeightPct: null, sellFraction: null };
     expect(orderSizeText({ ...base, side: "BUY", qty: 151 })).toBe("151주");
-    expect(orderSizeText({ ...base, side: "BUY", targetWeightPct: 20 })).toBe("목표 비중 20.00%");
+    expect(orderSizeText({ ...base, side: "BUY", targetWeightPct: 20 })).toBe("순자산의 20.00% 매수");
     expect(orderSizeText({ ...base, side: "SELL", sellFraction: 0.5 })).toBe("보유의 50%");
     expect(orderSizeText({ ...base, side: "SELL" })).toBe("전량");
     expect(orderSizeText({ ...base, side: "BUY" })).toBe("—");
+  });
+
+  it("크기 — 주문 값은 목표 비중이 아니라 살 금액: 근거의 목표 비중이 다르면 함께(이미 든 종목·SHY 보충)", () => {
+    const base = { qty: null, sellFraction: null, side: "BUY" as const };
+    // reselectionDayBuysTopsUpAndParksShy와 같은 장부 — CCC는 5%를 들고 목표 10%, SHY는 늘릴 47.4885%(목표 71.4885%)
+    expect(orderSizeText({ ...base, targetWeightPct: 5, reason: { targetWeightPct: 10, currentWeightPct: 5, orderWeightPct: 5 } }))
+      .toBe("순자산의 5.00% 매수 (목표 10.00%)");
+    expect(orderSizeText({ ...base, targetWeightPct: 47.4885, reason: { targetWeightPct: 71.4885, orderWeightPct: 47.4885 } }))
+      .toBe("순자산의 47.49% 매수 (목표 71.49%)");
+    // 새로 사는 종목은 살 금액 = 목표라 한 번만, 근거가 없거나 모양이 다르면 살 금액만
+    expect(orderSizeText({ ...base, targetWeightPct: 10, reason: { targetWeightPct: 10 } })).toBe("순자산의 10.00% 매수");
+    expect(orderSizeText({ ...base, targetWeightPct: 10, reason: { cashLimited: true } })).toBe("순자산의 10.00% 매수");
+    expect(orderSizeText({ ...base, targetWeightPct: 10, reason: "문자열 근거" })).toBe("순자산의 10.00% 매수");
+    expect(orderSizeText({ ...base, targetWeightPct: 10, reason: { targetWeightPct: "10" } })).toBe("순자산의 10.00% 매수");
   });
 
   it("체결 시점 이름 — 모르는 값은 그대로", () => {
@@ -248,10 +262,12 @@ describe("버튼", () => {
     expect(statusToggle(undefined)).toBeNull();
   });
 
-  it("시작 전 안내 — 벤치마크는 종가를 받은 뒤 초기화를 다시 누르라고, 규칙·Claude 책은 초기 결정을 기다린다고", () => {
+  it("시작 전 안내 — 벤치마크는 종가를 받은 뒤 초기화를 다시 누르라고, 규칙 책은 개요의 '규칙 책 시작'으로, Claude 책은 다음 단계", () => {
     expect(notStartedNote("BENCHMARK")).toContain("종가를 받은 뒤 초기화를 다시 누르세요");
     expect(notStartedNote("BENCHMARK")).not.toContain("초기 결정");
-    expect(notStartedNote("RULES")).toContain("다음 단계의 초기 결정으로 시작합니다");
+    expect(notStartedNote("RULES")).toContain("개요 탭의 '규칙 책 시작'");
+    expect(notStartedNote("RULES")).not.toContain("다음 단계");
+    expect(notStartedNote("CLAUDE")).toContain("다음 단계의 초기 결정으로 시작합니다");
     expect(notStartedNote("CLAUDE")).not.toContain("종가를 받은 뒤");
   });
 

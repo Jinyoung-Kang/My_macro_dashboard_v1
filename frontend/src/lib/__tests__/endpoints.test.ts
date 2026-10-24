@@ -114,6 +114,8 @@ const CASES: Case[] = [
     before: `/api/paper/track-record${asOf ? `?asOf=${asOf}` : ""}`,
     after: endpoints.paper.trackRecord(asOf),
   })),
+  { name: "paper.decisions", before: "/api/paper/decisions?book=rules&limit=50", after: endpoints.paper.decisions("rules", 50) },
+  { name: "paper.decision", before: `/api/paper/decisions/${12}`, after: endpoints.paper.decision(12) },
 ];
 
 describe("API 경로 — 예전 조립식과 서버가 받는 값이 같다", () => {
@@ -149,7 +151,8 @@ const documentedForm = (url: string) => new URL(url, "http://backend").pathname
   .replace(/^\/api\/status\/run\/[^/]+$/, "/api/status/run/{taskName}")
   .replace(/^\/api\/admin\/users\/[^/]+$/, "/api/admin/users/{id}")
   .replace(/^\/api\/alerts\/rules\/[^/]+$/, "/api/alerts/rules/{id}")
-  .replace(/^\/api\/paper\/books\/[^/]+\/(positions|orders|fills|nav|status|reset)$/, "/api/paper/books/{code}/$1");
+  .replace(/^\/api\/paper\/books\/[^/]+\/(positions|orders|fills|nav|status|reset)$/, "/api/paper/books/{code}/$1")
+  .replace(/^\/api\/paper\/decisions\/[^/]+$/, "/api/paper/decisions/{id}");
 
 describe("docs/API.md 백엔드 표와 대조", () => {
   it("화면이 부르는 경로는 모두 문서(= 백엔드 경로 목록 테스트가 대조하는 표)에 있다", () => {
@@ -162,6 +165,6 @@ describe("docs/API.md 백엔드 표와 대조", () => {
     const paths = [...strings, ...CASES.map(({ after }) => after)].map(documentedForm);
     expect(paths.filter((path) => !documented.has(path))).toEqual([]);
     // 경로를 만드는 함수는 모두 위 CASES에 한 줄 이상 있습니다. 새 함수를 만들었다면 CASES에 추가하고 이 숫자를 고치세요.
-    expect(functions).toBe(45);
+    expect(functions).toBe(47);
   });
 });

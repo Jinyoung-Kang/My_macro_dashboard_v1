@@ -6,6 +6,7 @@ import { useApi } from "@/hooks/useApi";
 import { endpoints } from "@/lib/endpoints";
 import { PAPER_SOURCES, PAPER_TABS, type PaperTabKey } from "@/lib/paper";
 import type { PaperOverviewResponse } from "@/lib/types";
+import { DecisionsSection } from "./DecisionsSection";
 import { HoldingsSection } from "./HoldingsSection";
 import { OverviewSection } from "./OverviewSection";
 import { SelectionSection } from "./SelectionSection";
@@ -16,8 +17,8 @@ import { SelectionSection } from "./SelectionSection";
  * <p>같은 돈·같은 날 출발한 네 책(규칙 · Claude 재량 · SPY 100% · SPY 60%·SHY 40%)의 장부를 봅니다.
  * 주문은 어디로도 나가지 않습니다. 숫자는 전부 백엔드 장부가 계산한 값이고, 이 화면은 조회·배치만 합니다(ADR 0004).
  *
- * <p>개요 응답 하나를 이 파일이 읽어 두 섹션에 나눠 줍니다 — 보유·체결 탭의 책 목록도 개요의 책 목록입니다
- * (탭마다 따로 읽으면 두 탭이 서로 다른 시점의 책 상태를 보일 수 있음). 기관 선정 탭은 책 상태와 관계없는 트랙레코드 응답을
+ * <p>개요 응답 하나를 이 파일이 읽어 섹션에 나눠 줍니다 — 보유·체결 탭과 결정 로그 탭의 책 목록도 개요의 책 목록입니다
+ * (탭마다 따로 읽으면 탭들이 서로 다른 시점의 책 상태를 보일 수 있음). 기관 선정 탭은 책 상태와 관계없는 트랙레코드 응답을
  * 그 탭이 열릴 때 스스로 읽습니다. 한계 문구는 어느 탭에서든 맨 위에 둡니다.
  */
 export default function PaperPage() {
@@ -83,6 +84,7 @@ export default function PaperPage() {
             {current.key === "overview" && <OverviewSection overview={data} onChanged={reload} />}
             {current.key === "selection" && <SelectionSection />}
             {current.key === "holdings" && <HoldingsSection books={data.books ?? []} onChanged={reload} />}
+            {current.key === "decisions" && <DecisionsSection books={data.books ?? []} onChanged={reload} />}
             {current.opensIn && (
               <Banner tone="info">
                 <strong>{current.label}</strong> 탭은 다음 단계에서 엽니다 — {current.opensIn}.

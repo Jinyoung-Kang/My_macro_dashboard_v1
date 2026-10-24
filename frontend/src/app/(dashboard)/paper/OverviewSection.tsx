@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { MultiLineSeries, SERIES_COLORS } from "@/components/charts";
 import { Banner, Button, Card, Freshness, Table } from "@/components/ui";
 import { useApi } from "@/hooks/useApi";
@@ -9,7 +10,9 @@ import { apiPost } from "@/lib/api";
 import { endpoints } from "@/lib/endpoints";
 import { deltaColor, EMPTY, formatKst } from "@/lib/format";
 import {
+  type Badge,
   bookCard,
+  initialDecisionResultView,
   initPrompt,
   initResultText,
   jobOutcomeClass,
@@ -17,17 +20,23 @@ import {
   jsonTitle,
   navChart,
   PAPER_SOURCES,
+  type PoolRow,
   quotesLine,
   riskResultView,
+  rulesStartPrompt,
+  type SelectedFilerRow,
+  selectedFilersView,
 } from "@/lib/paper";
 import type {
   PaperBookSummary,
+  PaperInitialDecisionResult,
   PaperInitResult,
   PaperJobRun,
   PaperOverviewResponse,
   PaperRiskResult,
   PaperStatusResponse,
 } from "@/lib/types";
+import { GateIndicatorBody } from "./GateIndicatorBody";
 
 /**
  * 책 코드별 선 색. 앞 셋은 charts의 검증된 팔레트, 혼합 벤치마크는 COT 화면의 보조 계열과 같은 회색입니다
@@ -42,8 +51,8 @@ const BOOK_COLORS: Record<string, string> = {
 const SPARE_COLORS = ["#A371F7", "#39C5CF", "#DB6D28"];
 
 /**
- * 개요 탭 — 책 카드 네 개, 순자산 곡선, 장부 관측치 신선도, 작업 기록. 초기화 전이거나 벤치마크가 아직 사후 체결을
- * 기다리면(pendingBackfill) "초기화" 버튼.
+ * 개요 탭 — 책 카드 네 개, 순자산 곡선, 신호 기관(최근 선정), OS 게이트 지표(참고), 장부 관측치 신선도, 작업 기록.
+ * 초기화 전이거나 벤치마크가 아직 사후 체결을 기다리면(pendingBackfill) "초기화" 버튼, 규칙 책이 시작 전이면 "규칙 책 시작" 버튼.
  *
  * 숫자는 개요 응답 그대로 그립니다. 버튼이 성공하면 onChanged(개요 다시 읽기)를 불러 카드·곡선을 새 장부로 바꿉니다.
  */
@@ -55,12 +64,25 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
   const risk = useAsyncAction(() => apiPost<PaperRiskResult>(endpoints.paper.runRisk), "리스크 작업을 실행하지 못했습니다.");
   const initElapsed = useElapsedSeconds(init.busy);
   const riskElapsed = useElapsedSeconds(risk.busy);
+  // 규칙 책 시작(초기 결정) — 선정·트랙레코드 계산과 사후 체결을 한 번에 하므로 오래 걸릴 수 있어 경과 초를 셉니다.
+  const start = useAsyncAction(
+    (book: string) => apiPost<PaperInitialDecisionResult>(endpoints.paper.runInitialDecision, { book }),
+    "규칙 책을 시작하지 못했습니다.",
+  );
+  const startElapsed = useElapsedSeconds(start.busy);
+  const [confirmingStart, setConfirmingStart] = useState(false);
 
   const runInit = async () => {
     if (await init.run()) onChanged();
   };
   const runRisk = async () => {
     if (await risk.run()) onChanged();
+  };
+  const runStart = async (book: string) => {
+    const ok = await start.run(book);
+    // 성공·실패 모두 확인 단계를 닫습니다 — 실패 사유(예: 수집 중)는 아래 경고로 남고, 다시 누르려면 확인을 한 번 더 거칩니다.
+    setConfirmingStart(false);
+    if (ok) onChanged();
   };
 
   const books = overview.books ?? [];
@@ -75,6 +97,10 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
   const initResult = init.result && (
     <Banner tone={init.result.skipped?.length ? "warn" : "info"}>초기화 — {initResultText(init.result)}</Banner>
   );
+  const startPrompt = rulesStartPrompt(overview);
+  const startView = start.result ? initialDecisionResultView(start.result) : null;
+  const startResult = startView && <Banner tone={startView.tone}>{startView.text}</Banner>;
+  const selection = selectedFilersView(overview.selection);
 
   return (
     <>
@@ -100,6 +126,32 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
       )}
       {/* 카드가 사라진 뒤(모두 시작함)에도 초기화 결과는 남겨 둡니다 — 무엇을 만들고 체결했는지 읽을 수 있게. */}
       {!prompt && initResult}
+
+      {startPrompt && (
+        <Card title={startPrompt.title} subtitle="초기 결정 — 출발일 종가 사후 체결" source={PAPER_SOURCES.decisions}>
+          <p className="text-sm leading-relaxed text-body">{startPrompt.body}</p>
+          {confirmingStart ? (
+            <div className="mt-3 flex flex-col gap-3 rounded-md border border-warn/40 bg-warn/10 px-3 py-3">
+              <p className="text-sm leading-relaxed text-warn">{startPrompt.confirm}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="primary" onClick={() => void runStart(startPrompt.bookCode)} disabled={start.busy}>
+                  {start.busy ? `시작 중… ${startElapsed}초` : "시작 확인"}
+                </Button>
+                <Button onClick={() => setConfirmingStart(false)} disabled={start.busy}>취소</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3">
+              <Button variant="primary" onClick={() => setConfirmingStart(true)} disabled={start.busy}>{startPrompt.title}</Button>
+            </div>
+          )}
+          {/* 서버의 400 문구(트랙레코드 수집 중·이미 시작함 등)를 그대로 — 무엇을 기다려야 하는지 서버가 적어 보냅니다. */}
+          {start.error && <div className="mt-3"><Banner tone="warn">{start.error}</Banner></div>}
+          {startResult && <div className="mt-3">{startResult}</div>}
+        </Card>
+      )}
+      {/* 시작한 뒤(개요를 다시 읽어 카드가 사라짐)에도 결과는 남깁니다 — 주문·사후 체결 수를 읽을 수 있게. */}
+      {!startPrompt && startResult}
 
       <Card
         title="책"
@@ -135,6 +187,60 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
       >
         <MultiLineSeries data={chart.rows} series={series} precision={0} height={300} />
       </Card>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card
+          title="신호 기관"
+          subtitle={selection
+            ? `${selection.asOfDate} 선정 — 규칙 책이 두 그룹을 합친 신호 풀의 13F 변화를 신호로 씁니다(다음 재선정일까지)`
+            : "규칙 책이 13F 신호를 읽는 기관(그룹 A: 후보 트랙레코드 상위 · 그룹 B: 기존 13F 메뉴 최근 상위)"}
+          source={PAPER_SOURCES.selection}
+        >
+          {!selection ? (
+            <p className="text-sm text-muted">아직 기관 선정이 없습니다 — 규칙 책을 시작하면 출발일 기준으로 선정하고, 그 뒤는 재선정일마다 다시 뽑습니다.</p>
+          ) : selection.groupA.length === 0 && selection.pool.length === 0 ? (
+            <p className="text-sm text-muted">선정이 비어 있습니다 — 자격 있는 기관이 없었습니다(규칙 책은 매수 없이 SHY만 듭니다).</p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <GroupList
+                  title="그룹 A — 후보 기관 트랙레코드 상위"
+                  rows={selection.groupA}
+                  empty="자격 있는 기관이 없습니다."
+                />
+                <GroupList
+                  title="그룹 B — 기존 13F 메뉴 최근 상위"
+                  rows={selection.groupB}
+                  empty="자격 있는 기관이 없습니다 — 신호는 그룹 A만 냅니다(가중은 그룹 A가 전부)."
+                />
+              </div>
+              {selection.pool.length > 0 && (
+                <section aria-label="신호 풀" className="flex flex-col gap-1">
+                  <h3 className="text-xs font-semibold text-bright">신호 풀 · 기관 가중</h3>
+                  <Table<PoolRow>
+                    rows={selection.pool}
+                    rowKey={(row) => row.key}
+                    columns={[
+                      { key: "name", header: "기관", render: (row) => <span className="font-semibold text-bright">{row.name}</span> },
+                      {
+                        key: "group",
+                        header: "그룹",
+                        render: (row) => (row.group ? <GroupBadge badge={row.group} /> : <span className="text-muted">{EMPTY}</span>),
+                      },
+                      { key: "ranks", header: "순위", render: (row) => <span className="whitespace-nowrap">{row.ranks}</span> },
+                      { key: "weight", header: "기관 가중", align: "right", render: (row) => row.weight },
+                    ]}
+                  />
+                </section>
+              )}
+            </div>
+          )}
+        </Card>
+
+        <Card title="OS 게이트 지표" subtitle="참고 — 구속하지 않음 · 과거 OS가 쓴 매크로 트리거 수준" source={PAPER_SOURCES.gate}>
+          <GateIndicatorBody gate={overview.gate} />
+        </Card>
+      </div>
 
       <Card
         title="장부 관측치"
@@ -209,6 +315,34 @@ function RiskResult({ result }: { result: PaperRiskResult }) {
         </div>
       )}
     </Banner>
+  );
+}
+
+/** 선정 그룹 하나의 목록 — 그룹 안 순위 순(서버 순서), 이름을 모르면 CIK. */
+function GroupList({ title, rows, empty }: { title: string; rows: SelectedFilerRow[]; empty: string }) {
+  return (
+    <section aria-label={title} className="flex flex-col gap-1">
+      <h3 className="text-xs font-semibold text-bright">{title}</h3>
+      {rows.length === 0 ? (
+        <p className="text-xs text-muted">{empty}</p>
+      ) : (
+        <ol className="space-y-0.5 text-xs text-body">
+          {rows.map((row) => (
+            <li key={row.key} title={`CIK ${row.cik}`}>
+              <span className="tabular-nums text-muted">{row.rank}</span> <span>{row.name}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function GroupBadge({ badge }: { badge: Badge }) {
+  return (
+    <span title={badge.title} className={`whitespace-nowrap rounded-sm border px-1.5 py-px text-[10px] ${badge.className}`}>
+      {badge.label}
+    </span>
   );
 }
 
