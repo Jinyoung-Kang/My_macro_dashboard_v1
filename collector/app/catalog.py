@@ -30,6 +30,7 @@ SNAP_TOSS_MARKET_FLOWS = "kr.toss_market_flows" # 코스피·코스닥 투자자
 SNAP_TOSS_RADAR_UNIVERSE = "kr.toss_radar_universe"  # 거래대금 상위 100종목의 투자자 매매 (레이더 폴백용)
 SNAP_PAPER_QUOTES = "paper.quotes"      # 모의 매매 유니버스 최근 3개월 일봉(장중 마지막 봉 = 지연 시세) — 장부 관측치
 SNAP_TRACK_RECORD_INDEX = "sec.13f.track_record_index"  # 모의 매매 트랙레코드 후보 기관 목록·기관별 수집 진행률(q30)
+SNAP_US_FUNDAMENTALS_STATUS = "us.fundamentals.status"  # 모의 매매 미국 재무(SEC XBRL) 회사별 수집 상태 — 사실은 observations us.fundamentals
 
 # 변동성 지수(^VIX / ^MOVE)는 가장 긴 기간으로 한 번 저장하고, 짧은 기간
 # 요청은 잘라 씁니다 (13F에서 q1을 q8에서 유도하는 것과 같은 방식).
@@ -95,11 +96,15 @@ OBS_FSC_PRICE = "fsc_price"     # 금융위 공식 일별 시세 (entity = 6자�
 TS_FSC_MARKET = "fsc_market"    # 시장별 합계 시가총액·거래대금 (series = "KOSPI.marketCap" 등)
 OBS_TOSS_STOCK_FLOW = "toss_stock_flow"  # 종목별 일별 투자자 매매동향 (토스증권 공식, entity = 종목코드)
 TS_EQUITY_CLOSE = "equity_close"        # 모의 매매 유니버스 10년 일별 종가(수정주가), series_id = 야후 티커
+# 모의 매매 미국 종목 재무(SEC XBRL Company Facts, 명세 D28). entity = 티커, obs_date = 공시일(filed) —
+# payload {"cik": [...], "facts": [...]}는 그날 처음 낸(또는 값이 바뀐) 사실 묶음. 백엔드는 obs_date ≤ 기준일만 읽습니다.
+OBS_US_FUNDAMENTALS = "us.fundamentals"
 
 # 기간으로 지워도 되는 누적 데이터셋은 태스크가 스스로 보존 기한을 두는 fsc_price·toss_stock_flow(각 400일)뿐입니다(QA-070).
 # radar_ranking(다시 받을 수 없음, ADR 0005)·fred·fed_liquidity(증분 적재, 판정 성과가 전 구간을 씀, ADR 0009)·
 # krx_futures(원천이 최근 40일만 줌)·fsc_market(보충은 최근 7일만 함)·equity_close(모의 매매 트랙레코드가 10년 창을 통째로 쓰고,
-# 상장폐지되면 야후가 그 종목의 과거 종가를 더 주지 않음)는 기간이 지나도 지우지 않습니다.
+# 상장폐지되면 야후가 그 종목의 과거 종가를 더 주지 않음)·us.fundamentals(사실은 공시로 쌓이기만 하고, 그 시점 값을 고르려면
+# 옛 공시일 행이 있어야 함)는 기간이 지나도 지우지 않습니다.
 
 
 # ==============================================================================

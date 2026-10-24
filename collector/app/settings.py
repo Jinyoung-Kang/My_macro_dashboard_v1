@@ -134,6 +134,26 @@ def track_record_fetch_budget() -> int:
         return TRACK_RECORD_FETCH_BUDGET
 
 
+FUNDAMENTALS_FETCH_BUDGET = 200
+
+
+def fundamentals_fetch_budget() -> int:
+    """
+    미국 종목 재무 수집(task_sec_fundamentals)이 한 번 실행에서 보내는 companyfacts 요청 수(= CIK 수) 상한. 기본 200, 1~600.
+
+    200 × 0.37~0.6초(단계 0-b 측정) = 75~120초로 weekly 시간 상한(30분)의 13% 아래이고, 같은 SEC 토큰 버킷을 13F 두 태스크와
+    나눠 씁니다. 유니버스 약 570곳은 세 번(약 36시간)에 한 바퀴 돕니다(명세 D28, 설계 §4-5 ②).
+    비었거나 숫자가 아니면 기본값 — 잘못 적은 값으로 수집을 멈추지(0) 않게 1 밑으로는 내리지 않습니다.
+    """
+    raw = (os.environ.get("FUNDAMENTALS_FETCH_BUDGET") or "").strip()
+    if not raw:
+        return FUNDAMENTALS_FETCH_BUDGET
+    try:
+        return min(600, max(1, int(raw)))
+    except ValueError:
+        return FUNDAMENTALS_FETCH_BUDGET
+
+
 # ==============================================================================
 # 외부 API 키 (없으면 빈 문자열)
 # ==============================================================================

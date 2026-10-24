@@ -522,3 +522,12 @@ TRACK_RECORD_CUSIPS: dict[str, str] = {
     "Y7542C130": "STNG",  # SCORPIO TANKERS INC · Common Stock
     "Y8162K204": "SBLK",  # STAR BULK CARRIERS CORP · Common Stock
 }
+
+# 위 표에서 OpenFIGI 종류가 ETP(ETF·상장 신탁)인 티커 — 회사가 아니라 재무제표(XBRL 재무 사실)가 없습니다. 모의 매매 재무
+# 수집(tasks/fundamentals, D28)이 대상에서 빼고, 백엔드 재무 섹션(FundamentalsSection.TRACK_RECORD_ETPS)이 같은 집합으로 패킷
+# 대상에서 거릅니다 — indicators.PAPER_ETFS(19개)만 빼면 IVV·IWM·GDX 같은 ETF가 '재무 없음' 빈 줄로 남았습니다. 표의 '· ETP'
+# 주석과 tests/test_sec_fundamentals.py가, 백엔드 상수와 FundamentalsEtpParityTest가 대조합니다. 표를 다시 대조할 때 함께 고칩니다.
+TRACK_RECORD_ETPS: frozenset[str] = frozenset({
+    "DUSA", "EEM", "EWY", "EWZ", "FXI", "GDX", "GLD", "IEF", "IEMG", "IGSB", "IVV", "IWM", "KWEB", "LQD",
+    "MBB", "MCHI", "MUB", "QQQ", "SLV", "SPSB", "SPY", "TLT", "VCIT", "VEA", "VWO", "XLE", "XLF",
+})

@@ -367,6 +367,62 @@ def put_observations(
     return len(rows)
 
 
+def put_entity_observations(
+    dataset: str,
+    entity: str,
+    rows: Iterable[tuple[Any, dict]],
+    *,
+    keep_ciks: list[str] | None = None,
+) -> int:
+    """
+    한 entity의 (날짜, payload) 여러 행을 **한 트랜잭션에서** upsert합니다. 보낸 행 수(날짜를 읽을 수 없는 행은 뺌).
+
+    put_observations와 같은 upsert지만 payload를 그대로 씁니다 — entity를 payload 안의 필드로 두지 않는 데이터
+    (us.fundamentals: entity = 티커, payload = {"cik", "facts"})를 위해서입니다. 한 블록(풀 연결 하나 = 한 트랜잭션)이라
+    한 회사의 행이 중간에 끊겨 일부 공시일만 새 내용으로 바뀌지 않습니다. 이번에 없는 날짜의 행은 그대로 남습니다.
+    값이 같은 행은 다시 쓰지 않습니다(IS DISTINCT FROM — 12시간마다 같은 사실을 받아도 죽은 행이 쌓이지 않게).
+
+    :param keep_ciks: 주면 같은 트랜잭션에서 그 entity의 행 가운데 payload ``cik``가 이 목록과 하나도 겹치지 않는 행을 먼저
+        지웁니다(rows가 비어도). 티커의 CIK가 다른 회사로 바뀌거나 잘못 넣은 별칭을 빼면, 옛 CIK로 쌓은 행이 그 티커 아래 남아
+        '가장 늦게 낸 값' 규칙으로 새 회사에 없는 기간(1년 전 TTM·시점 값)을 다른 회사 숫자로 채웠습니다. ``cik`` 칸이 없는 행은
+        누가 냈는지 모르므로 지우지 않습니다.
+    """
+    params = []
+    for raw_date, payload in rows:
+        day = _coerce_date(raw_date)
+        if day is None or payload is None:
+            continue
+        params.append((dataset, day, str(entity), Jsonb(payload)))
+
+    if not params and keep_ciks is None:
+        return 0
+
+    with connection() as conn, conn.cursor() as cur:
+        if keep_ciks is not None:
+            cur.execute(
+                """
+                DELETE FROM observations
+                WHERE dataset = %s AND entity = %s
+                  AND jsonb_typeof(payload->'cik') = 'array'
+                  AND NOT (payload->'cik' ?| %s::text[])
+                """,
+                (dataset, str(entity), [str(cik) for cik in keep_ciks]),
+            )
+        if params:
+            cur.executemany(
+                """
+                INSERT INTO observations (dataset, obs_date, entity, payload, updated_at)
+                VALUES (%s, %s, %s, %s, now())
+                ON CONFLICT (dataset, obs_date, entity) DO UPDATE SET
+                    payload    = EXCLUDED.payload,
+                    updated_at = EXCLUDED.updated_at
+                WHERE observations.payload IS DISTINCT FROM EXCLUDED.payload
+                """,
+                params,
+            )
+    return len(params)
+
+
 def replace_observations(
     dataset: str,
     obs_date: str,
@@ -890,6 +946,7 @@ def missing_datasets() -> list[dict]:
         (catalog.snap_daum_futures_trend(25), "Daum 선물 수급 (계약수)"),
         (catalog.SNAP_PAPER_QUOTES, "모의 매매 시세"),
         (catalog.SNAP_TRACK_RECORD_INDEX, "모의 매매 13F 트랙레코드 수집 진행"),
+        (catalog.SNAP_US_FUNDAMENTALS_STATUS, "모의 매매 미국 재무(SEC XBRL) 수집 상태"),
     ]
 
     # 키가 있어야 받을 수 있는 데이터셋은 키가 설정된 경우에만 "누락"으로 봅니다.

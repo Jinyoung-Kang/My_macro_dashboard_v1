@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from .base import Task
 from .filings import task_sec_13f, task_sec_13f_track_record
+from .fundamentals import task_sec_fundamentals
 from .korea_public import task_dart_fundamentals, task_fsc_prices, task_kr_holidays
 from .maintenance import task_run_log_retention
 from .markets import task_macro_collected, task_radar_rankings, task_scraper_markets
@@ -43,6 +44,7 @@ ALL_TASKS: tuple[Task, ...] = (
     Task("toss_radar_universe", "slow", task_toss_radar_universe, "레이더 폴백 — 거래대금 상위 100종목 투자자 매매 (토스증권)"),
     Task("sec_13f", "weekly", task_sec_13f, "SEC 13F 기관 포트폴리오 (분기 공시)"),
     Task("sec_13f_track_record", "weekly", task_sec_13f_track_record, "13F 트랙레코드 후보 27곳 30분기 (모의 매매)"),
+    Task("sec_fundamentals", "weekly", task_sec_fundamentals, "미국 종목 재무 SEC XBRL (모의 매매 Claude 책 패킷, 실행당 200 CIK)"),
     Task("kr_holidays", "weekly", task_kr_holidays, "한국 공휴일 (천문연 특일정보)"),
     Task("dart_fundamentals", "weekly", task_dart_fundamentals, "국내 종목 재무 (DART 사업보고서)"),
     Task("paper_price_history", "weekly", task_paper_price_history, "모의 매매 유니버스 10년 일별 종가 (이력 누적, 로컬 전용)"),

@@ -1,0 +1,36 @@
+{
+ "cik": 2115436,
+ "entityName": "ExxonMobil Holdings Corp",
+ "facts": {
+  "us-gaap": {
+   "NetIncomeLoss": {
+    "label": "Net Income (Loss)",
+    "description": "Net Income (Loss).",
+    "units": {
+     "USD": [
+      {
+       "start": "2025-04-01",
+       "end": "2025-06-30",
+       "val": 7082000000,
+       "accn": "0002115436-26-000012",
+       "fy": 2026,
+       "fp": "Q2",
+       "form": "10-Q",
+       "filed": "2026-08-03"
+      },
+      {
+       "start": "2026-04-01",
+       "end": "2026-06-30",
+       "val": 7700000000,
+       "accn": "0002115436-26-000012",
+       "fy": 2026,
+       "fp": "Q2",
+       "form": "10-Q",
+       "filed": "2026-08-03"
+      }
+     ]
+    }
+   }
+  }
+ }
+}

@@ -1,0 +1,47 @@
+{
+ "0": {
+  "cik_str": 320193,
+  "ticker": "AAPL",
+  "title": "Apple Inc."
+ },
+ "1": {
+  "cik_str": 1652044,
+  "ticker": "GOOGL",
+  "title": "Alphabet Inc."
+ },
+ "2": {
+  "cik_str": 1652044,
+  "ticker": "GOOG",
+  "title": "Alphabet Inc."
+ },
+ "3": {
+  "cik_str": 2115436,
+  "ticker": "XOM",
+  "title": "ExxonMobil Holdings Corp"
+ },
+ "4": {
+  "cik_str": 1500435,
+  "ticker": "GPRO",
+  "title": "GoPro, Inc."
+ },
+ "5": {
+  "cik_str": 1000184,
+  "ticker": "SAP",
+  "title": "SAP SE"
+ },
+ "6": {
+  "cik_str": 1103838,
+  "ticker": "IBN",
+  "title": "ICICI BANK LTD"
+ },
+ "7": {
+  "cik_str": 884394,
+  "ticker": "SPY",
+  "title": "SPDR S&P 500 ETF TRUST"
+ },
+ "8": {
+  "cik_str": 999999,
+  "ticker": "AAPL",
+  "title": "뒤에 다시 나온 같은 티커(앞의 것을 씀)"
+ }
+}
