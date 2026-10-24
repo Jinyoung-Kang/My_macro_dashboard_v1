@@ -16,6 +16,7 @@ import {
   initPrompt,
   initResultText,
   jsonSummary,
+  navAxis,
   navChart,
   notStartedNote,
   orderSizeText,
@@ -41,6 +42,7 @@ import {
   trackMetricLabel,
   trackRecordRows,
 } from "../paper";
+import { formatNumber } from "../format";
 import type {
   PaperBookSummary,
   PaperPosition,
@@ -160,6 +162,59 @@ describe("순자산 곡선", () => {
   it("곡선이 없으면 빈 차트", () => {
     expect(navChart(null, BOOKS)).toEqual({ rows: [], series: [] });
     expect(navChart(undefined, BOOKS)).toEqual({ rows: [], series: [] });
+  });
+});
+
+describe("순자산 곡선 세로축", () => {
+  const SERIES = [{ key: "a", name: "A" }, { key: "b", name: "B" }];
+  const rowsOf = (a: (number | null)[], b: (number | null)[] = []) =>
+    a.map((value, index) => ({ date: `2026-10-${23 + index}`, a: value, b: b[index] ?? null }));
+  /** 차트가 고정 범위에서 찍는 눈금(Recharts 기본 tickCount 5 = 4칸)을 같은 자릿수로 적은 것. */
+  const tickLabels = ({ domain, precision }: ReturnType<typeof navAxis>) => {
+    const [lower, upper] = domain!;
+    return [0, 1, 2, 3, 4].map((k) => formatNumber(lower + ((upper - lower) * k) / 4, precision));
+  };
+
+  it("하루 1달러 미만 차이면 수준의 0.2% 이상으로 펼쳐 둥근 4칸 — 눈금이 서로 다르고 자료를 다 담는다", () => {
+    const axis = navAxis({ rows: rowsOf([99950.22, 99951.0], [99950.5, null]), series: SERIES });
+    expect(axis).toEqual({ domain: [99850, 100050], precision: 0 });
+    expect(tickLabels(axis)).toEqual(["99,850", "99,900", "99,950", "100,000", "100,050"]);
+  });
+
+  it("수준이 작으면 간격도 작아지고 자릿수가 간격을 따른다(소수 눈금도 서로 다름)", () => {
+    // 0.2% 폭 0.02 → 간격 0.005를 넘는 둥근 값 0.01, 4칸 = 0.04.
+    const axis = navAxis({ rows: rowsOf([10.001, 10.002]), series: SERIES });
+    expect(axis).toEqual({ domain: [9.98, 10.02], precision: 2 });
+    expect(tickLabels(axis)).toEqual(["9.98", "9.99", "10.00", "10.01", "10.02"]);
+  });
+
+  it("범위가 0.2%보다 넓으면 차트 기본 축(자료에 맞춤)과 정수 눈금 그대로", () => {
+    expect(navAxis({ rows: rowsOf([100000, 100800, 101500]), series: SERIES })).toEqual({ domain: undefined, precision: 0 });
+  });
+
+  it("점 하나(또는 모든 값이 같음)도 가운데 두고 펼친다", () => {
+    expect(navAxis({ rows: rowsOf([100000]), series: SERIES })).toEqual({ domain: [99900, 100100], precision: 0 });
+    expect(navAxis({ rows: rowsOf([null, 100000, null], [100000, null, 100000]), series: SERIES }))
+      .toEqual({ domain: [99900, 100100], precision: 0 });
+  });
+
+  it("값이 하나도 없거나 계열 밖의 값뿐이면 기본 축 — 없는 숫자로 범위를 만들지 않는다", () => {
+    expect(navAxis({ rows: rowsOf([null, null], [null, null]), series: SERIES })).toEqual({ domain: undefined, precision: 0 });
+    expect(navAxis({ rows: [], series: SERIES })).toEqual({ domain: undefined, precision: 0 });
+    expect(navAxis({ rows: [{ date: "2026-10-23", other: 5 }], series: SERIES })).toEqual({ domain: undefined, precision: 0 });
+  });
+
+  it("행은 건드리지 않는다(null은 null 그대로 — 선이 끊김)", () => {
+    const rows = rowsOf([99950.22, null], [null, 99951]);
+    const before = JSON.stringify(rows);
+    navAxis({ rows, series: SERIES });
+    expect(JSON.stringify(rows)).toBe(before);
+  });
+
+  it("0 근처 순자산에 0 아래 눈금을 만들지 않는다", () => {
+    const axis = navAxis({ rows: rowsOf([0, 0]), series: SERIES });
+    expect(axis.domain![0]).toBe(0);
+    expect(new Set(tickLabels(axis)).size).toBe(5);
   });
 });
 

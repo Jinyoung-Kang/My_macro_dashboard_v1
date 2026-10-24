@@ -261,6 +261,67 @@ export function navChart(
   return { rows, series };
 }
 
+/** 순자산 축이 적어도 펼쳐 그리는 폭 — 수준의 0.2%($100k면 $200). */
+const NAV_MIN_SPAN_RATIO = 0.002;
+/** 차트 눈금 간격 수 — Recharts 세로축 기본 tickCount 5 = 간격 4. 범위를 간격의 정확히 4배로 잡아야 눈금이 둥근 값에 섭니다. */
+const NAV_TICK_INTERVALS = 4;
+
+/** 순자산 곡선의 세로축 — domain이 undefined면 차트 기본(자료에 맞춤). */
+export interface NavAxis {
+  domain: [number, number] | undefined;
+  precision: number;
+}
+
+/** x 이상인 가장 작은 1·2·5×10ⁿ. */
+function niceStepAtLeast(x: number): number {
+  const magnitude = 10 ** Math.floor(Math.log10(x));
+  for (const factor of [1, 2, 5]) {
+    if (factor * magnitude >= x * (1 - 1e-9)) return factor * magnitude;
+  }
+  return 10 * magnitude;
+}
+
+/**
+ * 순자산 곡선의 세로축 범위와 눈금 소수 자릿수.
+ *
+ * 책들의 순자산이 거의 안 움직이면(출발 직후·현금 위주 책 — 예: 99,950.22~99,951.00) 자료에 맞춘 축의 눈금 간격이 0.2달러쯤이
+ * 되고, 정수로 적는 눈금이 전부 "99,951"처럼 같은 숫자로 반복됩니다. 그럴 때만 축을 수준의 0.2% 이상으로 펼쳐 자료 가운데에 두고,
+ * 둥근 간격(1·2·5×10ⁿ) 4칸으로 잡아 눈금 자릿수를 그 간격에 맞춥니다 — 간격이 1달러 미만이면 소수까지 적어 눈금끼리 다릅니다.
+ * 값은 건드리지 않습니다(없는 날은 null 그대로 선이 끊김, 축 범위 계산에서도 뺌). 자료 범위가 0.2%보다 넓으면 차트 기본 축을 그대로
+ * 씁니다(domain undefined, 정수 눈금).
+ */
+export function navAxis(chart: { rows: readonly Record<string, unknown>[]; series: readonly NavSeriesLine[] }): NavAxis {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const row of chart.rows) {
+    for (const line of chart.series) {
+      const value = row[line.key];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+      }
+    }
+  }
+  if (min > max) return { domain: undefined, precision: 0 };
+
+  const minSpan = Math.max(Math.abs(min), Math.abs(max)) * NAV_MIN_SPAN_RATIO || 1;
+  if (max - min >= minSpan) return { domain: undefined, precision: 0 };
+
+  const center = (min + max) / 2;
+  let step = niceStepAtLeast(minSpan / NAV_TICK_INTERVALS);
+  for (;;) {
+    const decimals = Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
+    let lower = Math.round((center - (step * NAV_TICK_INTERVALS) / 2) / step) * step;
+    // 음수가 될 수 없는 순자산에 0 아래 눈금을 찍지 않습니다.
+    if (min >= 0 && lower < 0) lower = 0;
+    const upper = lower + step * NAV_TICK_INTERVALS;
+    if (lower <= min && max <= upper) {
+      return { domain: [Number(lower.toFixed(decimals)), Number(upper.toFixed(decimals))], precision: decimals };
+    }
+    step = niceStepAtLeast(step * 1.5);
+  }
+}
+
 /**
  * 장부 관측치 한 줄 — 봉 날짜·티커 수·이어받은 값 수. 저장본이 없으면 그렇다고 적습니다.
  * tickers는 개수, staleTickers는 티커 이름 목록으로 옵니다(PaperQueryService.quotesSummary).

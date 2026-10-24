@@ -21,6 +21,7 @@ import {
   jobOutcomeClass,
   jsonSummary,
   jsonTitle,
+  navAxis,
   navChart,
   PAPER_SOURCES,
   type PoolRow,
@@ -99,6 +100,8 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
 
   const books = overview.books ?? [];
   const chart = navChart(overview.navSeries, books);
+  // 하루 움직임이 1달러 미만이면 정수 눈금이 같은 숫자로 반복됩니다 — 축을 조금 펼치고 자릿수를 간격에 맞춥니다.
+  const navY = navAxis(chart);
   const series = chart.series.map((line, index) => ({
     ...line,
     color: BOOK_COLORS[line.key] ?? SPARE_COLORS[index % SPARE_COLORS.length],
@@ -205,7 +208,14 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
         subtitle="거래일별 순자산(달러). 그날 기록이 없는 책은 선을 끊어 그립니다 — 시작 전인 책은 선이 없습니다."
         source={boundaries.text ? `${PAPER_SOURCES.ledger} · 프레임 경계는 ${PAPER_SOURCES.boundaries}` : PAPER_SOURCES.ledger}
       >
-        <MultiLineSeries data={chart.rows} series={series} precision={0} height={300} markers={boundaries.markers} />
+        <MultiLineSeries
+          data={chart.rows}
+          series={series}
+          precision={navY.precision}
+          domain={navY.domain}
+          height={300}
+          markers={boundaries.markers}
+        />
         {boundaries.text && <p className="mt-2 text-xs text-muted">{boundaries.text}</p>}
       </Card>
 
