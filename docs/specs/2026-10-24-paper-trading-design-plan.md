@@ -2,7 +2,7 @@
 
 > 명세: [2026-10-24-paper-trading-spec.md](2026-10-24-paper-trading-spec.md). 결정에 따라 정해진 곳은 "(D#)"로 표시했습니다.
 >
-> - 상태: **구현 중**(2026-10-24, 3차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
+> - 상태: **구현 중**(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
 > - 단계 0 근거 표: [2026-10-24-paper-trading-step0.md](2026-10-24-paper-trading-step0.md). 요약은 §13.
 > - 이 문서는 **어떻게, 어떤 순서로** 만들지 정합니다. 파일·클래스 이름은 구현 때 바뀔 수 있지만 배치 규칙(§1)은 바뀌지 않습니다.
 
@@ -140,7 +140,7 @@
 | `paper_fills` | `id`, `order_id FK`, `book_code`, `ticker`, `side`, `qty`, `price`, `raw_price`, `slippage_bp`, `gross`, `observed_at`, `observation_date`, `price_source`, `is_backfill`, `created_at` | `UNIQUE (order_id)` |
 | `paper_nav_daily` | `book_code`, `trading_date`, `nav`, `cash`, `equity_value`, `exposure_pct`, `prices_final`, `created_at` | `PK (book_code, trading_date)` |
 | `paper_gate_log` | `trading_date PK`, `inputs JSONB`, `level` CHECK(L0·L1·L2·UNKNOWN), `streaks JSONB`, `created_at` | **지표**. Claude 책·규칙 책 어느 쪽도 구속하지 않음(D7·D19) |
-| `paper_track_record` | `as_of_date`, `cik`, `window_years`, `periods_used`, `periods_total`, `first_filing_date`, `last_filing_date`, `cum_return_pct`, `cagr_pct`, `vol_pct`, `mdd_pct`, `sharpe`, `excess_vs_spy_pct`, `coverage_min`, `coverage_avg`, `eligible BOOL`, `ineligible_reason`, `rank INT NULL`, `periods JSONB`(구간별 시작·끝·수익률·커버리지), `computed_at` | `PK (as_of_date, cik)`. 재선정일마다 한 세트, 수동 재계산은 같은 날 덮어씀 |
+| `paper_track_record` | `as_of_date`, `cik`, `window_years`, `periods_used`, `periods_total`, `first_filing_date`, `last_filing_date`, `cum_return_pct`, `cagr_pct`, `vol_pct`, `mdd_pct`, `sharpe`, `excess_vs_spy_pct`, `coverage_min`, `coverage_avg`, `eligible BOOL`, `ineligible_reason`, `rank INT NULL`, `periods JSONB`(구간별 시작·끝·수익률·커버리지), `computed_at`, `group_code`(V9 — `A` 후보 7년, `B` 기존 메뉴 2년) | `PK (as_of_date, group_code, cik)`(V9). 재선정일마다 한 세트, 수동 재계산은 같은 날 덮어씀 |
 | `paper_selection_log` | `as_of_date PK`, `selected_ciks TEXT[]`, `ranking JSONB`(상위 10 요약), `settings_version`, `created_at` | 선정 이력 |
 | `paper_decisions` | `id`, `book_code`, `as_of_trading_date`, `kind` CHECK(SCHEDULED·MANUAL·INITIAL·REBALANCE), `decided_at`, `status` CHECK(OK·NO_TRADE·REFUSED·FORMAT_ERROR·API_ERROR·SKIPPED), `model`, `framework_version`, `settings_version`, `selection_as_of DATE NULL`, `target_exposure_pct NULL`, `packet JSONB`, `packet_hash`, `response_raw`, `response JSONB`, `usage JSONB`, `error`, `note_ids BIGINT[]`, `prices_final`, `latency_ms`, `retry_count INT` | `UNIQUE (book_code, as_of_trading_date, kind)` |
 | `paper_framework_versions` | `version PK`, `body JSONB`, `rendered TEXT`, `rendered_tokens_est`, `changelog`, `source_proposal_id NULL`, `created_at` | |
@@ -278,13 +278,35 @@ eligible = periods_used ≥ 24 && min(coverage) ≥ 0.5 && avg(coverage) ≥ 0.7
 - 수동 재계산(`POST /run/rerank`)은 같은 `as_of_date`를 덮어쓰고 선정은 바꾸지 않는다(기록용). 선정은 재선정일에만 바뀐다.
 - 자격 기관이 5곳 미만이면 있는 만큼으로 가고 결정 기록에 적는다. 0곳이면 규칙 책은 매수 없이 SHY만.
 
-### 4-1. 신호 추출 (R2)
+#### ⑥ 그룹 B — 기존 13F 메뉴의 최근 성과 상위 4곳 (R1·D27)
 
-선정 5곳 각각 `q30` 저장본의 최신 분기 vs 직전 분기(`HoldingsJson.previousQuarter` + `HoldingsDiff.compare`). 같은 분기 JSON에서 `cusip → ticker`(없으면 `name|class → ticker`)를 붙인다. 매수 이벤트 = `NEW` 또는 (`ADDED` && `sharesDiff / (shares − sharesDiff) ≥ 0.30`). 매도 이벤트 = `CLOSED`. 티커별 매수 기관 집합·합산 비중·기관 순위 합. `buyers ≥ minHolders(2)` → 후보. 보유 종목을 2곳 이상 `CLOSED` → 매도 신호.
+사용자 결정(2026-10-24 3차): 그룹 A(위 ⑤의 상위 5)만이 아니라, 이미 지켜보던 '기관 13F 포트폴리오 분석' 메뉴 12곳(`indicators.INSTITUTIONS`)에서
+수익률 상위 4곳의 전략·패턴·장점을 섞는다.
+- 지표: ④와 **같은 방법**(공시일 다음 거래일 복제, 수정주가)의 **최근 2년** 창(`blend.groupB.windowYears` 2) CAGR. 기존 메뉴 저장본이 8분기(q8)라 2년이 공통으로 덮는 길이다.
+  그 기관의 `q30`(CUSIP 매핑 티커)이 있으면 그것을, 없으면 `q8`(이름 매핑 티커)을 쓴다.
+- 자격: ④와 같은 커버리지 기준(최소 50%·평균 70%)과 R5(최신 분기 공시), 구간 ≥ `blend.groupB.minPeriods`(6 — 2년 창 8구간의 75%).
+  **인덱스·연기금은 덮인 대형주 쪽만 보여 복제 수익률이 부풀므로** 커버리지 기준으로 빠진다(단계 1b 원형: 노르웨이 18.5%·블랙록 18.1%·뱅가드 17.2%이지만 평균 커버리지 57~62%).
+- 2026-10-23 원형: 자격 4곳 = Duquesne 26.8%·Bridgewater 16.0%·Fisher 15.4%·Berkshire 13.8%(Scion 27.5%는 최신 분기 공시 없음).
+- 선정 시점·Point-in-Time은 그룹 A와 같다(재선정일·초기 선정, 그날까지의 공시·가격만). 결과는 `paper_track_record`에 `group_code='B'`로(V9), 선정은 같은
+  `paper_selection_log` 행의 `ranking.groupB`에 남긴다. `selected_ciks`는 신호 풀(A ∪ B).
 
-### 4-2. 배분 (R3·R4, D19)
+### 4-1. 신호 추출 (R2·D27)
 
-후보를 (매수 기관 수 ↓, 순위 합 ↑, 합산 비중 ↓) 정렬 → 상위 `rulesMaxNames(10)`. **예산 없음**: 순자산 전체를 동일 비중(종목 상한 10%)으로. 이미 보유한 후보는 상한까지만 추가. 남는 현금은 SHY(`parkCashInShy`).
+신호 풀(A ∪ B) 각 기관의 저장본(그룹 A·B 모두 `q30`이 있으면 `q30`, 아니면 `q8` — **선정 기준일 이전 공시만**)에서 최신 분기 vs 바로 앞 분기
+(`HoldingsDiff.previousQuarterEnd`). 같은 분기 같은 티커 여러 줄(A·C주 등)은 평가액·주식 수를 더한다. 매수 이벤트 = `NEW` 또는 `ADDED`(주식 수 +30% 이상).
+매도 이벤트 = `CLOSED`. 매수 후보 = 서로 다른 `minHolders`(2)곳 이상의 매수 이벤트.
+
+**기관 가중**(합 1): `w_f = g · a(rank_A) + (1 − g) · b(rank_B)`, `a(r) = (6 − r)/15`(A 1~5위), `b(r) = (5 − r)/10`(B 1~4위), 그 그룹에 없으면 0,
+`g = blend.groupWeightA`(0.5). 두 그룹에 모두 있는 기관(2026-10-23 기준 Duquesne)은 둘 다 받는다. 그룹이 모자라면(자격 기관 < topN) 있는 순위로만 정규화.
+
+**확신도**: `c_f(t) = min(weight_f(t), blend.convictionCapPct) / blend.convictionCapPct`(10%) — 그 종목이 그 기관 13F 총액에서 차지하는 비중.
+**후보 점수**: `S_t = Σ_{f ∈ buyers(t)} w_f · c_f(t)`. 정렬은 (점수 ↓, 매수 기관 수 ↓, 티커 ↑). 매도 신호 = 보유 종목을 풀 기관 중 `minHolders`곳 이상 `CLOSED`.
+
+### 4-2. 배분 (R3·R4, D19·D27)
+
+상위 `rulesMaxNames`(10) 후보(유니버스 안·재진입 금지 밖)의 목표 비중 = `maxWeightStockPct`(10%; ETF면 `maxWeightEtfPct`) × `S_t / S_max`.
+1% 미만은 "확신도 낮음"으로 뺀다. 집중형 기관의 고확신 종목은 상한까지, 분산형 기관의 작은 신규 편입은 작게 — 두 스타일을 섞는 규칙이다(`blend.allocation`
+`CONVICTION`, 대안 `EQUAL`은 예전 동일 비중). **예산 없음**: 이미 보유한 후보는 목표 비중까지만 추가. 남는 현금은 SHY(`parkCashInShy`).
 
 ### 4-3. 일일 결정 흐름 (R5·R6)
 
@@ -294,8 +316,8 @@ decideRules(asOf):
   if isReselectionDay(asOf):                                        # 공시 기한 다음 거래일
       tr  = PaperSelectionService.compute(asOf)                     → paper_track_record
       sel = select(tr)                                              → paper_selection_log
-  sel = latest selection
-  sig = Signal13F.collect(sel.ciks, asOf)
+  sel = latest selection                                            # 신호 풀 A ∪ B와 기관 가중
+  sig = Signal13F.collect(sel.pool, asOf)                           # 선정 기준일 이전 공시만
   orders = [SELL 전량 for held if sig.sellSignal(held)]
   if isReselectionDay(asOf): orders += Signal13F.allocate(sig.candidates, nav, positions, caps)
   record paper_decisions(book=rules, kind=SCHEDULED|REBALANCE, selection_as_of,
@@ -318,13 +340,15 @@ decideRules(asOf):
 | `trackRecord.minPeriods` / `minCoverage` / `avgCoverage` | 24 / 0.5 / 0.7 | D22 |
 | `trackRecord.candidateCiks` | §4-0 ① 표(단계 0 확인 뒤) | D21 — 바꾸면 경고 |
 | `minHolders` / `rulesMaxNames` / `parkCashInShy` | 2 / 10 / true | 규칙 책 |
+| `blend.groupB.topN` / `blend.groupB.windowYears` / `blend.groupB.minPeriods` | 4 / 2 / 6 | 그룹 B(D27) |
+| `blend.groupWeightA` / `blend.convictionCapPct` / `blend.allocation` | 0.5 / 10 / `CONVICTION`(`EQUAL`) | 섞기 가중·확신도·배분(D27) |
 | `universeExtraTickers` / `cashLikeTickers` | XL*·SHY·UUP·GLD·DBC·TLT·IEF / SHY | D8 |
 | `gate.*` (us10yStage1 4.80, us10yFull 4.75, brentMax 95, wtiMax 90, usdjpyMin 155, confirmDays 3) | | **참고 지표만** (D7) |
 | `notesDefaultExpiryTradingDays` / `notesMaxCharsInPacket` | 3 / 6000 | 메모 |
 | `apiDailyCallCap` | 6 | D18 |
 | `frameworkTokenBudget` | 8000 | F4 |
 
-규칙 책 영향 키(`trackRecord.*`·`minHolders`·`rulesMaxNames`·`trailingStopPct`·`maxWeight*`)는 응답 `warning`으로 화면이 확인 문구를 보인다. `exposure.*` 키는 없다(D7·D19).
+규칙 책 영향 키(`trackRecord.*`·`blend.*`·`minHolders`·`rulesMaxNames`·`trailingStopPct`·`maxWeight*`)는 응답 `warning`으로 화면이 확인 문구를 보인다. `exposure.*` 키는 없다(D7·D19).
 
 ---
 
@@ -346,8 +370,9 @@ decideRules(asOf):
 | 3 | FRED | 9개 시리즈 마지막 값·날짜·20거래일 변화·1년 백분위(`asKnownOn`) | 9행 |
 | 4 | 국면 | `RegimeLogStore.recent(1)` | 1행 |
 | 5 | **OS 게이트 지표(참고)** | 단계·조건별 값·연속 일수 + "과거 OS가 쓴 트리거 수준이며 **구속하지 않음**. 현금 비중은 네 판단" | |
-| 6 | **기관 트랙레코드** | 상위 10: 이름·순위·CAGR·초과·MDD·샤프·커버리지·구간 수, 선정 5곳 표시, 선정 기준일, "공시일 기준 복제 수익률" | 10행 |
-| 7 | 13F 변화 | 선정 5곳 각각 reportDate·filingDate·상위 변화 15건(티커·행동·비중·변화율). 교집합 후보(≥2곳). "공시 시차 45일" | 기관당 15행 |
+| 6 | **기관 트랙레코드** | 그룹 A 상위 10(7년)·그룹 B 12곳(2년): 이름·순위·CAGR·초과·MDD·샤프·커버리지·구간 수·자격, 신호 풀 표시, 선정 기준일, "공시일 기준 복제 수익률" | 22행 |
+| 6b | **기관 전략 프로필**(D27) | 신호 풀 기관마다 그룹·순위·기관 가중, 수익률·MDD, 집중도(유효 종목 수·HHI·상위 10 비중), 회전율(`GuruStyle`), 상위 보유 5, 기존 메뉴 설명(`desc`)·스타일. "두 그룹의 전략·패턴·장점을 섞어 판단하라 — 교차 확인 종목 우선, 집중형의 고확신은 크게, 분산형의 신규 편입은 테마 확인" | 8곳 |
+| 7 | 13F 변화 | 신호 풀 기관 각각 reportDate·filingDate·상위 변화 15건(티커·행동·비중·변화율). 교집합 후보(≥2곳). "공시 시차 45일" | 기관당 15행 |
 | 8 | 가격·모멘텀 | 보유 + 후보 + 유니버스 ETF 17: 종가·1/3/6/12개월·200일선·52주 고점 대비 | ≤ 60행 |
 | 9 | 포트폴리오 | 순자산·현금·**현재 노출**·보유(수량·평단·현재가·비중·최고가·스탑 거리·보유일)·재진입 금지·이달 주문 수/상한 | |
 | 10 | 최근 결정 | 5건: 날짜·stance·**정한 노출**·요약 300자·통과/거절 수 | 5건 |
@@ -469,7 +494,7 @@ run():
 
 | 메서드 | 경로 | 요청 | 응답(요지) |
 |---|---|---|---|
-| GET | `/api/paper/track-record?asOf=` | | `{asOfDate, windowYears, metric, candidates:[{cik,name,style,rank,eligible,ineligibleReason,cagrPct,cumReturnPct,excessVsSpyPct,volPct,mddPct,sharpe,periodsUsed,periodsTotal,coverageMin,coverageAvg,firstFilingDate,lastFilingDate,storedQuarters,complete}], selected:[cik…], selectionHistory:[{asOfDate,selectedCiks}], collection:{filers,completeCount,storedFilings,targetFilings,lastRunAt}}` |
+| GET | `/api/paper/track-record?asOf=` | | `{asOfDate, windowYears, metric, candidates:[{cik,name,style,rank,eligible,ineligibleReason,cagrPct,cumReturnPct,excessVsSpyPct,volPct,mddPct,sharpe,periodsUsed,periodsTotal,coverageMin,coverageAvg,firstFilingDate,lastFilingDate,storedQuarters,complete}], selected:[cik…], selectionHistory:[{asOfDate,selectedCiks}], collection:{filers,completeCount,storedFilings,targetFilings,lastRunAt}}` | `groupB:{windowYears, candidates:[…같은 모양 + source(q30·q8)], selected:[cik…]}`, `pool:[{cik, name, groups, rankA, rankB, weight}]`(D27)
 | POST | `/api/paper/run/rerank` | `{asOf?}` | `{asOfDate, computed, selectedUnchanged:true}` |
 
 **함께 고칠 것**: `AccessPolicy` 29개 · `RouteInventoryTest.EXPECTED` · `docs/API.md`(DELETE는 세 칸 형식) · `scripts/qa/routes.json` · `endpoints.ts`·`endpoints.test.ts`(CASES, 함수 수, `documentedForm` 치환 `{code}`·`{id}`·`{version}`).
@@ -497,7 +522,7 @@ run():
 | **0. 선행 확인** | 명세 §7 여덟 항목: 장중 저장본, **후보 CIK 확인**, **EDGAR 목록 깊이·수집 시간 측정**, **커버리지 집계**, **10년 가격 저장본 크기**, Sonnet 호출, SDK 스키마 주입, 10-23 값 | S~M | 결과를 §13에 기록. 커버리지 미달 기관 목록과 매핑 추가 후보 200개 표 확보 |
 | **1. 장부 코어** | 수집기 `paper_quotes`·`paper_price_history`(D23, 유니버스는 지금 `EQUITY_MAP` + ETF로 시작하고 1b에서 CUSIP 매핑 티커를 더함), V8, `PaperStore`, `UsMarketCalendar`(공시 기한 포함)·`PaperLedger`·`TrailingStop`·`SplitDetector`·`PaperStats`·`GateIndicator`, `PaperMarketData`, `PaperLedgerService`, `PaperRiskJob`, `PaperAdminService.init`(네 책 + 벤치마크 10-23 사후 체결, 규칙·Claude 책은 현금만), `PaperQueryService`, API(overview·positions·orders·fills·nav·status·init·books status/reset·run/risk), 화면 개요·보유 탭 | M | 벤치마크 순자산이 SPY·SHY와 맞음. 체결 룩어헤드 테스트 통과. 스탑·분할 테스트 통과 |
 | **1b. 13F 트랙레코드** | 수집기: `TRACK_RECORD_FILERS`(선행 CIK)·`TRACK_RECORD_QUARTERS`·`task_sec_13f_track_record`·`collect_13f(reuse_stored, list_count)`·`TRACK_RECORD_CUSIPS`(D25)·유니버스 확장·`Datasets` 상수·DATA_SOURCES. 백엔드: `TrackRecord13F`·`PaperSelectionService`·`paper_track_record`·`paper_selection_log`·API 2개·기관 선정 탭. 수집을 돌려 후보 전원 `complete` | L | 수집 완료. 손계산 테스트(구간 수익률·CAGR·룩어헤드·커버리지·자격). 2026-10-23 기준 순위표가 화면에 보이고 상위 5가 기록됨. 단계 0 원형 계산(단계 0 표 D)과 대조 |
-| **2. 규칙 책** | `Signal13F`, `RuleBookService`, `PaperDecisionJob`(규칙 책까지, 재선정일 분기), 초기화에 규칙 책 10-23 사후 체결(선정 5곳 신호), 결정 로그 탭(규칙 책) | M | 10-23 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·순위·행동 기록. 재선정일 외 매수 없음 테스트 |
+| **2. 규칙 책** | V9(`paper_track_record.group_code`), 그룹 B 선정(D27), `Signal13F`(기관 가중 × 확신도, 확신도 비례 배분), `RuleBookService`, `PaperDecisionJob`(규칙 책까지, 재선정일 분기), 초기화에 규칙 책 10-23 사후 체결(선정 5곳 신호), 결정 로그 탭(규칙 책) | M | 10-23 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·순위·행동 기록. 재선정일 외 매수 없음 테스트 |
 | **3a. Claude 책 — 결정** | `AiService.structured`, 스키마 2개, `PacketBuilder`(게이트 참고·트랙레코드 섹션 포함), `OrderValidator`(예산 규칙 없음), `ClaudeBookService`, `paper_api_usage`, 설정 테이블·API·탭, 결정 로그 탭(패킷·응답·검증·노출), `run/decision`·`run/initial-decision` | L | 가짜 서버 4종. 검증기 규칙별 테스트 + "노출 0%·100% 모두 통과" 테스트. 초기 결정 패킷에 10-23 이후 값 없음. 실제 키로 10-23 초기 결정 미리보기 1회(장부를 바꾸지 않음 — 책 시작은 사용자가 누름, L2) |
 | **3b. 프레임·메모** | `paper_framework_*`·`paper_notes`, `FrameworkService`(v1 시드 — 매크로 축은 지침 문장으로)·`NoteService`, API, 탭 | M | 승인 전후 테스트. 만료 메모 제외. v1 규칙 목록 사람이 검토 |
 | **4. 마무리** | ADR 0018, ARCHITECTURE·API.md·DATA_SOURCES·README·`.env.example`·compose(`PAPER_ENABLED`), 이 문서 구현 결과 표 | S | `make test` 통과, `/paper` 여섯 탭 동작, `git branch -r --contains HEAD` 빈 결과 |
@@ -511,7 +536,8 @@ run():
 - `PaperLedgerTest`·`TrailingStopTest`·`SplitDetectorTest`·`PaperStatsTest`: 이전 설계와 같음.
 - `GateIndicatorTest`: 단계 전이·연속 일수·입력 부재→UNKNOWN(L0가 아니라 UNKNOWN으로 표시).
 - `TrackRecord13FTest`: 두 공시·세 종목의 손계산 구간 수익률; 공시 **당일**이 아니라 다음 영업일 가격을 쓰는지(룩어헤드); 커버리지 재정규화; 7년 창 자르기; 자격 미달 사유 3종; 상장폐지 티커 처리; SPY 초과.
-- `Signal13FTest`: NEW·+30%·+29%·CLOSED, minHolders, 순위 합 정렬, 배분 상한·SHY 잔여.
+- `Signal13FTest`: NEW·+30%·+29%·CLOSED, minHolders, 기관 가중(두 그룹 겹침 포함)·확신도 점수 손계산, 확신도 비례 배분·1% 미만 제외·상한·SHY 잔여.
+- `PaperSelectionServiceTest`(그룹 B): q30 우선·q8 대체, 2년 창, 커버리지 미달(인덱스형) 제외, R5, 신호 풀 합집합·가중.
 - `OrderValidatorTest`: §5-4 규칙마다 1건 + `OVER_ALLOCATED` 큰 비중 우선 + 노출 0%·100% 통과.
 
 **서비스(모의 저장소)**
@@ -593,6 +619,8 @@ run():
 | SDK 스키마 주입 | Jackson 3 `Map` → `Schema.putAdditionalProperty` + `JsonValue.from` 동작. 단 `minimum`·`maximum`은 400, 길이·개수 제약도 미지원 | 스키마 제약을 API용·검증용으로 나눔(§5-1) |
 | 10-23 FRED·환율 값 | `DGS10` 10-23 값 아직 없음(10-22 = 4.96%), `T10Y3M`·`T10YIE`는 10-23까지, USD/JPY 10-23 = 156.814 | 초기 패킷은 `asKnownOn`으로 10-22 관측치(10-23에 알려진 최신)를 씀(§5-6) |
 | 2026-10-23 기준 예상 상위 5(원형 계산) | Duquesne(CAGR 27.5%)·Appaloosa(21.9%)·Greenlight(19.1%)·Viking(18.0%)·Himalaya(16.8%). 같은 창 SPY 누적 180%. 매핑을 445개에서 498개로 늘리자 Coatue(6위)와 Greenlight(3위)가 자리를 바꿈 — 순위가 커버리지에 민감 | 단계 1b의 자바 계산과 대조(단계 0 표 D) |
+| 단계 1b 자바 계산(운영 저장본, 2026-10-24) | 27곳 30분기 수집 완료(실행 3번, 400+365+60건). 2026-10-23 기준 23곳 자격, 원형과 같은 숫자(소수 첫째 자리)이고 5·6위만 바뀜: 5위 Coatue 16.8%(누적 196.4%), 6위 Himalaya 16.7%(195.8%) — 거래일 달력·상장폐지 처리 차이. 재계산 2.2초, 백엔드 메모리 213→226MiB | 그룹 A = Duquesne·Appaloosa·Greenlight·Viking·Coatue |
+| 그룹 B 원형(D27, 2년 창) | 기존 메뉴 12곳 중 자격 통과 4곳: Duquesne 26.8%·Bridgewater 16.0%·Fisher 15.4%·Berkshire 13.8%. 노르웨이·블랙록·뱅가드·CPPIB는 17~19%지만 평균 커버리지 51~62%로 미달(덮인 대형주만 보여 부풂), Scion 27.5%는 최신 분기 공시 없음 | 신호 풀 8곳(Duquesne 겹침) |
 
 ---
 
