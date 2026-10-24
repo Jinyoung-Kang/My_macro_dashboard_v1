@@ -465,6 +465,41 @@ public class StoreRepository {
         return out;
     }
 
+    /**
+     * 여러 개체의 <b>기준일까지</b> 기록 전부를 개체별로 묶어 읽습니다(오래된 날짜가 앞).
+     *
+     * <p>시점(Point-in-Time) 계산용입니다 — 모의 매매 재무(D28, {@link Datasets#OBS_US_FUNDAMENTALS})는 obs_date가 공시일이라,
+     * 기준일 d의 결정에는 {@code obs_date ≤ d}인 행만 써야 그날 몰랐던 정정값이 섞이지 않습니다. 시작일 없이 처음부터 읽는 것은
+     * 연간 사실이 몇 년 전 공시에만 있기 때문입니다(같은 값의 재게재는 수집기가 버림). 기본키 (dataset, obs_date, entity)의 앞
+     * 두 열로 범위를 좁힌 뒤 개체를 거릅니다.
+     *
+     * @param entities 개체 키 (호출하는 쪽이 형식을 검증해서 넘길 것)
+     * @param until    이 날짜까지 기록만 (inclusive)
+     * @return entity → 기록 목록(obs_date 오름차순, 각 payload에 {@code obsDate} 추가). 기록이 없는 개체는 키가 없습니다
+     */
+    public Map<String, List<JsonNode>> readObservationsUntil(String dataset, Collection<String> entities,
+                                                             LocalDate until) {
+        Map<String, List<JsonNode>> out = new LinkedHashMap<>();
+        if (entities.isEmpty()) {
+            return out;
+        }
+        String placeholders = String.join(",", Collections.nCopies(entities.size(), "?"));
+        List<Object> params = new ArrayList<>(List.of(dataset, java.sql.Date.valueOf(until)));
+        params.addAll(entities);
+        jdbc.query("SELECT entity, obs_date, payload FROM observations WHERE dataset = ? AND obs_date <= ? "
+                        + "AND entity IN (" + placeholders + ") ORDER BY entity, obs_date",
+                (RowCallbackHandler) rs -> {
+                    JsonNode node = parseJson(rs.getString("payload"));
+                    if (node != null && node.isObject()) {
+                        ((tools.jackson.databind.node.ObjectNode) node)
+                                .put("obsDate", rs.getDate("obs_date").toLocalDate().toString());
+                        out.computeIfAbsent(rs.getString("entity"), key -> new ArrayList<>()).add(node);
+                    }
+                },
+                params.toArray());
+        return out;
+    }
+
     /** 그 데이터셋의 가장 최근 obs_date. 없으면 null. */
     public LocalDate latestObservationDate(String dataset) {
         java.sql.Date date = jdbc.queryForObject(

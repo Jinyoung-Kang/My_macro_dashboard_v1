@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.time.Clock;
@@ -34,6 +35,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -66,10 +68,10 @@ import static org.mockito.Mockito.when;
 /**
  * Claude 패킷 — 결정적(같은 입력 같은 해시), 초기 패킷의 Point-in-Time(기준일 뒤 날짜 값 없음, 카드는 asOfMismatch), 게이트 문구·
  * 재구성, 트랙레코드·전략 프로필·13F 변화 섹션(그룹별 기관 상한), 하드 규칙 문구, 정기 패킷의 장부·대기 주문·최근 결정, 검증기와 같은
- * 가격 없음·묵은 입력 표시, 크기 목표(25,000토큰).
+ * 가격 없음·묵은 입력 표시, 재무 섹션 8b(대상 순서·ETF 제외·공시일 ≤ 기준일·단위·개념 범례), 크기 목표(30,000토큰).
  *
  * <p>저장소·리더는 가짜이고, 시계열 가짜는 읽기 범위(from·to)를 <b>일부러 무시</b>합니다 — 기준일 뒤 값(10-26 가격·FRED, 11-13에
- * 낸 3분기 13F)이 들어와도 패킷이 스스로 자르는지 봅니다. 선정은 출발일(2026-10-23) 하나: 그룹 A = F1·F2, 그룹 B = F1·버크셔
+ * 낸 3분기 13F, 10-30에 낸 재무 10-K)이 들어와도 패킷이 스스로 자르는지 봅니다. 선정은 출발일(2026-10-23) 하나: 그룹 A = F1·F2, 그룹 B = F1·버크셔
  * (기존 메뉴의 실제 CIK — 이름·설명을 메뉴 목록에서 읽음). 13F 분기: Q1(03-31, 05-15 공시) · Q2(06-30, 08-14) · Q3(09-30, 11-13 —
  * 기준일 뒤 공시라 보이면 안 됨).
  * <ul>
@@ -102,6 +104,10 @@ class PacketBuilderTest {
     private Map<String, TimeseriesColumns> fredColumns;
     private Map<String, TimeseriesColumns> priceColumns;
     private List<RegimeLogStore.Entry> regimeEntries;
+    /** 재무 저장본(observations us.fundamentals) — 종목 → 공시일별 행. 가짜 저장소는 기준일(until)을 일부러 무시합니다. */
+    private Map<String, List<JsonNode>> fundamentals;
+    /** 패킷이 재무 저장본을 읽을 때 넘긴 기준일(마지막 호출). */
+    private LocalDate fundamentalsUntil;
     private PacketBuilder builder;
 
     @BeforeEach
@@ -113,6 +119,8 @@ class PacketBuilderTest {
         fredColumns = new TreeMap<>();
         priceColumns = new TreeMap<>();
         regimeEntries = new ArrayList<>();
+        fundamentals = new TreeMap<>();
+        fundamentalsUntil = null;
         reader = mock(StoreReader.class);
         when(reader.quietly(any())).thenAnswer(invocation -> ((Supplier<Object>) invocation.getArgument(0)).get());
         when(reader.readStoredHoldings(anyString())).thenAnswer(invocation ->
@@ -132,6 +140,20 @@ class PacketBuilderTest {
                     out.put(id, source.get(id));
                 }
             });
+            return out;
+        });
+        when(repository.readObservationsUntil(anyString(), anyCollection(), any())).thenAnswer(invocation -> {
+            Collection<String> ids = invocation.getArgument(1);
+            fundamentalsUntil = invocation.getArgument(2);
+            Map<String, List<JsonNode>> out = new LinkedHashMap<>();
+            if (Datasets.OBS_US_FUNDAMENTALS.equals(invocation.getArgument(0))) {
+                // 기준일(until)은 일부러 무시합니다 — 기준일 뒤 공시가 와도 계산이 공시일로 스스로 거르는지 보려고.
+                new TreeSet<>(ids).forEach(id -> {
+                    if (fundamentals.containsKey(id)) {
+                        out.put(id, fundamentals.get(id));
+                    }
+                });
+            }
             return out;
         });
         regimeLog = mock(RegimeLogStore.class);
@@ -235,6 +257,99 @@ class PacketBuilderTest {
 
     private void snapshot(String name, Object payload, Instant collectedAt) {
         snapshots.put(name, new Snapshot(name, MAPPER.valueToTree(payload), "json", "ok", null, collectedAt));
+    }
+
+    private static final double M = 1_000_000.0;
+    private static final String REVENUES = "us-gaap:Revenues";
+    private static final String NI = "us-gaap:NetIncomeLoss";
+    private static final String OCF = "us-gaap:NetCashProvidedByUsedInOperatingActivities";
+    private static final String CAPEX = "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment";
+    private static final String BUYBACK = "us-gaap:PaymentsForRepurchaseOfCommonStock";
+    private static final String DIVIDEND = "us-gaap:PaymentsOfDividends";
+    private static final String ASSETS = "us-gaap:Assets";
+    private static final String EQUITY = "us-gaap:StockholdersEquity";
+    private static final String RECEIVABLES = "us-gaap:AccountsReceivableNetCurrent";
+    private static final String INVENTORY = "us-gaap:InventoryNet";
+    private static final String LTD = "us-gaap:LongTermDebt";
+    private static final String DEI_SHARES = "dei:EntityCommonStockSharesOutstanding";
+
+    /**
+     * 재무 저장본 한 행(observations us.fundamentals — 저장소가 붙이는 obsDate 포함). facts는 (개념, 시작|null, 끝, 값)을
+     * 되풀이하고, 단위는 dei 개념이면 shares, 아니면 unit입니다.
+     */
+    private void filing(String ticker, String filed, String form, String unit, Object... facts) {
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.putArray("cik").add("0000000099");
+        ArrayNode list = payload.putArray("facts");
+        for (int i = 0; i < facts.length; i += 4) {
+            String concept = (String) facts[i];
+            int colon = concept.indexOf(':');
+            ObjectNode f = list.addObject();
+            f.put("t", concept.substring(0, colon));
+            f.put("c", concept.substring(colon + 1));
+            f.put("u", concept.startsWith("dei:") ? "shares" : unit);
+            if (facts[i + 1] == null) {
+                f.putNull("s");
+            } else {
+                f.put("s", (String) facts[i + 1]);
+            }
+            f.put("e", (String) facts[i + 2]);
+            f.put("v", ((Number) facts[i + 3]).doubleValue());
+            f.put("f", form);
+            f.put("a", "0000000099-" + filed);
+            f.put("fy", 2026);
+            f.put("fp", "FY");
+        }
+        payload.put("obsDate", filed);
+        fundamentals.computeIfAbsent(ticker, key -> new ArrayList<>()).add(payload);
+    }
+
+    /**
+     * AAPL 모양(FundamentalsTest의 2026-10-23 시점 값, 백만 달러) × scale — 52/53주 회계연도, 10-Q 현금흐름은 9개월 누계뿐.
+     * 기준일 뒤(10-30)에 낸 10-K는 FY2026 연간과 9개월 매출 정정값(999,999)을 싣습니다 — 보이면 시점 규칙이 깨진 것.
+     * withNotes면 1년 전 자산·자본을 빼고 주식수를 옛 표지 기준일로 두어 계산 메모가 생기게 합니다(크기 시험의 최악에 가깝게).
+     */
+    private void appleLike(String ticker, double scale, boolean withNotes) {
+        double k = scale * M;
+        filing(ticker, "2024-08-02", "10-Q", "USD", REVENUES, "2023-10-01", "2024-06-29", 296_105 * k);
+        filing(ticker, "2024-11-01", "10-K", "USD", REVENUES, "2023-10-01", "2024-09-28", 391_035 * k);
+        List<Object> q3 = new ArrayList<>(Arrays.asList(
+                REVENUES, "2024-09-29", "2025-06-28", 313_695 * k, NI, "2024-09-29", "2025-06-28", 84_544 * k,
+                OCF, "2024-09-29", "2025-06-28", 81_754 * k, CAPEX, "2024-09-29", "2025-06-28", 9_473 * k,
+                BUYBACK, "2024-09-29", "2025-06-28", 69_904 * k, DIVIDEND, "2024-09-29", "2025-06-28", 11_566 * k,
+                RECEIVABLES, null, "2025-06-28", 27_557 * k, INVENTORY, null, "2025-06-28", 5_925 * k));
+        if (withNotes) {
+            q3.addAll(Arrays.asList(DEI_SHARES, null, "2024-01-19", 15_441_883_000.0 * scale));
+        } else {
+            q3.addAll(Arrays.asList(ASSETS, null, "2025-06-28", 331_495 * k, EQUITY, null, "2025-06-28", 65_830 * k,
+                    DEI_SHARES, null, "2025-07-18", 14_935_826_000.0 * scale));
+        }
+        filing(ticker, "2025-08-01", "10-Q", "USD", q3.toArray());
+        filing(ticker, "2025-10-31", "10-K", "USD",
+                REVENUES, "2024-09-29", "2025-09-27", 416_161 * k, NI, "2024-09-29", "2025-09-27", 112_010 * k,
+                OCF, "2024-09-29", "2025-09-27", 111_482 * k, CAPEX, "2024-09-29", "2025-09-27", 12_715 * k,
+                BUYBACK, "2024-09-29", "2025-09-27", 90_711 * k, DIVIDEND, "2024-09-29", "2025-09-27", 15_421 * k);
+        filing(ticker, "2026-07-31", "10-Q", "USD",
+                REVENUES, "2025-09-28", "2026-06-27", 364_357 * k, NI, "2025-09-28", "2026-06-27", 101_464 * k,
+                OCF, "2025-09-28", "2026-06-27", 116_996 * k, CAPEX, "2025-09-28", "2026-06-27", 6_799 * k,
+                BUYBACK, "2025-09-28", "2026-06-27", 62_094 * k, DIVIDEND, "2025-09-28", "2026-06-27", 11_778 * k,
+                ASSETS, null, "2026-06-27", 383_266 * k, EQUITY, null, "2026-06-27", 107_520 * k,
+                RECEIVABLES, null, "2026-06-27", 31_398 * k, INVENTORY, null, "2026-06-27", 11_092 * k,
+                LTD, null, "2026-06-27", 82_300 * k,
+                DEI_SHARES, null, withNotes ? "2025-01-17" : "2026-07-17", 14_594_180_000.0 * scale);
+        filing(ticker, "2026-10-30", "10-K", "USD",
+                REVENUES, "2025-09-28", "2026-09-26", 480_000 * k, REVENUES, "2025-09-28", "2026-06-27", 999_999 * k);
+    }
+
+    /** IFRS·유로 20-F 발행사 — 연간뿐(6-K 반기는 수집하지 않음). 금액은 비우고 비율만 나와야 합니다. */
+    private void ifrsEuro(String ticker) {
+        filing(ticker, "2026-03-20", "20-F", "EUR",
+                "ifrs-full:Revenue", "2025-01-01", "2025-12-31", 10_000 * M,
+                "ifrs-full:Revenue", "2024-01-01", "2024-12-31", 9_000 * M,
+                "ifrs-full:ProfitLossAttributableToOwnersOfParent", "2025-01-01", "2025-12-31", 1_100 * M,
+                "ifrs-full:Assets", null, "2025-12-31", 50_000 * M, "ifrs-full:Assets", null, "2024-12-31", 46_000 * M,
+                "ifrs-full:EquityAttributableToOwnersOfParent", null, "2025-12-31", 20_000 * M,
+                "ifrs-full:EquityAttributableToOwnersOfParent", null, "2024-12-31", 18_000 * M);
     }
 
     private static Map<String, Object> card(String key, String name, double price, double prev, String lastTs) {
@@ -433,6 +548,10 @@ class PacketBuilderTest {
         store.gates.put(FRI, new GateRow(FRI, MAPPER.valueToTree(gateInputs(81.0, "2026-10-24 06:30 (TradingView 수집 시각)",
                 77.0, "2026-10-27 06:30")), "L0", MAPPER.valueToTree(Map.of("G1", 0)), FRI_CLOSE));
 
+        // 재무: CCC는 AAPL 모양(10-30에 낸 10-K 포함 — 기준일 뒤), BBB는 IFRS·유로 20-F. 나머지 종목은 저장본 없음.
+        appleLike("CCC", 1, false);
+        ifrsEuro("BBB");
+
         regimeEntries.add(new RegimeLogStore.Entry(MON, "RISK_ON", "위험 선호",
                 MAPPER.valueToTree(Map.of("curve", Map.of("value", 0.5, "asOf", "2026-10-23"))), List.of(), "v1"));
         regimeEntries.add(new RegimeLogStore.Entry(LocalDate.of(2026, 10, 22), "NEUTRAL", "중립",
@@ -483,6 +602,23 @@ class PacketBuilderTest {
             }
         }
         throw new AssertionError(ticker + " 가격 줄이 없습니다");
+    }
+
+    /** 8b_fundamentals의 열 배열 한 줄을 열 이름 → 값 객체로. */
+    private static JsonNode fundamentalsRow(JsonNode body, String ticker) {
+        JsonNode section = body.get(PacketBuilder.FUNDAMENTALS);
+        List<String> columns = new ArrayList<>();
+        section.get("columns").forEach(c -> columns.add(c.asString()));
+        for (JsonNode values : section.get("rows")) {
+            if (ticker.equals(values.get(0).asString())) {
+                ObjectNode out = MAPPER.createObjectNode();
+                for (int i = 0; i < columns.size(); i++) {
+                    out.set(columns.get(i), values.get(i));
+                }
+                return out;
+            }
+        }
+        throw new AssertionError(ticker + " 재무 줄이 없습니다");
     }
 
     private static JsonNode row(JsonNode rows, String field, String value) {
@@ -1164,9 +1300,167 @@ class PacketBuilderTest {
         assertThatThrownBy(() -> PacketBuilder.toNode(new Object())).isInstanceOf(IllegalArgumentException.class);
     }
 
+    // ------------------------------------------------------------------ 8b 재무
+    @Test
+    @DisplayName("재무(8b): 초기 패킷은 공시일 ≤ 10-23만 — 10-30 10-K·정정값 없음, 백만 달러·%·배, 개념 코드 범례, IFRS·유로는 금액 null")
+    void fundamentalsInitialPacket() {
+        Packet packet = builder.build(FRI, RuleBookService.INITIAL, true);
+        JsonNode section = packet.body().get(PacketBuilder.FUNDAMENTALS);
+
+        assertThat(fundamentalsUntil).as("기준일까지 읽음").isEqualTo(FRI);
+        assertThat(section.get("columns").size()).isEqualTo(FundamentalsSection.COLUMNS.size());
+        assertThat(section.get("note").asString()).isEqualTo(FundamentalsSection.NOTE);
+        List<String> tickers = new ArrayList<>();
+        section.get("rows").forEach(r -> tickers.add(r.get(0).asString() + ":" + r.get(1).asString()));
+        assertThat(tickers).as("초기 결정은 보유·watchlist 없이 교집합 후보만(점수 순)")
+                .containsExactly("CCC:CANDIDATE", "BBB:CANDIDATE");
+        assertThat(section.get("omitted").asInt()).isZero();
+        assertThat(section.get("excluded")).isEmpty();
+        assertThat(packet.text()).doesNotContain("2026-10-30").doesNotContain("2026-09-26").doesNotContain("999999");
+
+        // AAPL 모양: TTM = FY2025 + 9M2026 − 9M2025(백만 달러), 손으로 계산한 값.
+        JsonNode ccc = fundamentalsRow(packet.body(), "CCC");
+        assertThat(ccc.get("latestPeriodEnd").asString()).isEqualTo("2026-06-27");
+        assertThat(ccc.get("filed").asString()).isEqualTo("2026-07-31");
+        assertThat(ccc.get("form").asString()).isEqualTo("10-Q");
+        assertThat(ccc.get("currency").asString()).isEqualTo("USD");
+        assertThat(ccc.get("taxonomy").asString()).isEqualTo("us-gaap");
+        assertThat(ccc.get("revenueTtmUsdM").asDouble()).isEqualTo(466_823);
+        assertThat(ccc.get("revenueYoYPct").asDouble()).as("466,823 ÷ 408,625").isEqualTo(14.2);
+        assertThat(ccc.get("netIncomeTtmUsdM").asDouble()).isEqualTo(128_930);
+        assertThat(ccc.get("netMarginPct").asDouble()).isEqualTo(27.6);
+        assertThat(ccc.get("ocfTtmUsdM").asDouble()).isEqualTo(146_724);
+        assertThat(ccc.get("capexTtmUsdM").asDouble()).isEqualTo(10_041);
+        assertThat(ccc.get("fcfTtmUsdM").asDouble()).isEqualTo(136_683);
+        assertThat(ccc.get("fcfConversionPct").asDouble()).isEqualTo(106);
+        assertThat(ccc.get("assetTurnoverX").asDouble()).as("배수는 소수 2자리").isEqualTo(1.31);
+        assertThat(ccc.get("leverageX").asDouble()).isEqualTo(4.12);
+        assertThat(ccc.get("roePct").asDouble()).isEqualTo(148.8);
+        assertThat(ccc.get("receivablesYoYPct").asDouble()).isEqualTo(13.9);
+        assertThat(ccc.get("inventoryYoYPct").asDouble()).isEqualTo(87.2);
+        assertThat(ccc.get("sharesYoYPct").asDouble()).isEqualTo(-2.3);
+        assertThat(ccc.get("buybacksTtmUsdM").asDouble()).isEqualTo(82_901);
+        assertThat(ccc.get("dividendsTtmUsdM").asDouble()).isEqualTo(15_633);
+        assertThat(ccc.get("longTermDebtUsdM").asDouble()).isEqualTo(82_300);
+        assertThat(ccc.get("debtToEquityPct").asDouble()).isEqualTo(76.5);
+        assertThat(ccc.get("isStale").asBoolean()).isFalse();
+        assertThat(ccc.get("isProxy").asBoolean()).isFalse();
+        assertThat(ccc.get("conceptsUsed").asString()).isEqualTo("rev1 ni1 ocf1 capex1 assets1 eq1 ar1 inv1 ltd1 bb1 div1 sh1");
+        assertThat(ccc.get("notes").isNull()).isTrue();
+
+        // IFRS·유로: 금액은 null, 비율·성장률은 그대로(환율·ADS 비율 없이 금액을 비교하지 않게).
+        JsonNode bbb = fundamentalsRow(packet.body(), "BBB");
+        assertThat(bbb.get("currency").asString()).isEqualTo("EUR");
+        assertThat(bbb.get("taxonomy").asString()).isEqualTo("ifrs-full");
+        assertThat(bbb.get("form").asString()).isEqualTo("20-F");
+        assertThat(bbb.get("latestPeriodEnd").asString()).isEqualTo("2025-12-31");
+        assertThat(bbb.get("revenueTtmUsdM").isNull()).isTrue();
+        assertThat(bbb.get("netIncomeTtmUsdM").isNull()).isTrue();
+        assertThat(bbb.get("revenueYoYPct").asDouble()).isEqualTo(11.1);
+        assertThat(bbb.get("netMarginPct").asDouble()).isEqualTo(11);
+        assertThat(bbb.get("assetTurnoverX").asDouble()).as("1배 미만 배수는 유효숫자 3자리").isEqualTo(0.208);
+        assertThat(bbb.get("leverageX").asDouble()).isEqualTo(2.53);
+        assertThat(bbb.get("roePct").asDouble()).isEqualTo(5.8);
+        assertThat(bbb.get("fcfConversionPct").isNull()).as("자료 없음은 0이 아니라 null").isTrue();
+        assertThat(bbb.get("conceptsUsed").asString()).isEqualTo("rev4 ni3 assets2 eq4");
+        assertThat(bbb.get("notes").isNull()).as("통화 메모는 currency 칸과 같은 말이라 뺌").isTrue();
+
+        JsonNode legend = section.get("conceptLegend");
+        assertThat(legend.get("rev1").asString()).isEqualTo("us-gaap:Revenues");
+        assertThat(legend.get("rev4").asString()).isEqualTo("ifrs-full:Revenue");
+        assertThat(legend.get("sh1").asString()).isEqualTo("dei:EntityCommonStockSharesOutstanding");
+        List<String> codes = new ArrayList<>();
+        legend.propertyNames().forEach(codes::add);
+        assertThat(codes).as("필드 순서 → 후보 순서, 쓴 코드만").startsWith("rev1", "rev4", "ni1", "ni3").hasSize(16);
+        assertThat(v0Prompt()).as("시스템 프롬프트 고정 문단")
+                .contains("재무(8b_fundamentals)는 공시 원자료로 계산한 값이다. 빈 값은 자료 없음이며 [확인 필요]로 둔다.");
+        assertThat(v0Prompt()).as("임시 v0 프레임 E3도 8b와 같은 말(재무가 없다고 하지 않음)")
+                .doesNotContain("재무 자료가 없으므로")
+                .contains("재무는 8b_fundamentals의 공시 값만 쓰고, 빈 값은 [확인 필요]로 둔다.");
+    }
+
+    @Test
+    @DisplayName("재무(8b): 보유 → 교집합 후보 → 직전 watchlist(모델 판단이 남은 가장 최근 결정, 유니버스 안) 순, 겹치면 앞 역할, ETF(13F 매핑표의 ETP 포함)·현금성은 excluded, 상한 25·omitted")
+    void fundamentalsTargets() {
+        activeClaude();   // 보유 BBB, 10-23 초기 결정(응답에 watchlist 없음)
+        store.upsertPosition(new Position(PaperBooks.CLAUDE, "SHY", 10, 82, FRI, FRI_CLOSE, 82, FRI_CLOSE, 82.0,
+                QUOTES_AT, false, FRI, 82, null));
+        // IVV는 13F CUSIP 매핑표에서 유니버스에 들어온 ETF(설정 ETF가 아님) — 재무가 없어 빈 줄로 자리를 차지하면 안 됩니다.
+        ObjectNode quoteTickers = (ObjectNode) snapshots.get(Datasets.SNAP_PAPER_QUOTES).payload().get("tickers");
+        quoteTickers.set("IVV", quoteTickers.get("SPY").deepCopy());
+        store.insertDecisionIfAbsent(new Decision(0, PaperBooks.CLAUDE, FRI, RuleBookService.MANUAL, null, "OK",
+                "claude-sonnet-5-5", 1, 1, FRI, 50.0, null, null, null,
+                MAPPER.valueToTree(Map.of("schemaVersion", 2, "stance", "NEUTRAL", "summary", "관찰", "watchlist", List.of(
+                        Map.of("ticker", " eee ", "condition", "실적 확인"), Map.of("ticker", "XLK", "condition", "ETF"),
+                        Map.of("ticker", "NOPE", "condition", "유니버스 밖"), Map.of("ticker", "CCC", "condition", "후보"),
+                        Map.of("ticker", "IVV", "condition", "13F ETF")))),
+                null, null, List.of(), true, 900L, 0));
+        // 그 뒤의 실패·건너뛴 결정은 건너뜁니다 — 실패가 앞선 관찰 목록을 지우지 않게. 운영 코드(recordFailure·recordSkipped)는
+        // 이런 결정의 response도 객체로 남기므로 그 모양 그대로 넣습니다(watchlist 키 없음, schemaVersion 없음).
+        store.insertDecisionIfAbsent(new Decision(0, PaperBooks.CLAUDE, MON, RuleBookService.REBALANCE, null,
+                ClaudeBookService.STATUS_FORMAT_ERROR, "claude-sonnet-5-5", 1, 1, FRI, null, null, null, null,
+                MAPPER.valueToTree(Map.of("summary", "응답 형식 오류 — 그날 재량 주문 없음(리스크 규칙은 계속)",
+                        "book", PaperBooks.CLAUDE, "kind", RuleBookService.REBALANCE, "asOfTradingDate", MON.toString(),
+                        "failure", Map.of("status", ClaudeBookService.STATUS_FORMAT_ERROR, "retry", false))),
+                null, "형식 오류", List.of(), true, 900L, 0));
+        store.insertDecisionIfAbsent(new Decision(0, PaperBooks.CLAUDE, MON, RuleBookService.MANUAL, null,
+                ClaudeBookService.STATUS_SKIPPED, null, null, 1, null, null, null, null, null,
+                MAPPER.valueToTree(Map.of("summary", "일시정지", "book", PaperBooks.CLAUDE, "kind", RuleBookService.MANUAL,
+                        "asOfTradingDate", MON.toString(), "skipped", "일시정지")),
+                null, null, List.of(), true, null, 0));
+
+        JsonNode section = builder.build(MON, RuleBookService.SCHEDULED, false).body().get(PacketBuilder.FUNDAMENTALS);
+        List<String> tickers = new ArrayList<>();
+        section.get("rows").forEach(r -> tickers.add(r.get(0).asString() + ":" + r.get(1).asString()));
+        assertThat(tickers).containsExactly("BBB:HOLDING", "CCC:CANDIDATE", "EEE:WATCHLIST");
+        assertThat(section.get("excluded").toString()).as("현금성 보유·ETF watchlist(설정 ETF·13F ETP)")
+                .isEqualTo("[\"SHY\",\"XLK\",\"IVV\"]");
+        assertThat(section.get("omitted").asInt()).isZero();
+        assertThat(fundamentalsUntil).isEqualTo(MON);
+        JsonNode eee = fundamentalsRow(builder.build(MON, RuleBookService.SCHEDULED, false).body(), "EEE");
+        assertThat(eee.get("latestPeriodEnd").isNull()).as("저장본 없는 종목은 빈 줄").isTrue();
+        assertThat(eee.get("revenueTtmUsdM").isNull()).isTrue();
+        assertThat(eee.get("conceptsUsed").isNull()).isTrue();
+        assertThat(eee.get("isStale").asBoolean()).isFalse();
+        assertThat(eee.get("notes").asString()).isEqualTo("기준일 2026-10-26까지 낸 재무 사실이 없음");
+
+        // 같은 입력이면 같은 섹션(결정적).
+        assertThat(builder.build(MON, RuleBookService.SCHEDULED, false).text())
+                .isEqualTo(builder.build(MON, RuleBookService.SCHEDULED, false).text());
+    }
+
+    @Test
+    @DisplayName("재무(8b) 변환: 저장본 행(obsDate·facts) → 계산 입력, 틀린 칸은 null(0으로 채우지 않음), 개념 코드·메모 자르기")
+    void fundamentalsConversion() {
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.put("obsDate", "2026-07-31");
+        ArrayNode facts = payload.putArray("facts");
+        facts.addObject().put("t", "us-gaap").put("c", "Assets").put("u", "USD").putNull("s").put("e", "2026-06-27")
+                .put("v", 383_266_000_000L).put("f", "10-Q").put("a", "0000320193-26-000020").put("fy", 2026)
+                .put("fp", "Q3");
+        facts.addObject().put("t", "us-gaap").put("c", "Revenues").put("u", "USD").put("s", "고장").put("e", "2026-06-27")
+                .put("v", "숫자 아님");
+        facts.add("사실이 아님");
+        com.macrodash.analytics.Fundamentals.Row row = FundamentalsSection.row(payload);
+        assertThat(row.filed()).isEqualTo(LocalDate.of(2026, 7, 31));
+        assertThat(row.facts()).hasSize(2);
+        assertThat(row.facts().get(0)).isEqualTo(new com.macrodash.analytics.Fundamentals.Fact("us-gaap", "Assets", "USD",
+                null, LocalDate.of(2026, 6, 27), 383_266_000_000.0, "10-Q", "0000320193-26-000020"));
+        assertThat(row.facts().get(1).s()).isNull();
+        assertThat(row.facts().get(1).v()).as("숫자가 아니면 null").isNull();
+        assertThat(FundamentalsSection.row(MAPPER.createObjectNode()).filed()).isNull();
+
+        assertThat(FundamentalsSection.code("revenue", "us-gaap:RevenuesNetOfInterestExpense")).isEqualTo("rev3");
+        assertThat(FundamentalsSection.code("shares", "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding"))
+                .isEqualTo("sh3");
+        assertThat(FundamentalsSection.FIELD_CODES.keySet()).as("계산의 필드 전부에 약어")
+                .containsExactlyElementsOf(com.macrodash.analytics.Fundamentals.CANDIDATES.keySet());
+        assertThat(FundamentalsSection.FIELD_CODES.values()).doesNotHaveDuplicates();
+    }
+
     // ------------------------------------------------------------------ 크기
     @Test
-    @DisplayName("크기: 상한을 꽉 채운 패킷도 25,000토큰(어림) 이하")
+    @DisplayName("크기: 상한을 꽉 채운 패킷(재무 25종목·메모 6,000자 포함)도 30,000토큰(어림) 이하")
     void fitsTokenBudget() {
         largeFixture();
         // 섹션 11을 글자 상한(6,000자 — 구분자·제목 포함)까지 채운 시황 메모 둘(한글 1자 ≈ 1토큰이라 가장 비싼 글).
@@ -1188,13 +1482,22 @@ class PacketBuilderTest {
         assertThat(body.get(PacketBuilder.TRACK_RECORD).get("groupB").get("rows")).hasSize(12);
         assertThat(body.get(PacketBuilder.MACRO).get("cards").get("items")).hasSize(18);
         assertThat(body.get(PacketBuilder.DECISIONS).get("decisions")).hasSize(5);
+        JsonNode fundamentalsSection = body.get(PacketBuilder.FUNDAMENTALS);
+        assertThat(fundamentalsSection.get("rows")).hasSize(FundamentalsSection.MAX_ROWS);
+        assertThat(fundamentalsSection.get("omitted").asInt()).as("보유 20 + 후보 20 − 25").isEqualTo(15);
+        fundamentalsSection.get("rows").forEach(r -> {
+            assertThat(r.get(7).isNull()).as("매출 TTM이 찬 줄(최악의 크기)").isFalse();
+            assertThat(r.get(FundamentalsSection.COLUMNS.size() - 1).asString()).as("계산 메모도 찬 줄(상한에서 자름)")
+                    .hasSizeBetween(40, FundamentalsSection.MAX_NOTE_CHARS);
+        });
         assertThat(tokens).as("큰 패킷 %d자", packet.text().length()).isLessThanOrEqualTo(PacketBuilder.TARGET_TOKENS);
         assertThat(PacketBuilder.estimateTokens("가나다abc")).isEqualTo(4);
     }
 
     /**
      * 상한을 넘치게 채운 재료 — 신호 풀 9곳(그룹 A 다섯 + 그룹 B 기존 메뉴 넷)이 120종목씩 들고 분기마다 30개 신규·30개 전량 매도·
-     * 40개 확대, 관측 유니버스 600종목, 이력 있는 종목 80개, 보유 20·재진입 금지 5, 결정 7건(요약 400자), 카드 22장, 그룹 A 27곳·B 12곳.
+     * 40개 확대, 관측 유니버스 600종목, 이력 있는 종목 80개, 보유 20·재진입 금지 5, 결정 7건(요약 400자), 카드 22장, 그룹 A 27곳·B 12곳,
+     * 재무는 T000~T399 모두 AAPL 모양(자릿수가 긴 배율 + 계산 메모가 생기는 모양).
      */
     private void largeFixture() {
         holdings.clear();
@@ -1263,6 +1566,7 @@ class PacketBuilderTest {
         snapshot(Datasets.SNAP_PAPER_QUOTES, Map.of("period", "3mo", "tickers", tickers), QUOTES_AT);
         for (int i = 0; i < 400; i++) {
             history(String.format("T%03d", i), 20 + i % 50, LocalDate.of(2025, 6, 2), MON);
+            appleLike(String.format("T%03d", i), 1.23456789 + i / 97.0, true);
         }
 
         store.books.put(PaperBooks.CLAUDE, new Book(PaperBooks.CLAUDE, PaperBooks.KIND_CLAUDE, "Claude 재량 책", 100_000,

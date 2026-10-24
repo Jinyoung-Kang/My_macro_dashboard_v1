@@ -6,6 +6,7 @@ import com.macrodash.analytics.TrailingStop;
 import com.macrodash.analytics.UsMarketCalendar;
 import com.macrodash.feature.paper.PaperMarketData.Quotes;
 import com.macrodash.read.StoreReader;
+import com.macrodash.store.Datasets;
 import com.macrodash.store.PaperStore;
 import com.macrodash.store.PaperStore.Book;
 import com.macrodash.store.PaperStore.BookState;
@@ -15,6 +16,7 @@ import com.macrodash.store.PaperStore.Lockout;
 import com.macrodash.store.PaperStore.NavRow;
 import com.macrodash.store.PaperStore.Order;
 import com.macrodash.store.PaperStore.Position;
+import com.macrodash.store.Snapshot;
 import com.macrodash.support.InvalidRequestException;
 import com.macrodash.support.Json;
 import com.macrodash.support.Params;
@@ -268,7 +270,69 @@ public class PaperQueryService {
         fallbacks.addAll(current.settings().rules().fallbacks());
         out.put("settingsFallbacks", fallbacks);
         out.put("apiUsage", apiUsage());
+        out.put("fundamentals", fundamentalsStatus());
         return out;
+    }
+
+    /**
+     * 재무 수집 범위(D28) — 수집기 상태 저장본 {@code us.fundamentals.status}의 요약
+     * {@code {available, universe, mapped, covered, latestFetchKst, staleCompanies, note}}. universe = 유니버스(ETF 제외) 종목 수,
+     * mapped = SEC CIK가 잡힌 수, covered = 상태 줄에 최신 공시일이 있는 회사 수(받았지만 companyfacts가 없는 회사·아직 못 받은 회사는
+     * 빠짐 — 상태 줄 기준이라, 실패가 3일 넘게 이어져 오류만 남은 회사는 저장된 관측 행이 있어도 빠짐), latestFetchKst = 저장본을
+     * 마지막으로 쓴 수집 시각, staleCompanies = 지금 이어받은 상태(isStale)인 회사 수(실패해 이전 값을 이어받은 뒤 아직 다시 받지
+     * 못한 회사 — 그 뒤 실행에서 예산·시간 상한으로 시도하지 않은 회사도 들어가므로 '이번 실행의 실패 수'가 아님). 저장본이
+     * 없으면 숫자는 모두 null(0으로 채우지 않음). 수집 요청 없이 저장본만 읽습니다(화면이 수집기를 깨우지 않게).
+     */
+    private Map<String, Object> fundamentalsStatus() {
+        Optional<Snapshot> found = reader.readStored(Datasets.SNAP_US_FUNDAMENTALS_STATUS);
+        JsonNode payload = found.map(Snapshot::payload).filter(JsonNode::isObject).orElse(null);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("available", payload != null);
+        if (payload == null) {
+            out.put("universe", null);
+            out.put("mapped", null);
+            out.put("covered", null);
+            out.put("latestFetchKst", null);
+            out.put("staleCompanies", null);
+            out.put("note", "재무 상태 저장본(" + Datasets.SNAP_US_FUNDAMENTALS_STATUS + ")이 아직 없습니다 — 수집기의 "
+                    + "sec_fundamentals 태스크가 한 번 돌면 생깁니다.");
+            return out;
+        }
+        Integer covered = null;
+        Integer stale = null;
+        JsonNode companies = Json.child(payload, "companies");
+        if (companies != null && companies.isObject()) {
+            int withFacts = 0;
+            int carried = 0;
+            for (Map.Entry<String, JsonNode> entry : companies.properties()) {
+                JsonNode company = entry.getValue();
+                if (Json.asText(company, "latestFiled") != null) {
+                    withFacts++;
+                }
+                if (Json.asBoolean(company, "isStale")) {
+                    carried++;
+                }
+            }
+            covered = withFacts;
+            stale = carried;
+        }
+        out.put("universe", count(payload, "universe"));
+        out.put("mapped", count(payload, "mapped"));
+        out.put("covered", covered);
+        out.put("latestFetchKst", found.get().collectedAt() == null ? null : Kst.stamp(found.get().collectedAt()));
+        out.put("staleCompanies", stale);
+        // 예산은 설정(FUNDAMENTALS_FETCH_BUDGET)이라 저장본에 남은 값으로 적습니다 — 모르면 문장에서 뺍니다.
+        Integer budget = count(payload, "budget");
+        out.put("note", "SEC XBRL Company Facts — Claude 책 패킷(8b_fundamentals)에만 씁니다(규칙 책·검증기는 읽지 않음). "
+                + (budget == null ? "" : "12시간마다 CIK " + budget + "건까지 받아 유니버스를 여러 번에 나눠 돕니다. ")
+                + "실적 보도자료(8-K)는 들어오지 않습니다.");
+        return out;
+    }
+
+    /** 저장본의 개수 칸 — 정수가 아니면 null. */
+    private static Integer count(JsonNode payload, String field) {
+        JsonNode value = Json.child(payload, field);
+        return value != null && value.isIntegralNumber() ? value.asInt() : null;
     }
 
     /**

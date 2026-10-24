@@ -44,6 +44,11 @@ public final class Datasets {
      * {@code sec13f(cik, TRACK_RECORD_QUARTERS)}에 있고, 이 저장본은 "누가 후보이고 어디까지 받았나"만 담습니다.
      */
     public static final String SNAP_TRACK_RECORD_INDEX = "sec.13f.track_record_index";
+    /**
+     * 모의 매매 미국 종목 재무(SEC XBRL, D28)의 회사별 수집 상태 — 받은 시각·최신 공시일·최신 기간 end·분류체계·통화·사실 수·오류와
+     * 실행 집계(universe·mapped·fetchedThisRun·failedThisRun). 사실 자체는 {@link #OBS_US_FUNDAMENTALS}에 있습니다.
+     */
+    public static final String SNAP_US_FUNDAMENTALS_STATUS = "us.fundamentals.status";
 
     /** 변동성 지수는 가장 긴 기간으로 한 번 저장하고 짧은 기간은 잘라 씁니다. */
     public static final String VOLATILITY_STORE_PERIOD = "5y";
@@ -116,6 +121,12 @@ public final class Datasets {
      * 분할 감지가 이 값을 기준 종가와 대조합니다. 기간으로 지우지 않습니다.
      */
     public static final String TS_EQUITY_CLOSE = "equity_close";
+    /**
+     * 모의 매매 미국 종목 재무(SEC XBRL Company Facts, D28). entity = 티커, obs_date = 공시일(filed), payload
+     * {@code {"cik": [...], "facts": [...]}}는 그날 처음 낸(또는 값이 바뀐) 사실 묶음입니다. 수집기만 쓰고(ADR 0008),
+     * 그 시점 값을 고르려면 옛 공시일 행이 있어야 하므로 기간으로 지우지 않습니다. 결정에는 obs_date ≤ 기준일만 씁니다.
+     */
+    public static final String OBS_US_FUNDAMENTALS = "us.fundamentals";
 
     // ------------------------------------------------------------- 신선도(초)
     /** 장중 시세성 데이터 (수집 주기 5분의 3배). */

@@ -377,5 +377,44 @@ class PaperQueryServiceTest {
         assertThat(boundaries.get(1).path("status").asString()).isEqualTo("USER");
     }
 
+    @Test
+    @DisplayName("상태의 재무 수집 범위(D28): 상태 저장본에서 universe·mapped·covered(사실 있는 회사)·마지막 수집(KST)·이어받은 회사 수 — 없으면 숫자 null")
+    void fundamentalsStatus() {
+        var mapper = PaperFixtures.MAPPER;
+        tools.jackson.databind.JsonNode missing = mapper.valueToTree(query.status().get("fundamentals"));
+        assertThat(missing.path("available").asBoolean(true)).isFalse();
+        assertThat(missing.path("covered").isNull()).as("저장본이 없으면 0이 아니라 null").isTrue();
+        assertThat(missing.path("universe").isNull()).isTrue();
+        assertThat(missing.path("latestFetchKst").isNull()).isTrue();
+        assertThat(missing.path("note").asString()).contains("sec_fundamentals");
+
+        com.macrodash.read.StoreReader reader = PaperFixtures.quietReader();
+        tools.jackson.databind.JsonNode payload = mapper.valueToTree(Map.of(
+                "companies", Map.of(
+                        "AAPL", Map.of("ciks", List.of("0000320193"), "latestFiled", "2026-07-31", "facts", 252),
+                        "JPM", Map.of("ciks", List.of("0000019617"), "latestFiled", "2026-08-06", "facts", 167,
+                                "isStale", true, "staleReason", "HTTP 503"),
+                        "GPRO", Map.of("ciks", List.of("0001500435"), "error", "no companyfacts", "facts", 0)),
+                "universe", 596, "mapped", 571, "fetchedThisRun", 2, "failedThisRun", 1, "budget", 200));
+        when(reader.readStored(com.macrodash.store.Datasets.SNAP_US_FUNDAMENTALS_STATUS)).thenReturn(Optional.of(
+                new com.macrodash.store.Snapshot(com.macrodash.store.Datasets.SNAP_US_FUNDAMENTALS_STATUS, payload,
+                        "json", "ok", null, Instant.parse("2026-10-25T03:10:00Z"))));
+        PaperQueryService withStatus = new PaperQueryService(store, marketData, reader, PaperFixtures.settings(store),
+                PaperFixtures.config(), NOW);
+
+        tools.jackson.databind.JsonNode view = mapper.valueToTree(withStatus.status().get("fundamentals"));
+        assertThat(view.path("available").asBoolean()).isTrue();
+        assertThat(view.path("universe").asInt()).isEqualTo(596);
+        assertThat(view.path("mapped").asInt()).isEqualTo(571);
+        assertThat(view.path("covered").asInt()).as("companyfacts 없는 GPRO는 빠짐").isEqualTo(2);
+        assertThat(view.path("staleCompanies").asInt()).isEqualTo(1);
+        assertThat(view.path("latestFetchKst").asString()).isEqualTo("2026-10-25 12:10 KST");
+        assertThat(view.path("note").asString()).contains("8b_fundamentals").contains("CIK 200건");
+        List<String> keys = new ArrayList<>();
+        view.propertyNames().forEach(keys::add);
+        assertThat(keys).containsExactly("available", "universe", "mapped", "covered", "latestFetchKst",
+                "staleCompanies", "note");
+    }
+
     private static final java.time.LocalDate TUE_EXPIRY = java.time.LocalDate.of(2026, 10, 29);
 }

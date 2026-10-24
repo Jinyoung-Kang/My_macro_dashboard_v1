@@ -79,12 +79,13 @@ import java.util.TreeSet;
 import java.util.function.Function;
 
 /**
- * 🧪 Claude 재량 책의 입력 패킷(명세 C5·C6·C11, 설계 §5-2) — 섹션 0~12(와 6b)를 사람이 읽는 순서의 JSON 하나로 묶습니다.
+ * 🧪 Claude 재량 책의 입력 패킷(명세 C5·C6·C11, 설계 §5-2) — 섹션 0~12(와 6b·8b)를 사람이 읽는 순서의 JSON 하나로 묶습니다.
  *
  * <p><b>섹션</b>: {@code 0_instructions} 지시 · {@code 1_basis} 기준(거래일·다음 세션·확정 종가·버전·선정 기준일) ·
  * {@code 2_macroCards} 매크로 카드 18장과 환율 일봉 · {@code 3_fred} FRED 9개 · {@code 4_regime} 국면 · {@code 5_gate} OS 게이트
  * 지표(참고) · {@code 6_trackRecord} 트랙레코드(그룹 A 상위 10·그룹 B 12곳·신호 풀) · {@code 6b_institutionProfiles} 신호 풀 기관의
- * 전략 프로필(D27) · {@code 7_13fChanges} 13F 변화와 교집합 후보 · {@code 8_prices} 가격·모멘텀(≤ 60종목) · {@code 9_portfolio} 장부 ·
+ * 전략 프로필(D27) · {@code 7_13fChanges} 13F 변화와 교집합 후보 · {@code 8_prices} 가격·모멘텀(≤ 60종목) ·
+ * {@code 8b_fundamentals} 미국 종목 재무(D28, ≤ 25종목 — {@link FundamentalsSection}) · {@code 9_portfolio} 장부 ·
  * {@code 10_recentDecisions} 최근 결정 5건 · {@code 11_notes} 유효한 시황 메모(구분자로 감싼 자료 — {@link NoteService#activeMarketNotes}) ·
  * {@code 12_hardRules} 하드 규칙.
  *
@@ -98,16 +99,16 @@ import java.util.function.Function;
  *
  * <p><b>Point-in-Time</b>(초기 결정, 명세 C6·설계 §5-6): {@code initial=true}면 가격은 기준일까지({@link DailySeries#until}), FRED는
  * 기준일에 <b>알려진</b> 값({@link PointInTime} — 2026-10-23 결정의 10년물은 10-22 관측), 환율은 기준일 이하 일봉, 13F·트랙레코드·
- * 선정은 기준일 이하 선정(그 선정 기준일까지 낸 공시)만 씁니다. 매크로 카드는 이력이 없어 지금 수집본을 싣고
- * {@code asOfMismatch:true}와 "기준값 없음 — 현재 수집본, 참고만"을 붙입니다. 게이트 지표는 그날 기록 대신 기준일에 알려진 값으로
- * 다시 계산합니다(기록은 결정 작업이 돈 시각의 카드 값이라 늦게 돌았으면 기준일 뒤 값일 수 있음). 정기 결정도 가격·FRED는 같은
- * 규칙으로 기준 거래일에서 자릅니다 — 다음 세션 장중에 늦게 돌아도 다음 세션 봉이 섞이지 않게.
+ * 선정은 기준일 이하 선정(그 선정 기준일까지 낸 공시)만, 재무는 공시일 ≤ 기준일인 사실만 씁니다. 매크로 카드는 이력이 없어
+ * 지금 수집본을 싣고 {@code asOfMismatch:true}와 "기준값 없음 — 현재 수집본, 참고만"을 붙입니다. 게이트 지표는 그날 기록 대신
+ * 기준일에 알려진 값으로 다시 계산합니다(기록은 결정 작업이 돈 시각의 카드 값이라 늦게 돌았으면 기준일 뒤 값일 수 있음). 정기
+ * 결정도 가격·FRED는 같은 규칙으로 기준 거래일에서 자릅니다 — 다음 세션 장중에 늦게 돌아도 다음 세션 봉이 섞이지 않게.
  *
- * <p><b>크기</b>: 목표 25,000토큰 이하(설계 §5-2). 목록마다 상한을 둡니다(카드 18·프로필 8곳·13F 변화 10곳·기관당 변화 15·후보 20·
- * 가격 60·결정 5). 기관 상한은 그룹마다 먼저 절반씩 채우고({@link #capByGroup}) 자르면 몇 곳을 뺐는지 적습니다.
- * 줄이 많은 표(13F 변화·가격)는 열 이름을 한 번만 두고 줄은 값 배열로 둡니다 — 상한을 꽉 채운 시험 패킷이 키 반복만으로 목표를
- * 넘었습니다(약 26,000 → 20,000토큰). 넘으면 경고 로그만 남기고 자르지 않습니다(자르는 순서를 바꾸면 같은 날 다시 만든 패킷과
- * 해시가 달라짐).
+ * <p><b>크기</b>: 목표 30,000토큰 이하(설계 §5-2 — D28 전 25,000에 재무 25종목을 더함, {@link #TARGET_TOKENS}). 목록마다
+ * 상한을 둡니다(카드 18·프로필 8곳·13F 변화 10곳·기관당 변화 15·후보 20·가격 60·재무 25·결정 5). 기관 상한은 그룹마다 먼저
+ * 절반씩 채우고({@link #capByGroup}) 자르면 몇 곳을 뺐는지 적습니다. 줄이 많은 표(13F 변화·가격·재무)는 열 이름을 한 번만
+ * 두고 줄은 값 배열로 둡니다 — 상한을 꽉 채운 시험 패킷이 키 반복만으로 목표를 넘었습니다(약 26,000 → 20,000토큰). 넘으면 경고
+ * 로그만 남기고 자르지 않습니다(자르는 순서를 바꾸면 같은 날 다시 만든 패킷과 해시가 달라짐).
  *
  * <p>읽기만 합니다 — 선정·트랙레코드를 새로 계산하거나 게이트 기록을 남기지 않습니다(같은 입력 같은 패킷). 저장본은 모두
  * {@link StoreReader#quietly} 안에서 읽어 수집을 깨우지 않습니다.
@@ -142,17 +143,22 @@ public class PacketBuilder {
     static final String PROFILES = "6b_institutionProfiles";
     static final String CHANGES = "7_13fChanges";
     static final String PRICES = "8_prices";
+    static final String FUNDAMENTALS = "8b_fundamentals";
     static final String PORTFOLIO = "9_portfolio";
     static final String DECISIONS = "10_recentDecisions";
     static final String NOTES = "11_notes";
     static final String HARD_RULES = "12_hardRules";
     static final List<String> SECTION_KEYS = List.of(INSTRUCTIONS, BASIS, MACRO, FRED, REGIME, GATE, TRACK_RECORD,
-            PROFILES, CHANGES, PRICES, PORTFOLIO, DECISIONS, NOTES, HARD_RULES);
+            PROFILES, CHANGES, PRICES, FUNDAMENTALS, PORTFOLIO, DECISIONS, NOTES, HARD_RULES);
 
-    /** 패킷 모양의 판 — 섹션·칸을 바꾸면 올립니다(결정 기록끼리 비교할 때 같은 모양인지 알게). */
-    static final int PACKET_VERSION = 1;
-    /** 목표 크기(설계 §5-2). {@link #estimateTokens}의 어림으로 잽니다. */
-    static final int TARGET_TOKENS = 25_000;
+    /** 패킷 모양의 판 — 섹션·칸을 바꾸면 올립니다(결정 기록끼리 비교할 때 같은 모양인지 알게). 2 = 재무 섹션 8b(D28). */
+    static final int PACKET_VERSION = 2;
+    /**
+     * 목표 크기(설계 §5-2). {@link #estimateTokens}의 어림으로 잽니다. D28 전 25,000 — 재무 25종목 × 약 30칸을 더해 올렸고, 메모
+     * 6,000자를 포함한 최대치 기준입니다. 상한을 꽉 채운 시험 패킷은 D28 전 약 24,900 → 약 29,100토큰(8b 약 4,200 — 줄마다 계산
+     * 메모가 80자까지 차는 경우)입니다.
+     */
+    static final int TARGET_TOKENS = 30_000;
 
     /** 결정 종류(paper_decisions.kind). */
     static final List<String> KINDS = List.of(RuleBookService.SCHEDULED, RuleBookService.MANUAL,
@@ -376,8 +382,10 @@ public class PacketBuilder {
         root.put(PROFILES, profiles(chosen, pool, names, trackA, trackB));
         root.put(CHANGES, changes(chosen, context, ruleSettings, names, universe, ledger, lockedOut));
         root.put(PRICES, priceSection(shownPrices, prices, asOf, initial, noPrice));
+        List<DecisionSummary> prior = priorDecisions(asOf, kind, initial);
+        root.put(FUNDAMENTALS, fundamentals(asOf, ledger, context, universe, prior, paper, ruleSettings));
         root.put(PORTFOLIO, portfolio(asOf, initial, ledger, paper, limits));
-        root.put(DECISIONS, recentDecisions(asOf, kind, initial));
+        root.put(DECISIONS, recentDecisions(prior));
         // 메모는 기준일(as_of) ≤ 기준 거래일인 것만 — 초기 결정 패킷도 같은 거름으로 출발일 이하 메모만 봅니다(PIT, 계약 보충 §5).
         NoteService.PacketNotes packetNotes = notes.activeMarketNotes(asOf, settingsBody);
         root.put(NOTES, notesSection(packetNotes));
@@ -1451,6 +1459,76 @@ public class PacketBuilder {
         return past > 0 ? (s.valueAt(n - 1) / past - 1.0) * 100.0 : null;
     }
 
+    // ------------------------------------------------------------------ 8b 재무
+    /**
+     * 재무 섹션(D28, {@link FundamentalsSection}) — 대상은 보유 → 섹션 7에 실은 교집합 후보(유니버스 안, 점수 순) → 직전 결정의
+     * watchlist(유니버스 안) 순이고, 겹치면 앞의 역할입니다. ETF·현금성(설정 ETF·{@link FundamentalsSection#TRACK_RECORD_ETPS}·현금성
+     * 종목)은 재무가 없어 빼고({@code excluded}) 상한
+     * {@value FundamentalsSection#MAX_ROWS}종목까지 싣습니다(자르면 {@code omitted}). 후보·watchlist를 유니버스 안으로 거르는 것은
+     * 수집기가 유니버스 종목만 받기 때문입니다 — 밖의 종목은 빈 줄로 자리만 차지합니다.
+     *
+     * <p>저장본은 기준일까지 공시만 읽고({@code obs_date ≤ asOf}), 계산({@code Fundamentals.compute})이 같은 규칙으로 한 번 더
+     * 거릅니다 — 읽기 범위가 틀려도 기준일 뒤 정정값이 섞이지 않게(초기 결정은 공시일 ≤ 2026-10-23).
+     */
+    private Map<String, Object> fundamentals(LocalDate asOf, LedgerView ledger, SignalContext context,
+                                             Set<String> universe, List<DecisionSummary> prior, PaperSettings paper,
+                                             RuleSettings ruleSettings) {
+        Map<String, String> roles = new LinkedHashMap<>();
+        ledger.positions().forEach(p -> roles.putIfAbsent(p.ticker(), FundamentalsSection.HOLDING));
+        if (context != null) {
+            for (Signal13F.Candidate c : context.signals().buyCandidates().stream().limit(MAX_CANDIDATES).toList()) {
+                if (universe.contains(c.ticker())) {
+                    roles.putIfAbsent(c.ticker(), FundamentalsSection.CANDIDATE);
+                }
+            }
+        }
+        for (String ticker : watchlist(prior)) {
+            if (universe.contains(ticker)) {
+                roles.putIfAbsent(ticker, FundamentalsSection.WATCHLIST);
+            }
+        }
+        List<FundamentalsSection.Target> targets = new ArrayList<>();
+        List<String> excluded = new ArrayList<>();
+        roles.forEach((ticker, role) -> {
+            if (ruleSettings.etfs().contains(ticker) || FundamentalsSection.TRACK_RECORD_ETPS.contains(ticker)
+                    || paper.cashLike(ticker)) {
+                excluded.add(ticker);
+            } else {
+                targets.add(new FundamentalsSection.Target(ticker, role));
+            }
+        });
+        List<FundamentalsSection.Target> shown = targets.stream().limit(FundamentalsSection.MAX_ROWS).toList();
+        Map<String, List<JsonNode>> stored = shown.isEmpty() ? Map.of()
+                : repository.readObservationsUntil(Datasets.OBS_US_FUNDAMENTALS,
+                        shown.stream().map(FundamentalsSection.Target::ticker).toList(), asOf);
+        return FundamentalsSection.section(asOf, shown, targets.size() - shown.size(), excluded, stored);
+    }
+
+    /**
+     * 직전 결정의 watchlist 티커(응답 순서, 대문자) — 모델 판단이 남은 가장 최근 결정의 것입니다. 형식 오류·호출 실패·건너뜀
+     * (일시정지·호출 상한)으로 끝난 결정은 건너뜁니다(그날 실패가 앞선 판단의 관찰 목록을 지우지 않게). 그런 결정도 response는
+     * 객체로 남습니다({summary, book, kind, failure|skipped, …} — ClaudeBookService.recordFailure·recordSkipped)라 객체인지가 아니라
+     * 검증된 응답에만 있는 {@code schemaVersion}(decision.schema.json의 required)으로 가립니다. 호출 중 일시정지된 결정은 검증된
+     * 응답이 남아 그 판단을 씁니다. 판단이 남았는데 watchlist가 비었으면 그 결정의 판단이라 빈 목록입니다.
+     */
+    private List<String> watchlist(List<DecisionSummary> prior) {
+        for (DecisionSummary d : prior) {
+            JsonNode response = store.decision(d.id()).map(Decision::response).orElse(null);
+            if (response == null || !response.isObject() || !response.has("schemaVersion")) {
+                continue;
+            }
+            List<String> out = new ArrayList<>();
+            for (JsonNode item : Json.array(response, "watchlist")) {
+                String ticker = Json.asText(item, "ticker");
+                if (ticker != null && !ticker.isBlank()) {
+                    out.add(ticker.strip().toUpperCase(Locale.ROOT));
+                }
+            }
+            return out;
+        }
+        return List.of();
+    }
+
     // ------------------------------------------------------------------ 9 포트폴리오
     /** Claude 책 장부(초기 결정이면 출발 현금만). pending = 앞선 결정이 남긴 대기 주문(출처 CLAUDE, 만든 순). */
     private record LedgerView(boolean exists, String status, double cash, double nav, double equityValue,
@@ -1605,13 +1683,19 @@ public class PacketBuilder {
     }
 
     // ------------------------------------------------------------------ 10·11 최근 결정·메모
-    private Map<String, Object> recentDecisions(LocalDate asOf, String kind, boolean initial) {
-        List<Map<String, Object>> rows = new ArrayList<>();
-        // 기준일 앞의 결정(같은 날의 다른 종류 포함) — 같은 (날, 종류)의 결정은 지금 다시 만드는 그 결정(재시도)이라 뺍니다.
-        List<DecisionSummary> recent = store.decisions(PaperBooks.CLAUDE, MAX_RECENT_DECISIONS * 4).stream()
+    /**
+     * 기준일 앞의 Claude 책 결정(같은 날의 다른 종류 포함, 최근 순 5건) — 같은 (날, 종류)의 결정은 지금 다시 만드는 그 결정(재시도)이라
+     * 뺍니다. 섹션 10과 재무 섹션의 watchlist(8b)가 같은 목록을 봅니다.
+     */
+    private List<DecisionSummary> priorDecisions(LocalDate asOf, String kind, boolean initial) {
+        return store.decisions(PaperBooks.CLAUDE, MAX_RECENT_DECISIONS * 4).stream()
                 .filter(d -> d.asOfTradingDate().isBefore(asOf)
                         || !initial && d.asOfTradingDate().equals(asOf) && !d.kind().equals(kind))
                 .limit(MAX_RECENT_DECISIONS).toList();
+    }
+
+    private Map<String, Object> recentDecisions(List<DecisionSummary> recent) {
+        List<Map<String, Object>> rows = new ArrayList<>();
         for (DecisionSummary d : recent) {
             JsonNode response = store.decision(d.id()).map(Decision::response).orElse(null);
             Map<String, Object> row = new LinkedHashMap<>();
