@@ -2,7 +2,7 @@
 
 > 명세: [2026-10-24-paper-trading-spec.md](2026-10-24-paper-trading-spec.md). 결정에 따라 정해진 곳은 "(D#)"로 표시했습니다.
 >
-> - 상태: **구현 완료**(2026-10-25 — 단계 0~4, 결과는 §9-1~§9-3) · 이전: 구현 중(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
+> - 상태: **구현 중**(2026-10-25, 5차 — **D28** 미국 종목 재무(SEC XBRL)를 Claude 책 패킷에: **단계 5 구현 중**, 설계 §4-5·§5-2 `8b`, 근거는 단계 0-b 측정 §13) · 이전: 구현 완료(2026-10-25 — 단계 0~4, 결과는 §9-1~§9-3) · 그 이전: 구현 중(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
 > - 단계 0 근거 표: [2026-10-24-paper-trading-step0.md](2026-10-24-paper-trading-step0.md). 요약은 §13.
 > - 구현 결과(단계별 결과·운영 상태·남은 확인, 2026-10-25): §9-1~§9-3. 설계 결정과 지키는 시험: [ADR 0018](../adr/0018-paper-trading-guardrails.md).
 > - 이 문서는 **어떻게, 어떤 순서로** 만들지 정합니다. 파일·클래스 이름은 구현 때 바뀔 수 있지만 배치 규칙(§1)은 바뀌지 않습니다.
@@ -358,6 +358,90 @@ decideRules(asOf):
 
 규칙 책 영향 키(`trackRecord.*`·`blend.*`·`minHolders`·`rulesMaxNames`·`trailingStopPct`·`maxWeight*`)는 응답 `warning`으로 화면이 확인 문구를 보인다. `exposure.*` 키는 없다(D7·D19).
 
+### 4-5. 재무(SEC XBRL) — D28
+
+**규칙 책은 이 자료를 읽지 않는다.** 수집·저장·시점 규칙이 13F 트랙레코드(§4-0)와 같은 층이라 여기 두고, 쓰는 곳은 Claude 책 패킷 §5-2 `8b` 하나다.
+근거는 단계 0-b 측정(§13, [단계 0 문서](2026-10-24-paper-trading-step0.md)).
+
+#### ① 범위
+
+- Claude 책 패킷에만 재무 섹션을 더한다(사용자 OS v1의 E3·E4·E5·E8-R4가 묻는 자료, §9-3).
+- 규칙 책·검증기는 바꾸지 않는다. 규칙 책은 10-23부터 도는 동결 대조군(D15)이라, 재무 필터(검증기·규칙 책)는 §14 1번에 남긴다.
+- 화면은 새 탭이 없다. `/api/paper/status`에 수집 범위 한 덩어리, 개요의 데이터 상태 줄 한 줄. 패킷 원문은 결정 상세에서 이미 보인다.
+
+#### ② 수집 — 태스크 `sec_fundamentals` (수집기 소유, ADR 0008)
+
+| 항목 | 내용 |
+|---|---|
+| 속도군·예산 | `weekly`(12시간 주기, 상한 1,800초). 1회 **200 CIK**(`FUNDAMENTALS_FETCH_BUDGET`, 1~600, `.env.example`에는 이름만). 200 × 0.37~0.6초 = 75~120초, 최대 관측 1.13초여도 230초 — 같은 속도군의 `sec_13f`·`sec_13f_track_record`와 SEC 토큰 버킷을 나눠 쓴다. 약 3회(36시간)에 전체가 한 바퀴 |
+| 대상 | `paper_universe.tradable()` − `PAPER_ETFS` 중 SEC `company_tickers.json`으로 CIK가 잡히는 종목(측정 571/596). 목록 파일은 실행마다 한 번 받는다 |
+| CIK 별칭표 | `FUNDAMENTALS_CIK_ALIASES: dict[ticker, list[cik]]`(수동, 소량) — 지주회사 재편으로 이력이 옛 CIK에 있는 곳. XOM = [0002115436, 0000034088] 확인. CIK ≥ 1,990,000인 매핑 9곳(BLK·FERG 등)은 구현 때 SEC submissions(이름·`formerNames`)로 확인해 맞는 것만 넣는다. 여러 CIK의 사실은 합친다(같은 키면 ④ 규칙) |
+| 요청 | `data.sec.gov/api/xbrl/companyfacts/CIK##########.json` 회사당 1건. 기존 `app.http.get_sec_session()`·`sec_rate_limit()`(13F와 같은 토큰 버킷). 404는 그 종목 `error:"no companyfacts"` |
+| 순서 | ① 한 번도 받지 않은 종목 ② 새 공시가 나왔을 때 — 마지막으로 받은 뒤 (최신 기간 end + 40일, 10-K면 + 75일)을 지났고 그 뒤로 아직 받지 않음 ③ 가장 오래전에 받은 종목. 같은 순위는 티커 순(결정적) |
+| 추출 | §4-5 ⑤의 개념 후보 전부(`us-gaap`·`ifrs-full`·`dei`), 서식 10-Q·10-K·20-F·40-F와 /A. 기간·시점 사실은 `end ≥ 2023-07-01`, 연간(350~380일) 사실은 `end ≥ 2020-01-01` |
+| 중복 | 같은 (taxonomy, concept, unit, start, end)는 **처음 낸 값**과 **그 뒤 값이 바뀐 행**만 남긴다(같은 값의 재게재·다음 해 비교 열은 버림 — 측정상 사실 수가 서로 다른 기간 수의 평균 2.07배) |
+
+#### ③ 저장 — 기존 `observations` 테이블(새 테이블 없음)
+
+- dataset `us.fundamentals`(catalog `OBS_US_FUNDAMENTALS` ↔ `Datasets.java`, `DatasetsParityTest`), entity = 티커, **`obs_date` = `filed`(공시일)**.
+- payload: `{"cik": [...], "facts": [{"t","c","u","s","e","v","f","a","fy","fp"}]}` — taxonomy·concept·unit·start(시점 사실은 null)·end·값·서식·accn·공시의 fy·fp.
+  그날 처음 낸(또는 값이 바뀐) 사실 묶음이고, 같은 날 공시가 둘이면 한 행에 합친다.
+- 쓰기: 받은 회사마다 그 회사 행을 (obs_date, entity) 단위로 upsert한다. 지우지 않는다(사실은 공시로 쌓이기만 함). 실패한 회사는 이전 행 그대로.
+- 상태 스냅샷 `us.fundamentals.status`(catalog `SNAP_US_FUNDAMENTALS_STATUS`): `{companies: {TICKER: {ciks, fetchedAt, latestFiled, latestEnd, taxonomy, currency, facts, error}}, universe, mapped, fetchedThisRun, failedThisRun}`.
+  부분 실패는 항목별 이전 값 이어받기 + `isStale`(기존 규약), 전부 실패면 `EmptyResult`.
+
+#### ④ 시점(PIT)과 기간 — 백엔드 순수 계산 `analytics.Fundamentals`
+
+- **시점 규칙**: 기준 거래일 d의 결정에는 `filed ≤ d`인 행만 쓴다(13F `filingDate ≤ asOf`와 같음 — EDGAR 공시일 d는 동부 17:30 전 접수라 KST 다음 날 아침 결정 전에 공개된다).
+  초기 결정은 `filed ≤ 2026-10-23`. 같은 (t, c, u, s, e)가 여럿이면 그 범위 안에서 **가장 늦게 낸 값**(정정 /A 반영 — 측정상 /A 사실의 5%는 값이 다름).
+- 기간은 `s`/`e`로만 판단한다. `fy`·`fp`(공시의 회계연도·분기)와 `frame`(가장 늦게 낸 값에만 붙음)은 쓰지 않는다.
+- 기간 분류(52/53주 감안): 3개월 80~100일, 6개월 170~190일, 9개월 245~285일, 연간 350~380일, 시점(start 없음).
+- 분기 값: 손익은 3개월 사실이 있으면 그것, 없으면 누계 차감(Q2 = 6M − Q1, Q3 = 9M − 6M, Q4 = FY − 9M — 10-K에는 4분기 3개월 사실이 없다). 현금흐름은 10-Q가 누계라 차감이 기본.
+- **TTM** = 직전 연간 + 당해 누계 − 전년 같은 누계(또는 최근 4개 분기 합 — 둘 다 되면 같아야 하고, 다르면 연간 기준).
+
+#### ⑤ 개념 후보 — 가장 최근 end를 가진 후보
+
+고정 우선순위가 아니라 **가장 최근 end를 가진 후보**를 고르고, 한 필드의 시계열 안에서는 개념을 섞지 않는다(JPM은 `Revenues`가 10-K에만, 분기는 `RevenuesNetOfInterestExpense`). 쓴 개념 이름을 함께 낸다.
+
+| 필드 | US-GAAP 후보 | IFRS 후보 |
+|---|---|---|
+| 매출 | `Revenues` · `RevenueFromContractWithCustomerExcludingAssessedTax` · `RevenuesNetOfInterestExpense` | `Revenue` |
+| 순이익 | `NetIncomeLoss` → `ProfitLoss` | `ProfitLossAttributableToOwnersOfParent` → `ProfitLoss` |
+| 영업현금흐름 | `NetCashProvidedByUsedInOperatingActivities` | `CashFlowsFromUsedInOperatingActivities` |
+| 설비투자 | `PaymentsToAcquirePropertyPlantAndEquipment` → `PaymentsToAcquireProductiveAssets` → `PaymentsToAcquireOtherPropertyPlantAndEquipment` → `PaymentsToAcquireRealEstate`·`PaymentsToDevelopRealEstateAssets` | `PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities` |
+| 자산 | `Assets` | `Assets` |
+| 자본 | `StockholdersEquity` → `…IncludingPortionAttributableToNoncontrollingInterest` → `PartnersCapital` | `EquityAttributableToOwnersOfParent` → `Equity` |
+| 매출채권 | `AccountsReceivableNetCurrent` → `ReceivablesNetCurrent` | `TradeAndOtherCurrentReceivables` · `CurrentTradeReceivables` |
+| 재고 | `InventoryNet` → `InventoryFinishedGoodsNetOfReserves` | `Inventories` |
+| 장기부채 | `LongTermDebt` → `LongTermDebtNoncurrent` → `LongTermDebtAndCapitalLeaseObligations` → `…IncludingCurrentMaturities` → `DebtInstrumentCarryingAmount` | `LongtermBorrowings` · `NoncurrentPortionOfNoncurrentBorrowings` · `Borrowings` |
+| 자사주 매입 | `PaymentsForRepurchaseOfCommonStock` → `PaymentsForRepurchaseOfEquity` | `PaymentsToAcquireOrRedeemEntitysShares` |
+| 배당 | `PaymentsOfDividends` → `PaymentsOfDividendsCommonStock` → `PaymentsOfOrdinaryDividends` → `DistributionMadeToLimitedPartnerCashDistributionsPaid` | `DividendsPaidClassifiedAsFinancingActivities` · `DividendsPaid` |
+| 주식수 | `dei:EntityCommonStockSharesOutstanding` → `us-gaap:CommonStockSharesOutstanding` → `WeightedAverageNumberOfDilutedSharesOutstanding`(`isProxy`) | `AdjustedWeightedAverageShares`(`isProxy`) |
+
+#### ⑥ 지표 — 없으면 `null`(0으로 채우지 않음)
+
+- 머리: `latestPeriodEnd`·`filed`·`form`·`currency`·`taxonomy`.
+- 손익·현금흐름: `revenueTtm`·`revenueYoY`(TTM 대비 1년 전 TTM), `netIncomeTtm`·`netMargin`, `ocfTtm`·`capexTtm`·`fcfTtm`(= OCF − capex, capex 없으면 null)·`fcfConversion`(FCF/순이익, 순이익 ≤ 0이면 null + 사유).
+- 듀퐁: `assetTurnover`(TTM 매출/평균 자산)·`leverage`(평균 자산/평균 자본)·`roe`(TTM 순이익/평균 자본 — 세 항의 곱과 같게). 평균 = (최신 시점 값 + 1년 전 시점 값)/2, 1년 전 값이 없으면 최신 값만 쓰고 표시.
+- 운전자본·주주환원·부채: `receivablesYoY`·`inventoryYoY`(시점 값 1년 전 대비), `sharesYoY`(주식수 1년 변화 — 자사주 소각 확인용), `buybacksTtm`·`dividendsTtm`, `longTermDebt`·`debtToEquity`.
+- **통화**: USD가 아니면 금액(…Ttm·`longTermDebt` 등 절대값)은 null, 비율·성장률만 낸다 — 환율·ADS 비율 없이 금액을 비교하지 않게.
+- `isStale` = 최신 기간 end가 asOf보다 15개월 넘게 앞섬(측정 시점에 IFRS 2026 연보가 companyfacts에 없는 13곳 등).
+- 단위: 패킷에는 **백만 달러**(소수 1자리), 비율은 %(소수 1자리).
+
+#### ⑦ 패킷 섹션 `8b_fundamentals` (§5-2, `8_prices` 뒤)
+
+- 대상: 보유 종목 ∪ 섹션 7 후보(교집합 후보·신호 후보) ∪ 직전 결정의 watchlist 티커, 최대 **25종목**(보유 → 후보 순, 자르면 `omitted` 수). ETF·현금성은 뺀다(재무 없음 — `note`에 적음).
+- 형식은 `8_prices`와 같은 열 배열(`columns` + `rows`). 종목마다 `conceptsUsed`(필드 → 개념 이름, 축약 표) 한 줄, `isStale`·`isProxy`·`currency`.
+- `note`: "SEC XBRL 공시 원자료로 기계 계산(공시일 ≤ 기준일). 빈 값은 자료 없음 — [확인 필요]. 회사마다 태그가 달라 개념 이름을 함께 적음. 실적 보도자료(8-K)는 들어오지 않아 10-Q 전까지 직전 분기 값".
+- 크기: 25종목 × 약 30칸 ≈ 3,000토큰 → §5-2 패킷 목표를 25,000에서 30,000토큰으로 올린다.
+- 시스템 프롬프트 고정 문단(`ClaudePrompts.FIXED_RULES`)에 한 줄: "재무(8b_fundamentals)는 공시 원자료로 계산한 값이다. 빈 값은 자료 없음이며 [확인 필요]로 둔다."
+
+#### ⑧ 백엔드 읽기·상태 API
+
+- `observations`는 수집기 테이블이라 백엔드는 읽기만 한다. 정기 작업은 `StoreReader.quietly`, JDBC는 `store`에만(`StoreRepository` 또는 기존 observations 읽기 메서드를 늘림).
+  읽기 = `dataset = us.fundamentals AND entity IN (…) AND obs_date ≤ asOf`.
+- `/api/paper/status`에 `fundamentals: {available, universe, mapped, covered, latestFetchKst, staleCompanies, note}`(상태 스냅샷에서).
+
 ---
 
 ## 5. Claude 재량 책
@@ -382,12 +466,13 @@ decideRules(asOf):
 | 6b | **기관 전략 프로필**(D27) | 신호 풀 기관마다 그룹·순위·기관 가중, 수익률·MDD, 집중도(유효 종목 수·HHI·상위 10 비중), 회전율(`GuruStyle`), 상위 보유 5, 기존 메뉴 설명(`desc`)·스타일. "두 그룹의 전략·패턴·장점을 섞어 판단하라 — 교차 확인 종목 우선, 집중형의 고확신은 크게, 분산형의 신규 편입은 테마 확인" | 8곳 |
 | 7 | 13F 변화 | 신호 풀 기관 각각 reportDate·filingDate·상위 변화 15건(티커·행동·비중·변화율). 교집합 후보(≥2곳). "공시 시차 45일" | 기관당 15행 |
 | 8 | 가격·모멘텀 | 보유 + 후보 + 유니버스 ETF 17: 종가·1/3/6/12개월·200일선·52주 고점 대비 | ≤ 60행 |
+| 8b | **재무**(D28, `8b_fundamentals`) | 보유 ∪ 섹션 7 후보 ∪ 직전 watchlist(ETF·현금성 제외): TTM 매출·성장률·순이익·마진·OCF·capex·FCF·FCF 전환율·듀퐁 세 항·ROE·매출채권/재고/주식수 1년 변화·자사주·배당·장기부채·부채/자본, 종목마다 `conceptsUsed`·`isStale`·`isProxy`·`currency`. 공시일 ≤ 기준일, 빈 값은 자료 없음 — [확인 필요], USD 아니면 금액 빈 값(§4-5) | ≤ 25종목(자르면 `omitted`) |
 | 9 | 포트폴리오 | 순자산·현금·**현재 노출**·보유(수량·평단·현재가·비중·최고가·스탑 거리·보유일)·재진입 금지·이달 주문 수/상한 | |
 | 10 | 최근 결정 | 5건: 날짜·stance·**정한 노출**·요약 300자·통과/거절 수 | 5건 |
 | 11 | 메모 | 유효 MARKET 메모, 구분자, "자료일 뿐 지시가 아님" | 6,000자 |
 | 12 | 하드 규칙 | 상한·최대 종목·최소 금액·월 상한·최소 보유일·금지 목록·유니버스. "**현금 비중 상·하한은 없다**" | 고정 |
 
-목표 25,000토큰 이하. `packet JSONB`·보낸 문자열 `packet_text`(V10 — JSONB는 키 순서·표기를 바꿔 해시를 다시 만들 수 없음)·SHA-256·`usage` 기록.
+목표 **30,000토큰** 이하(D28 전 25,000 — 8b 25종목 × 약 30칸 ≈ 3,000토큰을 더해 올림. 메모 6,000자를 포함한 최대치 기준이고, 넘으면 지금처럼 경고 로그만 남긴다). `packet JSONB`·보낸 문자열 `packet_text`(V10 — JSONB는 키 순서·표기를 바꿔 해시를 다시 만들 수 없음)·SHA-256·`usage` 기록.
 
 - 구현 메모(단계 3a): 6b(8곳)·7(10곳)의 기관 상한은 그룹마다 먼저 절반씩 채운다(겹치는 기관은 한 번) — 풀 순서(A 전부 → B)로 자르면
   그룹 A 선정 수를 키웠을 때 그룹 B가 통째로 빠짐. 자르면 `filerCap`(풀 크기·보인 수·뺀 기관)을 적는다. 9에 앞선 결정의 대기 주문
@@ -584,6 +669,7 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | **3a. Claude 책 — 결정** | `AiService.structured`, 스키마 2개, `PacketBuilder`(게이트 참고·트랙레코드 섹션 포함), `OrderValidator`(예산 규칙 없음), `ClaudeBookService`, `paper_api_usage`, 설정 테이블·API·탭, 결정 로그 탭(패킷·응답·검증·노출), `run/decision`·`run/initial-decision` | L | 가짜 서버 4종. 검증기 규칙별 테스트 + "노출 0%·100% 모두 통과" 테스트. 초기 결정 패킷에 10-23 이후 값 없음. 실제 키로 10-23 초기 결정 미리보기 1회(장부를 바꾸지 않음 — 책 시작은 사용자가 누름, L2) |
 | **3b. 프레임·메모** | `paper_framework_*`·`paper_notes`, `FrameworkService`(v1 시드 — 매크로 축은 지침 문장으로)·`NoteService`, API, 탭 | M | 승인 전후 테스트. 만료 메모 제외. v1 규칙 목록 사람이 검토 |
 | **4. 마무리** | ADR 0018, ARCHITECTURE·API.md·DATA_SOURCES·README·`.env.example`·compose(`PAPER_ENABLED`), 이 문서 구현 결과 표 | S | `make test` 통과, `/paper` 여섯 탭 동작(구현은 일곱 탭 — 단계 3b에서 '프레임·메모'를 '프레임'·'메모'로 나눔, §9-1), `git branch -r --contains HEAD` 빈 결과 |
+| **5. 재무(D28)** — 구현 중 | 수집기: `sec_fundamentals`(weekly, 1회 200 CIK, `FUNDAMENTALS_FETCH_BUDGET`)·`FUNDAMENTALS_CIK_ALIASES`(XOM은 확인됨, CIK ≥ 1,990,000 9곳은 구현 때 submissions로 확인)·catalog `OBS_US_FUNDAMENTALS`·`SNAP_US_FUNDAMENTALS_STATUS` + `Datasets` 상수. 백엔드: `analytics.Fundamentals`(시점·기간 분류·누계 차감·TTM·개념 선택·지표), `store` 읽기(`obs_date ≤ asOf`), `PacketBuilder` 섹션 `8b_fundamentals`·목표 30,000토큰, `ClaudePrompts.FIXED_RULES` 한 줄, `/api/paper/status`의 `fundamentals`, 개요 데이터 상태 줄. 문서: DATA_SOURCES(태스크 24개·재무 행·한계), README·CLAUDE.md·ARCHITECTURE의 태스크 수 23 → 24, `.env.example`(§4-5) | M | 수집기 실행(1회 200 CIK, 약 3회)으로 매핑된 회사의 **90% 이상**이 채워짐(상태 스냅샷의 `mapped` 대비). 시점(PIT) 단위 테스트 — `filed ≤ asOf`·같은 기간은 가장 늦게 낸 값·누계 차감(Q2~Q4)·TTM·`null`(0 아님)·USD 아닌 금액 `null`. 10-23 초기 결정 **미리보기 패킷에 `8b_fundamentals` 섹션**이 있음. `make test` 통과 |
 
 ### 9-1. 구현 결과 (2026-10-25)
 
@@ -702,7 +788,7 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 
 ## 13. 단계 0 결과 (2026-10-24)
 
-근거 표·측정 방법은 [2026-10-24-paper-trading-step0.md](2026-10-24-paper-trading-step0.md). 운영 DB에는 쓰지 않았다.
+근거 표·측정 방법은 [2026-10-24-paper-trading-step0.md](2026-10-24-paper-trading-step0.md)(SEC XBRL 재무는 같은 문서 끝의 단계 0-b, 2026-10-25). 운영 DB에는 쓰지 않았다.
 
 | 항목 | 결과 | 영향 |
 |---|---|---|
@@ -717,12 +803,13 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | 2026-10-23 기준 예상 상위 5(원형 계산) | Duquesne(CAGR 27.5%)·Appaloosa(21.9%)·Greenlight(19.1%)·Viking(18.0%)·Himalaya(16.8%). 같은 창 SPY 누적 180%. 매핑을 445개에서 498개로 늘리자 Coatue(6위)와 Greenlight(3위)가 자리를 바꿈 — 순위가 커버리지에 민감 | 단계 1b의 자바 계산과 대조(단계 0 표 D) |
 | 단계 1b 자바 계산(운영 저장본, 2026-10-24) | 27곳 30분기 수집 완료(실행 3번, 400+365+60건). 2026-10-23 기준 23곳 자격, 원형과 같은 숫자(소수 첫째 자리)이고 5·6위만 바뀜: 5위 Coatue 16.8%(누적 196.4%), 6위 Himalaya 16.7%(195.8%) — 거래일 달력·상장폐지 처리 차이. 재계산 2.2초, 백엔드 메모리 213→226MiB | 그룹 A = Duquesne·Appaloosa·Greenlight·Viking·Coatue |
 | 그룹 B 원형(D27, 2년 창) | 기존 메뉴 12곳 중 자격 통과 4곳: Duquesne 26.8%·Bridgewater 16.0%·Fisher 15.4%·Berkshire 13.8%. 노르웨이·블랙록·뱅가드·CPPIB는 17~19%지만 평균 커버리지 51~62%로 미달(덮인 대형주만 보여 부풂), Scion 27.5%는 최신 분기 공시 없음 | 신호 풀 8곳(Duquesne 겹침) |
+| SEC XBRL 재무(단계 0-b, 2026-10-25) | 주식 596 중 571이 `company_tickers.json`으로 매핑(565 CIK, 미매핑 25 = ETF 19 + 장외·파산 6). XOM은 새 지주회사 CIK에 10-Q 하나뿐 — 이력은 옛 CIK. companyfacts 표본 47곳 평균 227KB(전송)·0.35초, 전체 1회 약 567건·130MB·순차 3.5~5.5분, 필요한 사실만 남기면 약 15MB. 함정: 10-Q 현금흐름은 누계, 4분기는 연간 − 9개월, `fy`/`fp`는 공시 기준, `frame`은 가장 늦게 낸 값에만 붙어 그 시점 값이 아님, /A 사실의 5%는 값이 바뀜, 복수 주식 종류는 dei 주식수 없음, IFRS 연보 13곳이 companyfacts에 없음(2026-04-09 이후 제출분). companyconcept·frames·zip(1.41GB)은 부적합 | **D28**: companyfacts 회사당 1건, 태스크 `sec_fundamentals`(weekly, 1회 200 CIK — slow 600초는 재시도가 겹치면 상한에 가까움), 저장은 `observations` `us.fundamentals`(`obs_date = filed`), 시점 `filed ≤ asOf`·기간은 start/end로만·같은 기간은 가장 늦게 낸 값, 개념은 가장 최근 end 후보, CIK 별칭표, USD 아닌 금액 null, 패킷 `8b`·목표 30,000토큰(§4-5·§5-2). 측정 권장안의 `filed < D`(하루 보수)는 13F와 같은 `filed ≤ d`로 정함(§4-5 ④) |
 
 ---
 
 ## 14. 2단계 이후
 
-1. **SEC XBRL Company Facts 수집** → FCF 전환율·듀퐁 ROE·RIM 필터(검증기·규칙 책), Point-in-Time(`filed`).
+1. **재무 필터(검증기·규칙 책)** — FCF 전환율·듀퐁 ROE·RIM. SEC XBRL Company Facts 수집과 Point-in-Time(`filed`) 계산, Claude 책 패킷의 재무(`8b`)는 D28로 한다(§4-5, 단계 5). 남은 것은 이 자료로 거는 필터다 — 규칙 책은 10-23부터 도는 동결 대조군(D15)이라 실험 중간에 더하지 않는다.
 2. 수집기 OHLC·배당(`actions=True`) → `NEXT_OPEN` 체결, 현금 배당 반영.
 3. 규칙 책 Walk-forward 백테스트(트랙레코드 선정 + 신호, 2019~2026) — 스탑·재진입·minHolders·topN 재검토.
 4. 트랙레코드 창 7년 → 10년(저장 분기 42), 브린슨 분해(`nameMap.sector`), 섹터 로테이션 패턴.

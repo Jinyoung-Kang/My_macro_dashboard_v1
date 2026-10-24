@@ -6,6 +6,7 @@
 > - 측정은 운영 DB에 쓰지 않았습니다. EDGAR·야후 호출은 운영 수집기 컨테이너 안에서 "받기만" 했고(저장하지 않음),
 >   10년 가격 저장본의 크기·응답 시간은 QA 스택(`macrodash_qa`, 운영 백업 2026-10-24 15:22 복원)에서만 바꿔 쟀습니다.
 > - 라벨: `[사실]` 확인한 값, `[해석]` 그 위의 판단, `[확인 필요]` 뒤에 확인할 것.
+> - 단계 0-b(2026-10-25, SEC XBRL 재무 — 명세 D28·설계 §4-5)는 이 문서 끝에 있습니다.
 
 ## 1. 미국 장중 저장본의 마지막 봉
 
@@ -417,3 +418,126 @@ CTRA 가격 없음). OpenFIGI는 지금 상장된 증권에만 US 합성 티커�
 - 기존 `feature/insight/TrackRecordService`(국면 판정 성과)와 이름이 겹칩니다. 스프링 빈 이름이 같아지므로 새 클래스는
   `PaperSelectionService`로 합니다.
 - 규칙 책·Claude 책은 사용자가 "시작"을 눌러야 첫 결정을 하므로(L2), 책 상태에 `NOT_STARTED`를 둡니다.
+
+---
+
+## 단계 0-b. SEC XBRL 측정 (2026-10-25)
+
+> 명세 D28(미국 종목 재무를 Claude 책 패킷에)의 근거입니다. 요약과 영향은 설계 §13 마지막 행, 설계는 §4-5입니다.
+>
+> - 측정 방법: 운영 수집기 컨테이너 안에서 `app.http.get_sec_session()` + `sec_rate_limit()`에 요청마다 0.2~0.25초를 더 쉬며 **순차** 호출(초당 4건 이하).
+>   목록 2 + companyfacts 47(표본) + 70(해외 발행사 확인) + 대안 API 11 ≈ 130건. 원본은 컨테이너 `/tmp`에만 두었다가 지웠고, DB·저장소 파일은 건드리지 않았습니다.
+> - 표본 47곳: 초대형(AAPL MSFT NVDA AMZN GOOGL META)·은행(JPM BAC WFC)·보험(PGR BRK-B CB)·리츠(PLD SPG EQIX)·에너지(XOM EPD)·재고 유통(WMT COST)·
+>   산업재(CAT HON GE UNP)·해외(TSM ASML BABA SHOP SAP NVO TM CNQ)·소형(SPWH GPRO SEER)·무작위 13(seed 20261025).
+
+### A. 유니버스 → CIK
+
+| 항목 | 값 |
+|---|---|
+| 주식 후보 | `paper_universe.tradable()` 615 − `PAPER_ETFS` 19 = **596** |
+| `company_tickers.json` | 10,425행 · 798KB · 0.1초 |
+| 매핑 성공 | **571**(모두 그대로 일치 — SEC도 `BRK-B`·`BF-B`·`HEI-A` 표기라 `.`↔`-` 변형은 0), 서로 다른 CIK 565(같은 CIK 묶음: BF-A/B·BRK-A/B·BUD/BUDFF·FOX/FOXA·GOOG/GOOGL·LBTYA/K) |
+| 매핑 실패 25 | 13F 매핑표에서 온 ETF 19(`company_tickers_mf.json`에 있음, 재무 없음) + 장외 해외주·파산 6(CFRHF FTCHQ LVMUY NSRGY PDRDF TCEHY) |
+| 매핑됐지만 재무 없음 | SLV(실물 신탁), IBN(companyfacts **404**) → 실제 대상 운영회사 CIK 약 **564** |
+| 이전 법인 CIK | [사실] XOM은 새 지주회사 CIK 0002115436에 2026-08-03 10-Q 하나(사실 280개)뿐이고, 10년 이력은 옛 CIK 0000034088에 있습니다. 새 CIK의 `formerNames`가 비어 자동 연결이 안 됩니다. CIK ≥ 1,990,000(최근 등록) 매핑 9곳: GEV SW FERG **BLK** CBRS PRMB MDLN SUNB **XOM**. [해석] BLK·FERG도 지주회사 재편으로 보입니다 — [확인 필요] |
+
+### B. companyfacts 크기·시간 (전부 gzip 전송)
+
+| 묶음 | n | 전송 KB 평균 | JSON MB 평균 | 초 평균 | 비고 |
+|---|---:|---:|---:|---:|---|
+| 전체 | 47 | 227 | 3.40 | 0.345 (p90 0.58, 최대 1.13) | 합계 전송 10.9MB · JSON 160MB |
+| 국내(해외·XOM 제외) | 38 | 266 | 3.97 | 0.362 | 은행이 가장 큼: JPM 530KB / 7.8MB |
+| 해외 | 8 | 68 | 1.12 | 0.287 | 20-F는 연간 자료뿐이라 작음 |
+| 무작위 | 13 | 213 | 3.19 | 0.534 | |
+
+- [사실] JSON 파싱 평균 0.024초(최대 0.064초), 필요한 개념 추출은 1ms 미만입니다. 분류체계: `dei` 47, `us-gaap` 42, `ifrs-full` 6.
+
+### C. 개념별 최신성 (최신 `end` ≥ 2025-12-31인 곳 수, 표본 47 — IFRS 6은 따로)
+
+| 필드 | 요청 개념으로 | 대체 개념으로 | IFRS | 최신값 없음 |
+|---|---:|---|---:|---|
+| 매출 | 40 | WFC=`RevenuesNetOfInterestExpense` | 4 | TSM TM |
+| 순이익 | 38 | SPG·CAT·OXY=`ProfitLoss` | 4 | TSM TM |
+| 영업현금흐름 | 41 | — | 4 | TSM TM |
+| 설비투자 | 25 | `PaymentsToAcquireProductiveAssets`(NVDA AMZN GE SPG EQIX EPD SW), PLD=`PaymentsToAcquireRealEstate`, HAIN=`…OtherPropertyPlantAndEquipment` | 2 | 은행·보험(JPM BAC WFC CB FNF), BABA SAP CNQ RUN, TSM TM |
+| 자산 | 41 | — | 4 | TSM TM |
+| 자본 | 39 | EPD=`PartnersCapital`, CAT=`…IncludingPortionAttributableToNoncontrollingInterest` | 4 | TSM TM |
+| 매출채권 | 23 | 6곳=`ReceivablesNetCurrent` | 4 | 은행·보험·리츠·MLP 전부, SEER DAR, TSM TM |
+| 재고 | 25 | NKE=`InventoryFinishedGoodsNetOfReserves` | 3 | 금융·리츠·소프트웨어·서비스 — 해당 없음 |
+| 장기부채 | 32 | JPM=`…IncludingCurrentMaturities`, PGR=`DebtInstrumentCarryingAmount`, XOM·PODD·DAR=`LongTermDebtAndCapitalLeaseObligations` | 4 | BRK-B BABA SHOP SEER TSM TM |
+| 자사주 매입 | 33 | — | 4 | AMZN PGR PLD EQIX SPWH SEER HAIN RUN — 대개 '매입 안 함' |
+| 배당 | 24 | 4곳=`PaymentsOfOrdinaryDividends`, EPD=`DistributionMadeToLimitedPartnerCashDistributionsPaid` | 4 | 무배당 회사, SPG(2019 이후 없음), TSM TM |
+| 희석 주식수 | 37 | — | 3 | BRK-B STZ SEER XOM(새 CIK) BUDFF TSM TM |
+| `dei:EntityCommonStockSharesOutstanding` | 37 | `us-gaap:CommonStockSharesOutstanding`·희석 가중평균 | — | **복수 주식 종류**(GOOGL META BRK-B SPG NKE STZ SNAP GPRO SHOP) + NVO |
+
+- [사실] `SalesRevenueNet`은 어느 회사에서도 2019-03 이후 사실이 없어 후보에서 뺍니다.
+- [해석] 복수 주식 종류 회사의 dei 주식수가 빠지는 것은 companyfacts가 회사별로 나뉜(dimensional) 사실·회사 확장 태그를 싣지 않기 때문으로 봅니다(관측과 맞는 추정).
+
+### D. 형태의 함정
+
+| 함정 | 확인한 것 | 설계에서 |
+|---|---|---|
+| 10-Q 현금흐름은 연초부터 누계 | AAPL 최신 10-Q의 영업현금흐름은 272일(9개월) 누계와 전년 비교 둘뿐. 국내 표본 대부분이 6·9개월치만 냄(MSFT·SHOP·SNAP은 3개월치도, AMZN은 364일 TTM도). COST는 12/12/12/16주라 9개월 누계가 251일 | 누계 차감, 기간 길이 분류에 52/53주 폭 |
+| 4분기 3개월 사실 없음 | 손익은 보통 3개월 사실이 있지만 10-K에는 4분기 3개월치가 없음 | Q4 = 연간 − 9개월 |
+| `fy`·`fp`는 공시 기준 | AAPL 2025-06-28 분기 매출이 fy 2025(2025-08-01 공시)와 fy 2026(2026-07-31 공시의 비교 열)로 두 번 나옴 | 기간은 start/end로만 |
+| `frame`은 그 시점 값이 아님 | 사실의 38%에만 있고(회사별 28~60%), 6·9개월 누계에는 없음. 가장 늦게 낸 값에 붙어 정정이 있으면 옮겨 감(GPRO `CY2025Q3` 순이익: 10-K/A −27.4M, 원래 10-Q −21.25M) | `frame` 쓰지 않음 |
+| 중복 | 사실 수 / 서로 다른 (start, end) 수 = 평균 2.07배(최대 2.42배) — 당해 공시와 다음 해 비교 열 | 처음 낸 값 + 값이 바뀐 행만 저장 |
+| 정정 공시(/A) | 47곳 중 24곳, 1,141개: 같은 값 789(69%), **값이 다름 53(5%)**(GPRO 2025년 9개월 순이익 −84.4M → −90.5M 등), 원본에 없는 기간 299(26%) | 같은 기간은 기준일까지 낸 것 중 가장 늦은 값 |
+
+**그 시점에 알 수 있었던 값(`filed ≤ 2026-10-23`)**
+
+| 종목 | 최신 기간 end | 공시·filed | 그날 알 수 있던 값(예) |
+|---|---|---|---|
+| AAPL | 2026-06-27 (FY2026 Q3) | 10-Q · 2026-07-31 | 매출 3개월 109.417B / 9개월 누계 364.357B, 순이익 3개월 29.789B, 영업현금흐름 9개월 누계 116.996B, 자산 383.266B |
+| JPM | 2026-06-30 (2026 Q2) | 10-Q · 2026-08-06 | 순이익 3개월 21.155B / 6개월 37.649B, 자산 5.015T, 장기부채(`…IncludingCurrentMaturities`) 460.5B. `Revenues`는 10-K(FY2025)에만 있고 분기 매출은 `RevenuesNetOfInterestExpense` |
+
+- [사실] 10-24~25에 낸 사실은 두 회사 모두 없습니다(AAPL FY2026 10-K·JPM 3분기 10-Q 제출 전).
+- [사실] 실적 보도자료(8-K)는 XBRL 재무 사실로 들어오지 않습니다. 실적 발표 뒤 10-Q가 나올 때까지 몇 주 동안 패킷은 직전 분기 값입니다(보도자료 날짜는 확인하지 않음).
+
+### E. 해외 발행사·IFRS (표본 9 + 추가 확인 70 = 79곳)
+
+| 항목 | 결과 |
+|---|---|
+| IFRS(`ifrs-full`) 사용 | 약 **40 CIK**(유니버스의 약 7%) |
+| 20-F 연간만 내는 US-GAAP 해외 발행사 | 22곳(중국 ADR 다수, ASML BABA ARM SE AER WIX 등) |
+| 이미 10-K/10-Q로 바꾼 곳 | 16곳(SHOP CNR CP BAM CPNG MELI FLUT CRH FERG JHX CNH QSR SDRL HUT LILAK ONC) |
+| IFRS 최신 연보가 companyfacts에 없음 | **13곳**: TSM TM SONY HMC BHP DEO PBR BAP NU STNE XP TME RYAAY |
+| 통화 | EUR·GBP·JPY·CAD·CNY·BRL·INR·PEN·ARS 등. 중국 ADR은 US-GAAP이라도 CNY로 내고 USD 환산값을 함께 둠. 20-F 발행사 다수는 `dei` 주식수 없음 |
+| 6-K 중간 재무 | NVO BUD TSM UBS CVE BHP 등이 6-K에도 싣지만 추출 범위(10-Q/10-K/20-F/40-F)에서 뺌 |
+
+- [사실] 2026-03-27 이전에 낸 IFRS 연보(RIO SHEL SAP NVO CNQ BUD VALE YPF…)는 들어 있고, **2026-04-09 이후에 낸 IFRS 연보에는 `ifrs-full` 사실이 없습니다**.
+  같은 공시의 `dei` 사실은 들어와 있습니다(예: TSM 20-F 2026-04-16). US-GAAP 20-F는 2026-04 이후 제출분도 있습니다(PDD 04-29, TCOM 04-28).
+- [해석] SEC API가 IFRS 2026 분류체계를 아직 처리하지 못하는 것으로 추정합니다 — [확인 필요]. 설계는 최신 기간 end가 15개월 넘게 앞서면 `isStale`로 둡니다.
+
+### F. 대안 API와 1회 비용
+
+| API | 크기(전송/JSON) | 판단 |
+|---|---|---|
+| companyconcept(개념 하나에 요청 하나) | 3~4KB / 26~51KB, 0.3~0.4초 | 회사당 20건 이상 → 564곳이면 1만 건 이상, 8 rps로도 24분 넘음. 전체 수집에 부적합 |
+| frames(`CY2025Q2` 등) | 156KB / 816KB, 5,322행 | **`filed`가 없고** 가장 늦게 낸 값만이라 그 시점 값이 아님, 누계 현금흐름 빠짐 → 부적합 |
+| submissions | AAPL 28KB, **JPM 475KB / 4.66MB** | 은행은 companyfacts만큼 커서 '새 공시 감지용'으로 싸지 않음 |
+| 일괄 `companyfacts.zip` | **1.41GB**(매일 갱신) | 회사별 전체 수집의 10배 → 부적합 |
+
+| 항목(대상 약 567건 — 운영회사 564 + 이전 법인 약 3) | 추정 |
+|---|---|
+| 내려받기 | **약 120~140MB/회** |
+| 압축 푼 JSON | 약 1.9GB/회(한 번에 하나만 메모리에, 최대 약 8MB 문서, 파싱 합계 약 14초) |
+| 시간(순차) | **약 3.5~5.5분**(0.37초 × 567 = 210초 ~ 무작위 평균 0.56초면 320초) |
+| 저장(필드마다 개념 하나·중복 제거) | 회사당 평균 25.5KB(최대 44KB GE) → **전체 약 15MB** |
+| 저장(대체 개념 전부·중복 제거 / 중복 그대로) | 약 20MB / 약 37MB |
+
+### G. 측정 권장안과 D28에서 정한 것
+
+| 권장안(측정) | D28(설계 §4-5) |
+|---|---|
+| companyfacts만 회사별로. companyconcept·frames·zip 쓰지 않음 | 그대로 |
+| `weekly` 속도군(상한 1,800초), 1회 200 CIK — slow(600초)는 전체 1회에 재시도가 겹치면 상한에 가까움 | 그대로(`FUNDAMENTALS_FETCH_BUDGET`, 1~600) |
+| 우선순위 ① 보유·당일 후보 ② 기간 end + 40일(10-Q)·+ 60~90일(10-K) 지나고 아직 안 받음 ③ 가장 오래전 | ① 한 번도 안 받은 종목 ② end + 40일 / 10-K + 75일 ③ 가장 오래전, 같은 순위는 티커 순 |
+| 회사별 행 저장(스냅샷 하나는 약 15MB라 16MB 기준에 걸림), 수집기 소유 | 기존 `observations`(`us.fundamentals`, entity = 티커, `obs_date = filed`) — 새 테이블 없음 |
+| 같은 기간은 처음 낸 값 + 값이 바뀐 행만 | 그대로 |
+| 시점: `filed < D`(날짜뿐이라 하루 보수) | **`filed ≤ d`** — 13F `filingDate ≤ asOf`와 같게(공시일 d는 동부 17:30 전 접수라 KST 다음 날 아침 결정 전에 공개) |
+| 기간은 start/end로만, 52/53주 폭, 누계 차감, TTM = 직전 연간 + 당해 누계 − 전년 누계 | 그대로 |
+| 대체 개념은 고정 순서가 아니라 가장 최근 end 후보, 한 시계열 안에서 섞지 않음, 쓴 개념 이름 표시. 없으면 `null` | 그대로(필드별 후보 표는 설계 §4-5 ⑤) |
+| IFRS 포함, 통화 저장, USD 아니면 비율만, 15개월 넘으면 `isStale` | 그대로(금액 지표 `null`) |
+| CIK 별칭표(수동 소량, XOM 확인·BLK·FERG 확인 필요) | `FUNDAMENTALS_CIK_ALIASES` — CIK ≥ 1,990,000 9곳을 구현 때 submissions로 확인 |
+| 패킷은 보유·후보 종목에만 파생 지표(종목당 1~2KB 추정) | 섹션 `8b_fundamentals` 최대 25종목 ≈ 3,000토큰, 패킷 목표 25,000 → 30,000토큰 |
