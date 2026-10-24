@@ -526,6 +526,81 @@
       "q": {
         "limit": "int"
       }
+    },
+    {
+      "m": "GET",
+      "p": "/api/paper/overview"
+    },
+    {
+      "m": "GET",
+      "p": "/api/paper/status"
+    },
+    {
+      "m": "GET",
+      "p": "/api/paper/books/{code}/positions",
+      "path": {
+        "code": "str"
+      }
+    },
+    {
+      "m": "GET",
+      "p": "/api/paper/books/{code}/orders",
+      "path": {
+        "code": "str"
+      },
+      "q": {
+        "limit": "int"
+      }
+    },
+    {
+      "m": "GET",
+      "p": "/api/paper/books/{code}/fills",
+      "path": {
+        "code": "str"
+      },
+      "q": {
+        "limit": "int"
+      }
+    },
+    {
+      "m": "GET",
+      "p": "/api/paper/books/{code}/nav",
+      "path": {
+        "code": "str"
+      }
+    },
+    {
+      "m": "POST",
+      "p": "/api/paper/init",
+      "mutating": true
+    },
+    {
+      "m": "POST",
+      "p": "/api/paper/books/{code}/status",
+      "path": {
+        "code": "str"
+      },
+      "body": {
+        "status": "enum"
+      },
+      "mutating": true
+    },
+    {
+      "m": "POST",
+      "p": "/api/paper/books/{code}/reset",
+      "path": {
+        "code": "str"
+      },
+      "body": {
+        "confirm": "str"
+      },
+      "mutating": true,
+      "fuzz": false
+    },
+    {
+      "m": "POST",
+      "p": "/api/paper/run/risk",
+      "mutating": true
     }
   ]
 }

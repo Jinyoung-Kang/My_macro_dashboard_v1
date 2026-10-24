@@ -86,7 +86,12 @@ class RouteInventoryTest {
             // 🤖 AI · 🔌 토스
             "GET /api/ai/engines", "GET /api/ai/report-types",
             "POST /api/ai/report", "POST /api/ai/test",
-            "GET /api/ai/toss/diagnostics", "GET /api/ai/toss/exchange-rate", "GET /api/ai/toss/indices"));
+            "GET /api/ai/toss/diagnostics", "GET /api/ai/toss/exchange-rate", "GET /api/ai/toss/indices",
+            // 🧪 모의 매매(운영자, 로컬 전용)
+            "GET /api/paper/overview", "GET /api/paper/status", "GET /api/paper/books/{code}/positions",
+            "GET /api/paper/books/{code}/orders", "GET /api/paper/books/{code}/fills",
+            "GET /api/paper/books/{code}/nav", "POST /api/paper/init", "POST /api/paper/books/{code}/status",
+            "POST /api/paper/books/{code}/reset", "POST /api/paper/run/risk"));
 
     @Test
     @DisplayName("컨트롤러가 여는 경로가 고정 목록과 정확히 같다")

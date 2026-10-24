@@ -34,6 +34,11 @@ public final class Datasets {
     public static final String SNAP_TOSS_MARKET_FLOWS = "kr.toss_market_flows";
     /** 거래대금 상위 100종목의 투자자 매매 (토스증권 공식) — 레이더 폴백용. */
     public static final String SNAP_TOSS_RADAR_UNIVERSE = "kr.toss_radar_universe";
+    /**
+     * 모의 매매 유니버스의 최근 3개월 일봉 — 장부 관측치의 유일한 출처입니다. 장중에는 마지막 봉이 지연 시세라,
+     * 확정 종가인지는 봉 날짜와 수집 시각(마감 + 15분)으로 가립니다.
+     */
+    public static final String SNAP_PAPER_QUOTES = "paper.quotes";
 
     /** 변동성 지수는 가장 긴 기간으로 한 번 저장하고 짧은 기간은 잘라 씁니다. */
     public static final String VOLATILITY_STORE_PERIOD = "5y";
@@ -94,6 +99,11 @@ public final class Datasets {
     public static final String TS_FSC_MARKET = "fsc_market";
     /** 종목별 일별 투자자 매매동향 (토스증권 공식, entity = 종목코드). */
     public static final String OBS_TOSS_STOCK_FLOW = "toss_stock_flow";
+    /**
+     * 모의 매매 유니버스의 10년 일별 종가(수정주가, series = 야후 티커). 분할·배당으로 과거 값이 다시 쓰일 수 있어
+     * 분할 감지가 이 값을 기준 종가와 대조합니다. 기간으로 지우지 않습니다.
+     */
+    public static final String TS_EQUITY_CLOSE = "equity_close";
 
     // ------------------------------------------------------------- 신선도(초)
     /** 장중 시세성 데이터 (수집 주기 5분의 3배). */

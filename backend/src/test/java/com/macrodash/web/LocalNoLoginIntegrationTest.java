@@ -48,7 +48,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         "dashboard.collector-url=http://localhost:1",
         "dashboard.ai.anthropic-api-key=", "dashboard.ai.nvidia-api-key=", "dashboard.ai.cerebras-api-key=",
         "dashboard.ai.cloudflare-account-id=", "dashboard.ai.cloudflare-api-token=",
-        "dashboard.scheduler.enabled=false"
+        "dashboard.scheduler.enabled=false",
+        "dashboard.paper.enabled=false"
 })
 class LocalNoLoginIntegrationTest {
 

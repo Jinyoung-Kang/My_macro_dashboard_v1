@@ -1,0 +1,336 @@
+package com.macrodash.feature.paper;
+
+import com.macrodash.feature.paper.PaperMarketData.SourcedClose;
+import com.macrodash.store.PaperStore.Book;
+import com.macrodash.store.PaperStore.BookState;
+import com.macrodash.store.PaperStore.Fill;
+import com.macrodash.store.PaperStore.NavRow;
+import com.macrodash.store.PaperStore.Order;
+import com.macrodash.store.PaperStore.Position;
+import com.macrodash.support.InvalidRequestException;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import static com.macrodash.feature.paper.PaperFixtures.FRI;
+import static com.macrodash.feature.paper.PaperFixtures.FRI_CLOSE;
+import static com.macrodash.feature.paper.PaperFixtures.MON;
+import static com.macrodash.feature.paper.PaperFixtures.MON_INTRADAY;
+import static com.macrodash.feature.paper.PaperFixtures.bar;
+import static com.macrodash.feature.paper.PaperFixtures.quotes;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * 관리 — 초기화(네 책·벤치마크 사후 체결)·일시정지·리셋.
+ */
+class PaperAdminServiceTest {
+
+    /** 출발일 다음 날 아침(KST 토요일 정오) — 금요일 종가가 확정된 뒤. */
+    private static final Clock AFTER_START = Clock.fixed(Instant.parse("2026-10-24T03:00:00Z"), ZoneOffset.UTC);
+
+    private FakePaperStore store;
+    private PaperMarketData marketData;
+    private PaperLedgerService ledger;
+
+    @BeforeEach
+    void setUp() {
+        store = new FakePaperStore();
+        marketData = mock(PaperMarketData.class);
+        when(marketData.history(anyCollection(), any(), any())).thenReturn(Map.of());
+        when(marketData.sourcedCloseOn(anyString(), any())).thenReturn(Optional.empty());
+        ledger = new PaperLedgerService(store, marketData, PaperFixtures.settings(store), PaperFixtures.MAPPER);
+    }
+
+    private PaperAdminService admin(Clock clock) {
+        return new PaperAdminService(store, marketData, PaperFixtures.quietReader(), PaperFixtures.settings(store),
+                ledger, PaperFixtures.config(), PaperFixtures.MAPPER, clock);
+    }
+
+    private void closes(double spy, double shy) {
+        when(marketData.sourcedCloseOn("SPY", FRI)).thenReturn(Optional.of(new SourcedClose(spy, "equity_close")));
+        when(marketData.sourcedCloseOn("SHY", FRI)).thenReturn(Optional.of(new SourcedClose(shy, "equity_close")));
+    }
+
+    @Test
+    @DisplayName("초기화: 네 책·현금 상태·설정 행을 만들고, SPY 100% 책을 10-23 종가 × 1.0005로 사후 체결한다(100,000 ÷ 체결가 내림)")
+    void initBackfillsBenchmarks() {
+        closes(500, 82.5);
+
+        PaperAdminService.InitResult result = admin(AFTER_START).init();
+
+        assertThat(result.created()).containsExactly("rules", "claude", "bench_spy", "bench_mix");
+        assertThat(result.backfilled()).containsExactly("bench_spy", "bench_mix");
+        assertThat(result.skipped()).isEmpty();
+        assertThat(result.settingsCreated()).isTrue();
+        assertThat(store.settings).isNotNull();
+        assertThat(store.settings.body().path("slippageBp").asDouble()).isEqualTo(5);
+        assertThat(store.settings.body().path("trackRecord").path("candidateCiks").size()).isEqualTo(27);
+
+        // 체결가 500.25, 100,000 / 500.25 = 199.9 → 199주 = 99,549.75 → 현금 450.25
+        List<Fill> spyFills = store.fillsOf("bench_spy");
+        assertThat(spyFills).singleElement().satisfies(f -> {
+            assertThat(f.ticker()).isEqualTo("SPY");
+            assertThat(f.qty()).isEqualTo(199);
+            assertThat(f.price()).isEqualTo(500.25);
+            assertThat(f.rawPrice()).isEqualTo(500);
+            assertThat(f.gross()).isEqualTo(99_549.75);
+            assertThat(f.backfill()).isTrue();
+            assertThat(f.priceSource()).isEqualTo("equity_close");
+            assertThat(f.observedAt()).as("출발일 16:00 ET").isEqualTo(FRI_CLOSE);
+            assertThat(f.observationDate()).isEqualTo(FRI);
+        });
+        Order order = store.ordersOf("bench_spy").get(0);
+        assertThat(order.timing()).isEqualTo("BACKFILL");
+        assertThat(order.source()).isEqualTo("BENCHMARK");
+        assertThat(order.status()).isEqualTo("FILLED");
+        assertThat(order.targetWeightPct()).isEqualTo(100.0);
+        assertThat(order.asOfTradingDate()).as("출발일 전 거래일").isEqualTo(LocalDate.of(2026, 10, 22));
+        assertThat(order.createdAt()).as("체결 관측치보다 앞").isEqualTo(FRI_CLOSE.minusSeconds(1));
+        assertThat(order.filledAt()).isEqualTo(FRI_CLOSE);
+
+        BookState spy = store.states.get("bench_spy");
+        assertThat(spy.cash()).isEqualTo(450.25);
+        assertThat(spy.nav()).as("종가로 평가: 199 × 500 + 450.25").isEqualTo(99_950.25);
+        assertThat(spy.lastProcessedCollectedAt()).as("출발일 전 저장본을 나중에 처리하지 않게").isEqualTo(FRI_CLOSE);
+        assertThat(spy.lastNavTradingDate()).isEqualTo(FRI);
+        assertThat(store.navSeries("bench_spy")).singleElement().satisfies(row -> {
+            assertThat(row.tradingDate()).isEqualTo(FRI);
+            assertThat(row.pricesFinal()).isTrue();
+            assertThat(row.nav()).isEqualTo(99_950.25);
+        });
+        Book book = store.books.get("bench_spy");
+        assertThat(book.status()).isEqualTo("ACTIVE");
+        assertThat(book.startedOn()).isEqualTo(FRI);
+        Position position = store.positions("bench_spy").get(0);
+        assertThat(position.fillRefDate()).isEqualTo(FRI);
+        assertThat(position.fillRefClose()).isEqualTo(500);
+        assertThat(position.lastPrice()).isEqualTo(500);
+
+        // SPY 60%: 60,000 / 500.25 → 119주, SHY 40%: 40,000 / 82.54125 → 484주
+        assertThat(store.fillsOf("bench_mix")).extracting(Fill::ticker, Fill::qty).containsExactly(
+                org.assertj.core.groups.Tuple.tuple("SPY", 119), org.assertj.core.groups.Tuple.tuple("SHY", 484));
+        assertThat(store.states.get("bench_mix").cash()).isEqualTo(520.285);   // 100,000 − 59,529.75 − 39,949.965
+
+        // 규칙·Claude 책은 현금만 든 '시작 전'
+        for (String code : List.of("rules", "claude")) {
+            assertThat(store.books.get(code).status()).isEqualTo("NOT_STARTED");
+            assertThat(store.books.get(code).startedOn()).isNull();
+            assertThat(store.states.get(code).cash()).isEqualTo(100_000);
+            assertThat(store.ordersOf(code)).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("초기화는 멱등이다 — 두 번 눌러도 책·체결이 한 번")
+    void initIsIdempotent() {
+        closes(500, 82.5);
+        PaperAdminService admin = admin(AFTER_START);
+        admin.init();
+
+        PaperAdminService.InitResult second = admin.init();
+
+        assertThat(second.created()).isEmpty();
+        assertThat(second.backfilled()).isEmpty();
+        assertThat(second.settingsCreated()).isFalse();
+        assertThat(store.fills).hasSize(3);
+        assertThat(store.books).hasSize(4);
+    }
+
+    @Test
+    @DisplayName("종가가 아직 없으면 벤치마크는 시작하지 않고 사유를 남기며, 받은 뒤 다시 누르면 체결한다")
+    void initWithoutPricesSkipsWithReason() {
+        PaperAdminService admin = admin(AFTER_START);
+
+        PaperAdminService.InitResult result = admin.init();
+
+        assertThat(result.backfilled()).isEmpty();
+        assertThat(result.skipped()).extracting(skip -> skip.get("code")).containsExactly("bench_spy", "bench_mix");
+        assertThat(result.skipped().get(0).get("reason")).contains("SPY").contains("종가가 아직 없습니다");
+        assertThat(store.books.get("bench_spy").status()).isEqualTo("NOT_STARTED");
+        assertThat(store.states.get("bench_spy").cash()).isEqualTo(100_000);
+        assertThat(store.fills).isEmpty();
+        assertThat(store.orders).isEmpty();
+
+        closes(500, 82.5);
+        assertThat(admin.init().backfilled()).containsExactly("bench_spy", "bench_mix");
+    }
+
+    @Test
+    @DisplayName("출발일 장 마감 15분 전에는 사후 체결하지 않는다(그날 봉은 아직 장중 값)")
+    void initBeforeFinalCloseSkips() {
+        closes(500, 82.5);
+        Clock beforeFinal = Clock.fixed(FRI_CLOSE.plusSeconds(5 * 60), ZoneOffset.UTC);
+
+        PaperAdminService.InitResult result = admin(beforeFinal).init();
+
+        assertThat(result.backfilled()).isEmpty();
+        assertThat(result.skipped().get(0).get("reason")).contains("15분");
+    }
+
+    @Test
+    @DisplayName("사후 체결 뒤 출발일 전에 수집한 저장본은 처리하지 않고, 그 뒤 관측치로 평가가 따라간다")
+    void observationsAfterBackfill() {
+        closes(500, 82.5);
+        admin(AFTER_START).init();
+
+        ledger.process(quotes(FRI_CLOSE.minusSeconds(3600), bar("SPY", FRI, 490)));
+        assertThat(store.states.get("bench_spy").nav()).isEqualTo(99_950.25);
+
+        ledger.process(quotes(MON_INTRADAY, bar("SPY", FRI, 500, MON, 510), bar("SHY", FRI, 82.5, MON, 82.6)));
+        assertThat(store.states.get("bench_spy").nav()).isEqualTo(199 * 510 + 450.25);
+        assertThat(store.positions("bench_spy").get(0).fillRefDate()).as("장중 관측치는 기준을 옮기지 않음").isEqualTo(FRI);
+    }
+
+    @Test
+    @DisplayName("시작 전 책은 운용·일시정지로 바꿀 수 없고, 다른 상태 값·없는 책은 400")
+    void statusRules() {
+        admin(AFTER_START).init();
+        PaperAdminService admin = admin(AFTER_START);
+
+        assertThatThrownBy(() -> admin.setStatus("rules", "ACTIVE")).isInstanceOf(InvalidRequestException.class)
+                .hasMessageContaining("시작 전");
+        assertThatThrownBy(() -> admin.setStatus("rules", "PAUSED")).isInstanceOf(InvalidRequestException.class);
+        assertThatThrownBy(() -> admin.setStatus("bench_spy", "NOT_STARTED")).isInstanceOf(InvalidRequestException.class);
+        assertThatThrownBy(() -> admin.setStatus("nope", "PAUSED")).isInstanceOf(InvalidRequestException.class)
+                .hasMessageContaining("없는 책");
+    }
+
+    @Test
+    @DisplayName("일시정지하면 체결 전 주문을 취소하고, 재개하면 운용 중으로 돌아간다")
+    void pauseCancelsPending() {
+        closes(500, 82.5);
+        PaperAdminService admin = admin(AFTER_START);
+        admin.init();
+        long id = PaperFixtures.pending(store, "bench_spy", "SPY", "BUY", 1, null, null, "NEXT_OBSERVATION", FRI,
+                FRI_CLOSE.plusSeconds(60));
+
+        PaperAdminService.StatusChange paused = admin.setStatus("bench_spy", "PAUSED");
+        assertThat(paused.cancelledOrders()).isEqualTo(1);
+        assertThat(store.orders.get(id).status()).isEqualTo("CANCELLED");
+        assertThat(store.books.get("bench_spy").status()).isEqualTo("PAUSED");
+
+        assertThat(admin.setStatus("bench_spy", "ACTIVE").cancelledOrders()).isZero();
+        assertThat(store.books.get("bench_spy").status()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    @DisplayName("리셋: 확인 문구가 책 코드와 다르면 400, 같으면 장부를 비우고 벤치마크는 다시 사후 체결한다")
+    void resetRebackfills() {
+        closes(500, 82.5);
+        PaperAdminService admin = admin(AFTER_START);
+        admin.init();
+        ledger.process(quotes(MON_INTRADAY, bar("SPY", FRI, 500, MON, 510), bar("SHY", FRI, 82.5, MON, 82.6)));
+        store.upsertNav(new NavRow("bench_spy", MON, 1, 1, 0, 0, true));
+
+        assertThatThrownBy(() -> admin.reset("bench_spy", "bench_mix")).isInstanceOf(InvalidRequestException.class);
+        assertThatThrownBy(() -> admin.reset("bench_spy", null)).isInstanceOf(InvalidRequestException.class);
+
+        PaperAdminService.ResetResult result = admin.reset("bench_spy", "bench_spy");
+
+        assertThat(result.backfilled()).isTrue();
+        assertThat(store.fillsOf("bench_spy")).hasSize(1);
+        assertThat(store.navSeries("bench_spy")).extracting(NavRow::tradingDate).containsExactly(FRI);
+        assertThat(store.states.get("bench_spy").nav()).isEqualTo(99_950.25);
+        assertThat(store.books.get("bench_spy").status()).isEqualTo("ACTIVE");
+        assertThat(store.fillsOf("bench_mix")).as("다른 책은 그대로").hasSize(2);
+    }
+
+    @Test
+    @DisplayName("리셋: 규칙·Claude 책은 현금만 든 시작 전 책이 되고, 종가가 없으면 벤치마크도 시작 전으로 남는다")
+    void resetWithoutPrices() {
+        PaperAdminService admin = admin(AFTER_START);
+        admin.init();
+
+        assertThat(admin.reset("claude", "claude").backfilled()).isFalse();
+        assertThat(store.books.get("claude").status()).isEqualTo("NOT_STARTED");
+        assertThat(store.states.get("claude").cash()).isEqualTo(100_000);
+
+        PaperAdminService.ResetResult bench = admin.reset("bench_mix", "bench_mix");
+        assertThat(bench.backfilled()).isFalse();
+        assertThat(bench.skippedReason()).contains("종가가 아직 없습니다");
+        assertThat(store.books.get("bench_mix").status()).isEqualTo("NOT_STARTED");
+        assertThat(store.books.get("bench_mix").startedOn()).isNull();
+    }
+
+    @Test
+    @DisplayName("초기화는 관측치 유니버스 전체의 출발일 종가를 한 번 얼리고, 사후 체결은 그 값을 쓴다")
+    void initFreezesStartPricesForWholeUniverse() {
+        when(marketData.quotes()).thenReturn(Optional.of(quotes(MON_INTRADAY, bar("AAA", FRI, 100, MON, 101),
+                bar("SPY", FRI, 500, MON, 505), bar("SHY", FRI, 82.5, MON, 82.6))));
+        when(marketData.sourcedClosesOn(anyCollection(), eq(FRI))).thenReturn(Map.of(
+                "AAA", new SourcedClose(100, "paper.quotes"), "SPY", new SourcedClose(500, "equity_close"),
+                "SHY", new SourcedClose(82.5, "equity_close")));
+        PaperAdminService admin = admin(AFTER_START);
+
+        PaperAdminService.InitResult result = admin.init();
+
+        assertThat(result.startPricesCaptured()).isEqualTo(3);
+        assertThat(store.startPrices.keySet()).containsExactly("AAA", "SHY", "SPY");
+        assertThat(store.startPrices.get("AAA").tradingDate()).isEqualTo(FRI);
+        assertThat(result.backfilled()).containsExactly("bench_spy", "bench_mix");
+        assertThat(store.fillsOf("bench_spy")).singleElement().satisfies(f -> {
+            assertThat(f.rawPrice()).isEqualTo(500);
+            assertThat(f.priceSource()).isEqualTo("equity_close");
+        });
+        verify(marketData, never()).sourcedCloseOn(anyString(), any());   // 얼린 값을 씀
+
+        assertThat(admin.init().startPricesCaptured()).as("이미 얼린 종목은 다시 넣지 않음").isZero();
+        assertThat(admin.startClose("AAA")).hasValue(new SourcedClose(100, "paper.quotes"));
+    }
+
+    @Test
+    @DisplayName("리셋은 얼린 출발일 종가로 다시 사후 체결한다 — 배당락으로 수정 종가가 낮아져도 처음과 같은 수량·현금")
+    void resetUsesFrozenStartPrice() {
+        closes(500, 82.5);
+        PaperAdminService admin = admin(AFTER_START);
+        admin.init();
+        assertThat(store.startPrices.keySet()).as("사후 체결이 얼림").containsExactly("SHY", "SPY");
+        // 몇 주 뒤: 수집기가 auto_adjust로 출발일 종가를 낮게 다시 씀
+        closes(497, 82.0);
+
+        assertThat(admin.reset("bench_mix", "bench_mix").backfilled()).isTrue();
+
+        assertThat(store.fillsOf("bench_mix")).extracting(Fill::ticker, Fill::qty, Fill::rawPrice).containsExactly(
+                org.assertj.core.groups.Tuple.tuple("SPY", 119, 500.0),
+                org.assertj.core.groups.Tuple.tuple("SHY", 484, 82.5));
+        assertThat(store.states.get("bench_mix").cash()).isEqualTo(520.285);
+        assertThat(store.startPrices.get("SHY").close()).isEqualTo(82.5);
+    }
+
+    @Test
+    @DisplayName("출발일 마감 15분 전에는 종가를 얼리지 않는다")
+    void noFreezeBeforeFinalClose() {
+        when(marketData.sourcedClosesOn(anyCollection(), eq(FRI))).thenReturn(Map.of(
+                "SPY", new SourcedClose(499, "paper.quotes")));
+
+        PaperAdminService.InitResult result = admin(Clock.fixed(FRI_CLOSE.plusSeconds(5 * 60), ZoneOffset.UTC)).init();
+
+        assertThat(result.startPricesCaptured()).isZero();
+        assertThat(store.startPrices).isEmpty();
+    }
+
+    @Test
+    @DisplayName("테이블이 없으면 초기화하지 않는다")
+    void notReady() {
+        store.ready = false;
+        assertThatThrownBy(() -> admin(AFTER_START).init()).isInstanceOf(IllegalStateException.class);
+        assertThat(store.books).isEmpty();
+    }
+}

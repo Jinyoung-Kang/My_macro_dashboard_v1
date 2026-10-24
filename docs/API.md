@@ -212,6 +212,35 @@ GET·OPTIONS 밖(쓰기·HEAD)은 경로와 상관없이 403 `{"error":"demo_rea
 | `GET /api/ai/toss/exchange-rate?base=USD&quote=KRW` | 환율 조회 |
 | `GET /api/ai/toss/indices?symbols=KOSPI,KOSDAQ` | 지수 조회 |
 
+### 🧪 모의 매매(운영자, 로컬 전용)
+
+모든 경로가 운영자 전용입니다. 테이블(V8)이 아직 없으면 `{available:false, message}`(POST는 `ok:false`도)로 답합니다.
+책 코드 `{code}`는 `rules`·`claude`·`bench_spy`·`bench_mix`이고, 없는 코드는 400입니다. 시각은 KST 문자열, 거래일은 미국 동부
+세션 날짜입니다. 총액(현금·순자산·평가액·체결 금액)은 소수 2자리, 주당 가격(평단·체결가·최고가·스탑가)은 4자리, 비율(%)은
+2자리로 서버가 반올림해 보냅니다. 모르는 값은 `null`입니다.
+
+`BookSummary` = `{code, kind, label, status, startedOn, initialCash, cash, nav, equityValue, exposurePct, returnPct,
+lastObservedAtKst, positions, staleCount, stats:{cumReturnPct, cagrPct, volPct, mddPct, sharpe, excessPct, beta, sampleDays},
+benchmark}` — `benchmark`는 통계 비교 기준 책(`bench_spy`, 자신이면 `null`). 시작 전(`NOT_STARTED`) 책은 `returnPct`·`stats`가
+`null`입니다. `returnPct`는 지금 평가(마지막 관측치 — 장중이면 지연 시세) 기준이고, `stats`는 거래일 확정 순자산 기준이라 둘이
+다를 수 있습니다. 통계의 표본(`sampleDays`)은 첫·마지막 순자산 기록 사이의 거래일 수이고(기록이 빠진 날이 있어도 거래일로 셈 —
+CAGR 지수도 같음), 20일 미만이면 `cumReturnPct`만 있습니다. 변동성·샤프·베타는 연속 거래일 기록 쌍의 수익률만 쓰고, 그런 쌍이
+20개 미만이면 `null`입니다. 관측치 요약 `quotes` =
+`{collectedAtKst, ageSeconds, barDate(다수 티커의 봉 날짜), finalClose(마감 15분 뒤 수집), tickers(개수), staleTickers(이어 쓴 티커 목록), stale(3시간 넘게 묵음)}`, 저장본이 없으면 `null`.
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| GET | `/api/paper/overview` | `{available, initialized, pendingBackfill, startDate, books:[BookSummary], navSeries:{dates, books:{code:[nav\|null…]}}, quotes, limits(명세 §6 한계 문구 여덟 줄), jobs(최근 10건 {job, startedAtKst, finishedAtKst, outcome, detail})}`. 초기화 전이면 `initialized:false`. `pendingBackfill`은 아직 사후 체결하지 못한(`NOT_STARTED`) 벤치마크 책 코드 — 출발일 종가를 받기 전에 초기화하면 `initialized:true`여도 여기 남고, 초기화를 다시 누르면 체결합니다 |
+| GET | `/api/paper/status` | `{available, schemaReady, initialized, enabled(정기 작업), startDate, initialCash, quotes, jobs(최근 30건), settingsVersion(설정 행이 없으면 null), settingsFallbacks(기본값으로 읽은 설정 키)}` |
+| GET | `/api/paper/books/{code}/positions` | `{available, book:BookSummary, positions:[{ticker, qty, avgCost, lastPrice, lastPriceAtKst, marketValue, weightPct, unrealizedPct, highWatermark, stopPrice, stopDistancePct, openedOn, holdingTradingDays, priceStale, splitNote, cashLike, backfilled}], lockouts:[{ticker, untilTradingDate, reason}], cash}`. 가격을 한 번도 받지 못한 보유는 `lastPrice:null`이고 `marketValue`는 평단으로 낸 값(`priceStale:true`). 현금성(SHY)·벤치마크 보유는 `stopPrice:null` |
+| GET | `/api/paper/books/{code}/orders?limit=50` | `{available, orders:[{id, ticker, side, qty, targetWeightPct, sellFraction, timing, source, status, rejectReason, reason, asOfTradingDate, createdAtKst, expiresOn, filledAtKst}]}` 최근 순. `limit`은 1~500으로 접음 |
+| GET | `/api/paper/books/{code}/fills?limit=50` | `{available, fills:[{id, orderId, ticker, side, qty, price(슬리피지 포함), rawPrice(관측치), slippageBp, gross, observedAtKst, observationDate, priceSource, backfill}]}` 최근 순. `limit`은 1~500 |
+| GET | `/api/paper/books/{code}/nav` | `{available, book:BookSummary, series:[{tradingDate, nav, cash, equityValue, exposurePct, pricesFinal}]}` 거래일 오름차순. 줄은 그 세션의 마감 15분 뒤 관측치로만 남기고(다음 세션이 열린 뒤의 관측치는 지난 줄을 다시 쓰지 않음), `pricesFinal`은 보유가 모두 그 세션의 확정 봉으로 평가됐을 때만 `true` — 이어 쓴 봉·봉 없음으로 마지막 값을 쓴 보유가 있으면 `false`이고, 뒤의 온전한 관측치가 확정으로 바꿉니다 |
+| POST | `/api/paper/init` | 멱등이라 몇 번을 눌러도 됩니다. 네 책·상태·설정 행을 만들고, 관측치 유니버스 전체의 출발일(`dashboard.paper.start-date`) 종가를 한 번 얼리고(`paper_start_prices` — 수정주가 이력이 배당락 뒤 낮게 다시 쓰여도 사후 체결이 같은 값을 쓰게), 벤치마크 둘을 그 종가로 사후 체결 → `{ok, created:[codes], backfilled:[codes], skipped:[{code, reason}], settingsCreated, startPricesCaptured(이번에 새로 얼린 종목 수)}`. 종가가 아직 없으면(수집 전) 그 책은 `skipped`에 사유와 함께 남고(개요의 `pendingBackfill`) 다시 누르면 체결. 출발일이 아직 지금 세션이면 이력(`equity_close`) 값은 장중에 쓴 행일 수 있어 쓰지 않고 마감 15분 뒤 관측치의 그날 봉을 씁니다. 규칙·Claude 책은 현금만 든 `NOT_STARTED` |
+| POST | `/api/paper/books/{code}/status` | `{"status":"ACTIVE"\|"PAUSED"}` → `{ok, book:BookSummary, cancelledOrders}`. 일시정지하면 체결 전 주문을 취소. 시작 전 책·다른 값은 400 |
+| POST | `/api/paper/books/{code}/reset` | `{"confirm":"<code>"}`(책 코드 그대로, 다르면 400) → `{ok, book:BookSummary, backfilled, skippedReason}`. 그 책의 주문·체결·결정·보유·순자산을 지우고 벤치마크는 얼려 둔 출발일 종가로 다시 사후 체결(처음과 같은 가격·수량), 규칙·Claude 책은 현금만 |
+| POST | `/api/paper/run/risk` | 리스크 점검 한 번(정기 작업 설정과 상관없이) → `{ok, outcome:{filled, stopped, expired, splits, booksProcessed, skippedReason, notes, errors}}`. 새 관측치가 없으면 `skippedReason`. 한 책이 오류면 그 책만 되돌리고 `ok:false`·`errors` — 정기 작업은 그 관측치를 그 책에 다시 돌리지 않고(같은 오류를 5분마다 기록하지 않게) 새 관측치에서 다시 시도하며, 이 버튼은 같은 관측치로 한 번 더 시도합니다. 현금이 모자라 줄인 매수는 주문 `reason`에 `cashLimited:true`·`requestedQty`·`filledQty`가 남습니다 |
+
 ## 2. 수집기 (내부용)
 
 `COLLECTOR_API_TOKEN`을 설정하면 아래 표에서 🔒 표시된 경로에 `X-Service-Token`

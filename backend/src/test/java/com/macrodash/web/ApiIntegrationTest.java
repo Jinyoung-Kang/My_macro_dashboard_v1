@@ -54,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "dashboard.ai.cloudflare-account-id=", "dashboard.ai.cloudflare-api-token=",
         "dashboard.ai.demo-daily-limit=7",
         "dashboard.scheduler.enabled=false",             // 정기 작업이 테스트 DB에 쓰면 결과가 실행 시각에 따라 달라짐
+        "dashboard.paper.enabled=false",                 // 모의 매매 리스크 점검도(스케줄러를 켜는 테스트가 생겨도 장부를 건드리지 않게)
         "dashboard.scheduler.regime-record-hour-kst=17", // 설정 주입이 실제로 먹는지 확인용(QA-093, AWS 배포값)
         // 데모 열람(ADR 0013)을 켜 둡니다 — 헤더를 보내지 않는 다른 테스트는 평소와 같습니다(그것도 함께 확인됨).
         "dashboard.demo-viewer-token=" + ApiIntegrationTest.DEMO_TOKEN
@@ -866,6 +867,136 @@ class ApiIntegrationTest {
         ResponseEntity<JsonNode> wrongMethod = authorizedExchange("/api/verification", HttpMethod.GET);
         assertThat(wrongMethod.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
         assertThat(wrongMethod.getBody().path("error").asString()).isEqualTo("method_not_allowed");
+    }
+
+    /** 🧪 모의 매매의 GET 경로(책 코드가 든 경로는 bench_spy로). */
+    private static final List<String> PAPER_GETS = List.of(
+            "/api/paper/overview", "/api/paper/status", "/api/paper/books/bench_spy/positions",
+            "/api/paper/books/bench_spy/orders?limit=5", "/api/paper/books/bench_spy/fills?limit=5",
+            "/api/paper/books/bench_spy/nav");
+
+    /** 테스트가 만든 모의 매매 책을 지웁니다(테스트 DB만 — setUp이 DB 이름을 확인함). 책을 지우면 장부가 함께 지워집니다. */
+    private void deletePaperBooks() {
+        if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT to_regclass('paper_books') IS NOT NULL", Boolean.class))) {
+            jdbc.update("DELETE FROM paper_books WHERE code IN ('rules', 'claude', 'bench_spy', 'bench_mix')");
+        }
+        // 얼린 출발일 종가가 남으면 다음 실행의 초기화가 '종가 없음' 대신 그 값으로 사후 체결합니다(테스트 DB만).
+        if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT to_regclass('paper_start_prices') IS NOT NULL", Boolean.class))) {
+            jdbc.update("DELETE FROM paper_start_prices");
+        }
+    }
+
+    @Test
+    @DisplayName("🧪 모의 매매: 운영자는 모든 경로 200(테이블이 없어도 available:false), 일반 회원은 GET·POST 모두 403")
+    void paperRoutesAreOwnerOnly() {
+        HttpHeaders member = new HttpHeaders();
+        member.add(HttpHeaders.COOKIE, login(MEMBER, "test-password"));
+        member.setContentType(MediaType.APPLICATION_JSON);
+        for (String path : PAPER_GETS) {
+            ResponseEntity<JsonNode> denied = rest.exchange(url(path), HttpMethod.GET, new HttpEntity<>(null, member),
+                    JsonNode.class);
+            assertThat(denied.getStatusCode()).as("회원 GET " + path).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(denied.getBody().path("required").asString()).isEqualTo("OWNER");
+        }
+        for (String path : List.of("/api/paper/init", "/api/paper/run/risk", "/api/paper/books/bench_spy/status",
+                "/api/paper/books/bench_spy/reset")) {
+            assertThat(rest.exchange(url(path), HttpMethod.POST, new HttpEntity<>(Map.of("status", "PAUSED",
+                    "confirm", "bench_spy"), member), String.class).getStatusCode()).as("회원 POST " + path)
+                    .isEqualTo(HttpStatus.FORBIDDEN);
+        }
+
+        deletePaperBooks();
+        JsonNode status = authorizedGet("/api/paper/status");
+        if (!status.path("schemaReady").asBoolean(false)) {
+            // V8을 적용하지 않은 테스트 DB — 500이 아니라 안내 문구
+            for (String path : PAPER_GETS) {
+                JsonNode body = authorizedGet(path);
+                assertThat(body.path("available").asBoolean(true)).as(path).isFalse();
+                assertThat(body.path("message").asString()).as(path).contains("make up");
+            }
+            return;
+        }
+        assertThat(status.path("enabled").asBoolean(true)).as("dashboard.paper.enabled=false").isFalse();
+        JsonNode overview = authorizedGet("/api/paper/overview");
+        assertThat(overview.path("available").asBoolean()).isTrue();
+        assertThat(overview.path("initialized").asBoolean(true)).isFalse();
+        assertThat(overview.path("limits").size()).isEqualTo(8);
+        assertThat(overview.path("quotes").isNull()).as("관측치 저장본 없음(setUp이 snapshots를 비움)").isTrue();
+        ResponseEntity<JsonNode> unknown = authorizedExchange("/api/paper/books/bench_spy/positions", HttpMethod.GET);
+        assertThat(unknown.getStatusCode()).as("초기화 전 책 코드는 400(404 아님)").isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    @DisplayName("🧪 모의 매매 초기화: 가격 없는 테스트 DB에서도 500이 아니라 벤치마크를 사유와 함께 건너뛰고, 두 번 눌러도 한 번")
+    void paperInitWithoutPricesSkipsBenchmarks() {
+        assumePaperSchema();
+        deletePaperBooks();
+        boolean settingsExisted = jdbc.queryForObject("SELECT COUNT(*) FROM paper_settings", Long.class) > 0;
+        long pricedLegs = jdbc.queryForObject("SELECT COUNT(*) FROM timeseries WHERE dataset = 'equity_close' "
+                + "AND series_id IN ('SPY', 'SHY') AND obs_date = DATE '2026-10-23'", Long.class);
+        try {
+            ResponseEntity<JsonNode> first = authorizedExchange("/api/paper/init", HttpMethod.POST);
+            assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(first.getBody().path("ok").asBoolean()).isTrue();
+            assertThat(first.getBody().path("created").toString())
+                    .contains("rules", "claude", "bench_spy", "bench_mix");
+            if (pricedLegs == 0) {
+                assertThat(first.getBody().path("backfilled").size()).isZero();
+                assertThat(first.getBody().path("skipped").size()).isEqualTo(2);
+                assertThat(first.getBody().path("skipped").get(0).path("code").asString()).isEqualTo("bench_spy");
+                assertThat(first.getBody().path("skipped").get(0).path("reason").asString())
+                        .contains("SPY").contains("종가가 아직 없습니다");
+            }
+
+            ResponseEntity<JsonNode> second = authorizedExchange("/api/paper/init", HttpMethod.POST);
+            assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(second.getBody().path("created").size()).as("멱등").isZero();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM paper_books WHERE code IN "
+                    + "('rules', 'claude', 'bench_spy', 'bench_mix')", Long.class)).isEqualTo(4);
+
+            JsonNode overview = authorizedGet("/api/paper/overview");
+            assertThat(overview.path("initialized").asBoolean()).isTrue();
+            assertThat(overview.path("books").size()).isEqualTo(4);
+            assertThat(overview.path("books").get(0).path("code").asString()).isEqualTo("rules");
+            assertThat(overview.path("books").get(0).path("status").asString()).isEqualTo("NOT_STARTED");
+            assertThat(overview.path("books").get(0).path("nav").asDouble()).isEqualTo(100_000);
+            assertThat(overview.path("books").get(0).path("returnPct").isNull()).isTrue();
+            for (String path : PAPER_GETS) {
+                assertThat(authorizedGet(path).path("available").asBoolean()).as(path).isTrue();
+            }
+
+            // 시작 전 책은 일시정지·재개 400, 확인 문구가 다르면 리셋 400, 리스크 실행은 관측치가 없다는 이유로 끝남
+            HttpHeaders owner = new HttpHeaders();
+            owner.add(HttpHeaders.COOKIE, sessionCookie);
+            owner.setContentType(MediaType.APPLICATION_JSON);
+            assertThat(rest.exchange(url("/api/paper/books/rules/status"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("status", "ACTIVE"), owner), JsonNode.class).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(rest.exchange(url("/api/paper/books/rules/reset"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("confirm", "claude"), owner), JsonNode.class).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
+            ResponseEntity<JsonNode> reset = rest.exchange(url("/api/paper/books/rules/reset"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("confirm", "rules"), owner), JsonNode.class);
+            assertThat(reset.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(reset.getBody().path("book").path("code").asString()).isEqualTo("rules");
+            JsonNode risk = authorizedExchange("/api/paper/run/risk", HttpMethod.POST).getBody();
+            assertThat(risk.path("ok").asBoolean()).isTrue();
+            assertThat(risk.path("outcome").path("skippedReason").asString()).contains("paper.quotes");
+            assertThat(authorizedExchange("/api/paper/books/nope/orders", HttpMethod.GET).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
+        } finally {
+            deletePaperBooks();
+            if (!settingsExisted) {
+                jdbc.update("DELETE FROM paper_settings");
+                jdbc.update("DELETE FROM paper_settings_history WHERE version = 1");
+            }
+        }
+    }
+
+    private void assumePaperSchema() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT to_regclass('paper_api_usage') IS NOT NULL", Boolean.class)),
+                "테스트 DB에 V8(paper_*)이 없습니다 — make db-test");
     }
 
     @Test

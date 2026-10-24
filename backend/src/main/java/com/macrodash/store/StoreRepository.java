@@ -6,16 +6,20 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -176,6 +180,120 @@ public class StoreRepository {
                 rs.getDate("obs_date").toLocalDate(),
                 (Double) rs.getObject("value")
         ), params.toArray());
+    }
+
+    /**
+     * 같은 데이터셋의 시계열 여러 개를 날짜 범위로 한 번에 읽습니다(모의 매매의 10년 종가 등).
+     *
+     * <p><b>왜 따로 두나</b> — 종목 550여 개 × 10년이면 140만 행입니다. {@link #readTimeseries}처럼 점마다
+     * {@code LocalDate}·{@code Double} 객체를 만들면 그것만 수백 MB이고(백엔드 힙은 약 700MB), 자동 커밋 연결에서는
+     * 드라이버가 결과 전체를 메모리에 받은 뒤에야 넘겨줍니다. 그래서 커서({@value #STREAM_FETCH_ROWS}행씩)로 흘려 받으며
+     * 시계열마다 원시 배열로 모읍니다 — 날짜는 DB가 계산한 epoch day(1970-01-01부터의 일수, {@code LocalDate.toEpochDay}와
+     * 같은 값)라 날짜 객체를 쌓지 않습니다. 커서는 트랜잭션 안에서만 동작해 읽기 전용 트랜잭션으로 감쌉니다(바깥에
+     * 트랜잭션이 있으면 거기에 합류).
+     *
+     * <p>값이 NULL이거나 유한한 수가 아닌(NaN·무한대) 행은 건너뜁니다 — 없는 값을 0으로 채우지 않습니다. 그래서 점이
+     * 하나도 남지 않은 시계열, 저장된 적 없는 시계열은 결과에 키가 없습니다.
+     *
+     * @param seriesIds 읽을 시계열(비면 DB에 묻지 않고 빈 결과)
+     * @param from      이 날짜부터(포함). null이면 제한 없음
+     * @param to        이 날짜까지(포함). null이면 제한 없음
+     * @return series_id → 날짜 오름차순 열(series_id 순으로 담김)
+     */
+    public Map<String, TimeseriesColumns> readTimeseriesColumns(String dataset, Collection<String> seriesIds,
+                                                                LocalDate from, LocalDate to) {
+        Map<String, TimeseriesColumns> out = new LinkedHashMap<>();
+        if (seriesIds == null || seriesIds.isEmpty()) {
+            return out;
+        }
+        String[] ids = seriesIds.stream().distinct().toArray(String[]::new);
+        StringBuilder sql = new StringBuilder(
+                "SELECT series_id, obs_date - DATE '1970-01-01' AS epoch_day, value FROM timeseries "
+                        + "WHERE dataset = ? AND series_id = ANY(?) AND value IS NOT NULL");
+        if (from != null) {
+            sql.append(" AND obs_date >= ?");
+        }
+        if (to != null) {
+            sql.append(" AND obs_date <= ?");
+        }
+        sql.append(" ORDER BY series_id, obs_date");
+
+        ColumnCollector collector = new ColumnCollector(out);
+        streamingTransactions().executeWithoutResult(status -> jdbc.query(connection -> {
+            PreparedStatement statement = connection.prepareStatement(sql.toString());
+            int index = 1;
+            statement.setString(index++, dataset);
+            statement.setArray(index++, connection.createArrayOf("text", ids));
+            if (from != null) {
+                statement.setDate(index++, java.sql.Date.valueOf(from));
+            }
+            if (to != null) {
+                statement.setDate(index, java.sql.Date.valueOf(to));
+            }
+            statement.setFetchSize(STREAM_FETCH_ROWS);
+            return statement;
+        }, collector));
+        collector.flush();
+        return out;
+    }
+
+    /** 커서로 한 번에 받는 행 수. 1만 행이면 드라이버가 쥐는 메모리가 1~2MB 안팎입니다. */
+    static final int STREAM_FETCH_ROWS = 10_000;
+
+    /**
+     * {@link #readTimeseriesColumns}의 읽기 전용 트랜잭션. 처음 쓸 때 만듭니다 — 가짜(mock) JdbcTemplate으로 이 저장소를
+     * 만드는 단위 테스트에는 DataSource가 없어, 생성자에서 만들면 그 테스트들이 깨집니다.
+     */
+    private volatile TransactionTemplate streaming;
+
+    private TransactionTemplate streamingTransactions() {
+        TransactionTemplate template = streaming;
+        if (template == null) {
+            template = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
+            template.setReadOnly(true);
+            streaming = template;
+        }
+        return template;
+    }
+
+    /** series_id 순으로 오는 행을 시계열마다 원시 배열로 모읍니다. 버퍼 하나를 시계열마다 다시 씁니다. */
+    private static final class ColumnCollector implements RowCallbackHandler {
+        private final Map<String, TimeseriesColumns> out;
+        private String current;
+        private int[] days = new int[512];
+        private double[] values = new double[512];
+        private int size;
+
+        ColumnCollector(Map<String, TimeseriesColumns> out) {
+            this.out = out;
+        }
+
+        @Override
+        public void processRow(ResultSet rs) throws SQLException {
+            String seriesId = rs.getString(1);
+            if (!seriesId.equals(current)) {
+                flush();
+                current = seriesId;
+            }
+            double value = rs.getDouble(3);
+            if (!Double.isFinite(value)) {
+                return;
+            }
+            if (size == days.length) {
+                days = Arrays.copyOf(days, size * 2);
+                values = Arrays.copyOf(values, size * 2);
+            }
+            days[size] = rs.getInt(2);
+            values[size] = value;
+            size++;
+        }
+
+        void flush() {
+            if (current != null && size > 0) {
+                out.put(current, new TimeseriesColumns(Arrays.copyOf(days, size), Arrays.copyOf(values, size)));
+            }
+            size = 0;
+        }
     }
 
     public long countTimeseries() {
@@ -440,6 +558,23 @@ public class StoreRepository {
 
     /** 시계열 1점. */
     public record TimeseriesPoint(LocalDate date, Double value) {
+    }
+
+    /**
+     * 시계열 하나의 열 묶음({@link #readTimeseriesColumns}). 두 배열은 길이가 같고 날짜 오름차순이며, 날짜는
+     * epoch day({@code LocalDate.ofEpochDay(epochDays[i])}로 되돌림)입니다. 배열은 읽기 전용으로 씁니다.
+     */
+    public record TimeseriesColumns(int[] epochDays, double[] values) {
+        public TimeseriesColumns {
+            if (epochDays.length != values.length) {
+                throw new IllegalArgumentException(
+                        "날짜와 값의 개수가 다릅니다: " + epochDays.length + " ≠ " + values.length);
+            }
+        }
+
+        public int size() {
+            return epochDays.length;
+        }
     }
 
     /** 상한까지 읽은 관측 레코드. {@code truncated}면 조건에 맞는 더 오래된 행이 남아 있습니다 (QA-133). */
