@@ -140,7 +140,7 @@
 | `paper_fills` | `id`, `order_id FK`, `book_code`, `ticker`, `side`, `qty`, `price`, `raw_price`, `slippage_bp`, `gross`, `observed_at`, `observation_date`, `price_source`, `is_backfill`, `created_at` | `UNIQUE (order_id)` |
 | `paper_nav_daily` | `book_code`, `trading_date`, `nav`, `cash`, `equity_value`, `exposure_pct`, `prices_final`, `created_at` | `PK (book_code, trading_date)` |
 | `paper_gate_log` | `trading_date PK`, `inputs JSONB`, `level` CHECK(L0·L1·L2·UNKNOWN), `streaks JSONB`, `created_at` | **지표**. Claude 책·규칙 책 어느 쪽도 구속하지 않음(D7·D19) |
-| `paper_track_record` | `as_of_date`, `cik`, `window_years`, `periods_used`, `periods_total`, `first_filing_date`, `last_filing_date`, `cum_return_pct`, `cagr_pct`, `vol_pct`, `mdd_pct`, `sharpe`, `excess_vs_spy_pct`, `coverage_min`, `coverage_avg`, `eligible BOOL`, `ineligible_reason`, `rank INT NULL`, `periods JSONB`(구간별 시작·끝·수익률·커버리지), `computed_at`, `group_code`(V9 — `A` 후보 7년, `B` 기존 메뉴 2년) | `PK (as_of_date, group_code, cik)`(V9). 재선정일마다 한 세트, 수동 재계산은 같은 날 덮어씀 |
+| `paper_track_record` | `as_of_date`, `cik`, `window_years`, `periods_used`, `periods_total`, `first_filing_date`, `last_filing_date`, `cum_return_pct`, `cagr_pct`, `vol_pct`, `mdd_pct`, `sharpe`, `excess_vs_spy_pct`, `coverage_min`, `coverage_avg`, `eligible BOOL`, `ineligible_reason`, `rank INT NULL`, `periods JSONB`(구간별 시작·끝·수익률·커버리지), `computed_at`, `group_code`(V9 — `A` 후보 7년, `B` 기존 메뉴 2년), `data_source`(V9 — 계산에 쓴 저장본 `q30`·`q8`, 단계 1b 행은 NULL) | `PK (as_of_date, group_code, cik)`(V9). 재선정일마다 한 세트, 수동 재계산은 같은 날 덮어씀 |
 | `paper_selection_log` | `as_of_date PK`, `selected_ciks TEXT[]`, `ranking JSONB`(상위 10 요약), `settings_version`, `created_at` | 선정 이력 |
 | `paper_decisions` | `id`, `book_code`, `as_of_trading_date`, `kind` CHECK(SCHEDULED·MANUAL·INITIAL·REBALANCE), `decided_at`, `status` CHECK(OK·NO_TRADE·REFUSED·FORMAT_ERROR·API_ERROR·SKIPPED), `model`, `framework_version`, `settings_version`, `selection_as_of DATE NULL`, `target_exposure_pct NULL`, `packet JSONB`, `packet_hash`, `response_raw`, `response JSONB`, `usage JSONB`, `error`, `note_ids BIGINT[]`, `prices_final`, `latency_ms`, `retry_count INT` | `UNIQUE (book_code, as_of_trading_date, kind)` |
 | `paper_framework_versions` | `version PK`, `body JSONB`, `rendered TEXT`, `rendered_tokens_est`, `changelog`, `source_proposal_id NULL`, `created_at` | |
@@ -289,6 +289,10 @@ eligible = periods_used ≥ 24 && min(coverage) ≥ 0.5 && avg(coverage) ≥ 0.7
 - 2026-10-23 원형: 자격 4곳 = Duquesne 26.8%·Bridgewater 16.0%·Fisher 15.4%·Berkshire 13.8%(Scion 27.5%는 최신 분기 공시 없음).
 - 선정 시점·Point-in-Time은 그룹 A와 같다(재선정일·초기 선정, 그날까지의 공시·가격만). 결과는 `paper_track_record`에 `group_code='B'`로(V9), 선정은 같은
   `paper_selection_log` 행의 `ranking.groupB`에 남긴다. `selected_ciks`는 신호 풀(A ∪ B).
+- 구현 메모(단계 2): 그룹 B에는 "수집 중" 자격 규칙을 두지 않는다(q8에는 완료 표시가 없음 — 짧은 저장본은 구간 수 기준이 거름). 후보 목록
+  저장본이 없어 그룹 A를 계산하지 못하는 기준일은 그룹 B도 계산하지 않는다(그룹 B만으로 선정하지 않으므로). 출처는 `data_source` 열에 남겨
+  화면이 계산 때의 출처를 보인다. D27 전에 남긴 선정 행(순위표 배열)은 그룹 A만의 풀(그룹 A 순위 가중)로 읽는다. ETF 상한은
+  `universeExtraTickers`와 SPY·QQQ에만 적용한다(13F의 다른 ETF는 종류를 몰라 종목 상한).
 
 ### 4-1. 신호 추출 (R2·D27)
 
@@ -307,6 +311,7 @@ eligible = periods_used ≥ 24 && min(coverage) ≥ 0.5 && avg(coverage) ≥ 0.7
 상위 `rulesMaxNames`(10) 후보(유니버스 안·재진입 금지 밖)의 목표 비중 = `maxWeightStockPct`(10%; ETF면 `maxWeightEtfPct`) × `S_t / S_max`.
 1% 미만은 "확신도 낮음"으로 뺀다. 집중형 기관의 고확신 종목은 상한까지, 분산형 기관의 작은 신규 편입은 작게 — 두 스타일을 섞는 규칙이다(`blend.allocation`
 `CONVICTION`, 대안 `EQUAL`은 예전 동일 비중). **예산 없음**: 이미 보유한 후보는 목표 비중까지만 추가. 남는 현금은 SHY(`parkCashInShy`).
+**매일 남는 현금**(R3·R5 정리): 재선정일이 아닌 날도 남는 현금(현금 + 대기·이번 매도 대금 − 대기 매수 금액)이 `rules.parkCashThresholdPct`(2%)를 넘으면 SHY 한 건(− 0.5%p, 근거 `park_cash` — 현금 관리)을 내고, 매수는 `minOrderNotional`(500달러) 미만이면 내지 않는다.
 
 ### 4-3. 일일 결정 흐름 (R5·R6)
 
@@ -319,7 +324,7 @@ decideRules(asOf):
   sel = latest selection                                            # 신호 풀 A ∪ B와 기관 가중
   sig = Signal13F.collect(sel.pool, asOf)                           # 선정 기준일 이전 공시만
   orders = [SELL 전량 for held if sig.sellSignal(held)]
-  if isReselectionDay(asOf): orders += Signal13F.allocate(sig.candidates, nav, positions, caps)
+  if isReselectionDay(asOf): orders += Signal13F.allocate(sig.candidates, nav, positions, caps)   # 놓쳤으면 따라잡는 날(§6-2)
   record paper_decisions(book=rules, kind=SCHEDULED|REBALANCE, selection_as_of,
                          response={gate(참고), selection, signals, orders, skipped})
 ```
@@ -340,8 +345,10 @@ decideRules(asOf):
 | `trackRecord.minPeriods` / `minCoverage` / `avgCoverage` | 24 / 0.5 / 0.7 | D22 |
 | `trackRecord.candidateCiks` | §4-0 ① 표(단계 0 확인 뒤) | D21 — 바꾸면 경고 |
 | `minHolders` / `rulesMaxNames` / `parkCashInShy` | 2 / 10 / true | 규칙 책 |
+| `rules.parkCashThresholdPct` | 2 (0~20) | 재선정일이 아닌 날 남는 현금을 SHY에 두는 기준(순자산 %) — 이보다 크면 SHY 한 건(§4-2). `minOrderNotional`(500)은 규칙 책 매수에도 적용 |
 | `blend.groupB.topN` / `blend.groupB.windowYears` / `blend.groupB.minPeriods` | 4 / 2 / 6 | 그룹 B(D27) |
 | `blend.groupWeightA` / `blend.convictionCapPct` / `blend.allocation` | 0.5 / 10 / `CONVICTION`(`EQUAL`) | 섞기 가중·확신도·배분(D27) |
+| `blend.minTargetPct` | 1.0 (0~10) | 확신도 비례 배분의 하한 — 목표 비중이 이보다 작으면 '확신도 낮음'으로 뺌(D27) |
 | `universeExtraTickers` / `cashLikeTickers` | XL*·SHY·UUP·GLD·DBC·TLT·IEF / SHY | D8 |
 | `gate.*` (us10yStage1 4.80, us10yFull 4.75, brentMax 95, wtiMax 90, usdjpyMin 155, confirmDays 3) | | **참고 지표만** (D7) |
 | `notesDefaultExpiryTradingDays` / `notesMaxCharsInPacket` | 3 / 6000 | 메모 |
@@ -475,16 +482,22 @@ run():
   if !final && nowKst < deadlineKst → PRICES_NOT_FINAL
   ledger.processObservation(obs); ledger.settleNav(asOf, final)
   gate = GateIndicator… → paper_gate_log                          (지표)
-  if isReselectionDay(asOf): trackRecord.computeAndSelect(asOf)   (재선정)
-  rules.decide(asOf)
+  r = reselectionDay(latestQuarterEndReselectedBy(asOf))           (이 분기 재선정일)
+  buyMissing = rules 시작일 < r && r 선정(selection_as_of = r)으로 낸 REBALANCE·INITIAL 없음   (r 당일도 참)
+  if asOf == r || buyMissing: selection.select(r)                  (재선정 — asOf가 아니라 r 기준)
+  rules.decide(asOf, buyMissing ? REBALANCE : SCHEDULED)
   claude.decide(asOf, SCHEDULED)
 ```
+
+따라잡기: 재선정일 r의 결정 창 동안 작업이 끝나지 못했거나(맥 꺼짐·오류) r에 선정을 건너뛰었으면(수집 중·후보 목록 없음 — r의
+REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결정 날마다 `select(r)`를 다시 불러 r 선정이 생긴 날 한 번 REBALANCE로
+그 분기 매수를 낸다. 선정은 늘 r 기준이라 언제 따라잡아도 같은 선정이다. 다음 재선정일이 지나면 그 분기 따라잡기는 끝난다.
 
 ### 6-3. `PaperRiskJob` — `fixedDelay 5분` — 변경 없음
 
 ### 6-4. 트랙레코드 수집 진행과의 관계
 
-재선정일에 `complete=false`인 후보가 있으면 그 후보는 "수집 중"으로 제외되고 결정 기록에 적힌다. 수집이 끝난 뒤 사용자가 `POST /run/rerank`로 같은 `as_of_date`를 다시 계산해 볼 수 있지만 **선정은 바꾸지 않는다**(기록의 일관성). 10-23 초기 선정은 수집이 끝난 뒤 `POST /init`에서 한 번 계산한다 — 그래서 단계 1b(수집)가 단계 2(규칙 책 초기화)보다 먼저다.
+재선정일에 `complete=false`인 후보가 있으면 그 후보는 "수집 중"으로 제외되고 결정 기록에 적힌다. 수집이 끝난 뒤 사용자가 `POST /run/rerank`로 같은 `as_of_date`를 다시 계산해 볼 수 있지만 **선정은 바꾸지 않는다**(기록의 일관성). 10-23 초기 선정은 수집이 끝난 뒤 규칙 책 "시작"(`POST /run/initial-decision`, 사용자가 누름 — 명세 L2)에서 한 번 계산한다(신호 풀 A ∪ B). 수집 중인 후보가 있으면 시작하지 않는다 — 그래서 단계 1b(수집)가 단계 2(규칙 책 시작)보다 먼저다.
 
 ---
 
@@ -522,7 +535,7 @@ run():
 | **0. 선행 확인** | 명세 §7 여덟 항목: 장중 저장본, **후보 CIK 확인**, **EDGAR 목록 깊이·수집 시간 측정**, **커버리지 집계**, **10년 가격 저장본 크기**, Sonnet 호출, SDK 스키마 주입, 10-23 값 | S~M | 결과를 §13에 기록. 커버리지 미달 기관 목록과 매핑 추가 후보 200개 표 확보 |
 | **1. 장부 코어** | 수집기 `paper_quotes`·`paper_price_history`(D23, 유니버스는 지금 `EQUITY_MAP` + ETF로 시작하고 1b에서 CUSIP 매핑 티커를 더함), V8, `PaperStore`, `UsMarketCalendar`(공시 기한 포함)·`PaperLedger`·`TrailingStop`·`SplitDetector`·`PaperStats`·`GateIndicator`, `PaperMarketData`, `PaperLedgerService`, `PaperRiskJob`, `PaperAdminService.init`(네 책 + 벤치마크 10-23 사후 체결, 규칙·Claude 책은 현금만), `PaperQueryService`, API(overview·positions·orders·fills·nav·status·init·books status/reset·run/risk), 화면 개요·보유 탭 | M | 벤치마크 순자산이 SPY·SHY와 맞음. 체결 룩어헤드 테스트 통과. 스탑·분할 테스트 통과 |
 | **1b. 13F 트랙레코드** | 수집기: `TRACK_RECORD_FILERS`(선행 CIK)·`TRACK_RECORD_QUARTERS`·`task_sec_13f_track_record`·`collect_13f(reuse_stored, list_count)`·`TRACK_RECORD_CUSIPS`(D25)·유니버스 확장·`Datasets` 상수·DATA_SOURCES. 백엔드: `TrackRecord13F`·`PaperSelectionService`·`paper_track_record`·`paper_selection_log`·API 2개·기관 선정 탭. 수집을 돌려 후보 전원 `complete` | L | 수집 완료. 손계산 테스트(구간 수익률·CAGR·룩어헤드·커버리지·자격). 2026-10-23 기준 순위표가 화면에 보이고 상위 5가 기록됨. 단계 0 원형 계산(단계 0 표 D)과 대조 |
-| **2. 규칙 책** | V9(`paper_track_record.group_code`), 그룹 B 선정(D27), `Signal13F`(기관 가중 × 확신도, 확신도 비례 배분), `RuleBookService`, `PaperDecisionJob`(규칙 책까지, 재선정일 분기), 초기화에 규칙 책 10-23 사후 체결(선정 5곳 신호), 결정 로그 탭(규칙 책) | M | 10-23 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·순위·행동 기록. 재선정일 외 매수 없음 테스트 |
+| **2. 규칙 책** | V9(`paper_track_record.group_code`), 그룹 B 선정(D27), `Signal13F`(기관 가중 × 확신도, 확신도 비례 배분), `RuleBookService`, `PaperDecisionJob`(규칙 책까지, 재선정일 분기·놓친 재선정일 따라잡기), 규칙 책 "시작"(`POST /run/initial-decision`)에 10-23 사후 체결(신호 풀 A ∪ B, 최대 9곳), 결정 로그 탭(규칙 책) | M | 10-23 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·순위·행동 기록. 재선정일 외 매수 없음 테스트 |
 | **3a. Claude 책 — 결정** | `AiService.structured`, 스키마 2개, `PacketBuilder`(게이트 참고·트랙레코드 섹션 포함), `OrderValidator`(예산 규칙 없음), `ClaudeBookService`, `paper_api_usage`, 설정 테이블·API·탭, 결정 로그 탭(패킷·응답·검증·노출), `run/decision`·`run/initial-decision` | L | 가짜 서버 4종. 검증기 규칙별 테스트 + "노출 0%·100% 모두 통과" 테스트. 초기 결정 패킷에 10-23 이후 값 없음. 실제 키로 10-23 초기 결정 미리보기 1회(장부를 바꾸지 않음 — 책 시작은 사용자가 누름, L2) |
 | **3b. 프레임·메모** | `paper_framework_*`·`paper_notes`, `FrameworkService`(v1 시드 — 매크로 축은 지침 문장으로)·`NoteService`, API, 탭 | M | 승인 전후 테스트. 만료 메모 제외. v1 규칙 목록 사람이 검토 |
 | **4. 마무리** | ADR 0018, ARCHITECTURE·API.md·DATA_SOURCES·README·`.env.example`·compose(`PAPER_ENABLED`), 이 문서 구현 결과 표 | S | `make test` 통과, `/paper` 여섯 탭 동작, `git branch -r --contains HEAD` 빈 결과 |
