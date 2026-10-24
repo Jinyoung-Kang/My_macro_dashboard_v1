@@ -78,7 +78,8 @@ public class PaperSettingsService {
     /**
      * 설계 §4-4의 키 전부와 기본값. 단계 1이 읽는 키는 slippageBp·trailingStopPct·lockoutTradingDays·cashLikeTickers·gate.*
      * 이고, 나머지는 뒤 단계(규칙 책·Claude 책·메모)가 읽도록 처음부터 한 행에 둡니다 — 나중에 키를 더하면 버전이 바뀌어
-     * "이 결정은 어느 설정으로 했나" 기록이 끊깁니다.
+     * "이 결정은 어느 설정으로 했나" 기록이 끊깁니다. {@code blend.*}(D27)·{@code rules.*}는 단계 2에 더한 키라 그 전에 만든 행에는 없고,
+     * 없으면 읽는 쪽이 이 기본값으로 읽습니다(행을 고쳐 쓰지 않음 — 버전을 바꾸는 쓰기는 설정 API, 단계 3a).
      */
     public JsonNode defaultsJson() {
         Map<String, Object> body = new LinkedHashMap<>();
@@ -107,6 +108,23 @@ public class PaperSettingsService {
         body.put("minHolders", 2);
         body.put("rulesMaxNames", 10);
         body.put("parkCashInShy", true);
+        // 규칙 책 묶음(rules.*) — 단계 2에 더한 키라 그 전에 만든 설정 행에는 없고, 그 행은 PaperSettings.Rules가 이 기본값으로 읽습니다.
+        Map<String, Object> rulesBody = new LinkedHashMap<>();
+        rulesBody.put("parkCashThresholdPct", PaperSettings.Rules.DEFAULT_PARK_CASH_THRESHOLD_PCT);
+        body.put("rules", rulesBody);
+        // 두 기관 그룹 섞기(D27) — D27 전에 만든 설정 행에는 없고, 그 행은 PaperSettings.Blend가 이 기본값으로 읽습니다.
+        PaperSettings.Blend blend = PaperSettings.Blend.defaults();
+        Map<String, Object> groupB = new LinkedHashMap<>();
+        groupB.put("topN", blend.groupBTopN());
+        groupB.put("windowYears", blend.groupBWindowYears());
+        groupB.put("minPeriods", blend.groupBMinPeriods());
+        Map<String, Object> blendBody = new LinkedHashMap<>();
+        blendBody.put("groupB", groupB);
+        blendBody.put("groupWeightA", blend.groupWeightA());
+        blendBody.put("convictionCapPct", blend.convictionCapPct());
+        blendBody.put("allocation", blend.allocation().name());
+        blendBody.put("minTargetPct", blend.minTargetPct());
+        body.put("blend", blendBody);
         body.put("universeExtraTickers", UNIVERSE_EXTRA_TICKERS);
         body.put("cashLikeTickers", PaperSettings.DEFAULT_CASH_LIKE);
         GateIndicator.Thresholds gate = GateIndicator.Thresholds.defaults();

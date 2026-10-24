@@ -616,6 +616,39 @@
         "asOf": "date"
       },
       "mutating": true
+    },
+    {
+      "m": "GET",
+      "p": "/api/paper/decisions",
+      "q": {
+        "book": "enum",
+        "limit": "int"
+      }
+    },
+    {
+      "m": "GET",
+      "p": "/api/paper/decisions/{id}",
+      "path": {
+        "id": "int"
+      }
+    },
+    {
+      "m": "POST",
+      "p": "/api/paper/run/decision",
+      "body": {
+        "book": "enum"
+      },
+      "mutating": true
+    },
+    {
+      "m": "POST",
+      "p": "/api/paper/run/initial-decision",
+      "body": {
+        "book": "enum",
+        "preview": "bool"
+      },
+      "mutating": true,
+      "fuzz": false
     }
   ]
 }

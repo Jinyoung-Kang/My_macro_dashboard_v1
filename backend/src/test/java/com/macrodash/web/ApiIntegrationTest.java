@@ -873,7 +873,7 @@ class ApiIntegrationTest {
     private static final List<String> PAPER_GETS = List.of(
             "/api/paper/overview", "/api/paper/status", "/api/paper/books/bench_spy/positions",
             "/api/paper/books/bench_spy/orders?limit=5", "/api/paper/books/bench_spy/fills?limit=5",
-            "/api/paper/books/bench_spy/nav", "/api/paper/track-record");
+            "/api/paper/books/bench_spy/nav", "/api/paper/track-record", "/api/paper/decisions?book=rules&limit=5");
 
     /** 테스트가 만든 모의 매매 책을 지웁니다(테스트 DB만 — setUp이 DB 이름을 확인함). 책을 지우면 장부가 함께 지워집니다. */
     private void deletePaperBooks() {
@@ -898,17 +898,20 @@ class ApiIntegrationTest {
             assertThat(denied.getStatusCode()).as("회원 GET " + path).isEqualTo(HttpStatus.FORBIDDEN);
             assertThat(denied.getBody().path("required").asString()).isEqualTo("OWNER");
         }
+        assertThat(rest.exchange(url("/api/paper/decisions/1"), HttpMethod.GET, new HttpEntity<>(null, member),
+                JsonNode.class).getStatusCode()).as("회원 GET 결정 상세").isEqualTo(HttpStatus.FORBIDDEN);
         for (String path : List.of("/api/paper/init", "/api/paper/run/risk", "/api/paper/books/bench_spy/status",
-                "/api/paper/books/bench_spy/reset", "/api/paper/run/rerank")) {
+                "/api/paper/books/bench_spy/reset", "/api/paper/run/rerank", "/api/paper/run/decision",
+                "/api/paper/run/initial-decision")) {
             assertThat(rest.exchange(url(path), HttpMethod.POST, new HttpEntity<>(Map.of("status", "PAUSED",
-                    "confirm", "bench_spy"), member), String.class).getStatusCode()).as("회원 POST " + path)
-                    .isEqualTo(HttpStatus.FORBIDDEN);
+                    "confirm", "bench_spy", "book", "rules"), member), String.class).getStatusCode())
+                    .as("회원 POST " + path).isEqualTo(HttpStatus.FORBIDDEN);
         }
 
         deletePaperBooks();
         JsonNode status = authorizedGet("/api/paper/status");
         if (!status.path("schemaReady").asBoolean(false)) {
-            // V8을 적용하지 않은 테스트 DB — 500이 아니라 안내 문구
+            // V8·V9를 적용하지 않은 테스트 DB — 500이 아니라 안내 문구
             for (String path : PAPER_GETS) {
                 JsonNode body = authorizedGet(path);
                 assertThat(body.path("available").asBoolean(true)).as(path).isFalse();
@@ -1004,8 +1007,49 @@ class ApiIntegrationTest {
             assertThat(risk.path("outcome").path("skippedReason").asString()).contains("paper.quotes");
             assertThat(authorizedExchange("/api/paper/books/nope/orders", HttpMethod.GET).getStatusCode())
                     .isEqualTo(HttpStatus.BAD_REQUEST);
+
+            // 결정: 시작 전 규칙 책은 수동 결정 400, 후보 목록 저장본이 없으면 시작 400, Claude 책은 다음 단계라 400
+            ResponseEntity<JsonNode> notStarted = rest.exchange(url("/api/paper/run/decision"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("book", "rules"), owner), JsonNode.class);
+            assertThat(notStarted.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(notStarted.getBody().path("message").asString()).contains("시작 전");
+            ResponseEntity<JsonNode> start = rest.exchange(url("/api/paper/run/initial-decision"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("book", "rules"), owner), JsonNode.class);
+            assertThat(start.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(start.getBody().path("message").asString()).contains("후보 목록");
+            assertThat(rest.exchange(url("/api/paper/run/decision"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("book", "claude"), owner), JsonNode.class).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(authorizedGet("/api/paper/decisions?book=rules").path("decisions").size()).isZero();
+
+            // 운용 중인 규칙 책(테스트 DB만): 수동 결정은 매도 신호만 보고, 보유가 없으니 주문 없이 한 건 — 다시 눌러도 같은 결정
+            jdbc.update("UPDATE paper_books SET status = 'ACTIVE', started_on = DATE '2026-10-23' WHERE code = 'rules'");
+            ResponseEntity<JsonNode> manual = rest.exchange(url("/api/paper/run/decision"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("book", "rules"), owner), JsonNode.class);
+            assertThat(manual.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(manual.getBody().path("ok").asBoolean()).isTrue();
+            JsonNode decided = manual.getBody().path("decision");
+            assertThat(decided.path("kind").asString()).isEqualTo("MANUAL");
+            assertThat(decided.path("status").asString()).isEqualTo("NO_TRADE");
+            assertThat(decided.path("orderCount").asInt(-1)).isZero();
+            long decisionId = decided.path("id").asLong();
+            assertThat(rest.exchange(url("/api/paper/run/decision"), HttpMethod.POST,
+                    new HttpEntity<>(Map.of("book", "rules"), owner), JsonNode.class).getBody()
+                    .path("decision").path("id").asLong()).as("같은 거래일 MANUAL은 한 건").isEqualTo(decisionId);
+            JsonNode list = authorizedGet("/api/paper/decisions?book=rules&limit=5");
+            assertThat(list.path("decisions").size()).isEqualTo(1);
+            assertThat(list.path("decisions").get(0).path("id").asLong()).isEqualTo(decisionId);
+            JsonNode detail = authorizedGet("/api/paper/decisions/" + decisionId);
+            assertThat(detail.path("decision").path("book").asString()).isEqualTo("rules");
+            assertThat(detail.path("decision").path("response").path("summary").asString()).isNotBlank();
+            assertThat(detail.path("orders").size()).isZero();
+            assertThat(authorizedExchange("/api/paper/decisions/987654321", HttpMethod.GET).getStatusCode())
+                    .as("없는 결정은 400").isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(authorizedExchange("/api/paper/decisions?book=bench_spy", HttpMethod.GET).getStatusCode())
+                    .isEqualTo(HttpStatus.BAD_REQUEST);
         } finally {
             deletePaperBooks();
+            jdbc.update("DELETE FROM paper_job_runs WHERE job = 'decision'");
             if (!settingsExisted) {
                 jdbc.update("DELETE FROM paper_settings");
                 jdbc.update("DELETE FROM paper_settings_history WHERE version = 1");
@@ -1015,8 +1059,10 @@ class ApiIntegrationTest {
 
     private void assumePaperSchema() {
         org.junit.jupiter.api.Assumptions.assumeTrue(Boolean.TRUE.equals(jdbc.queryForObject(
-                "SELECT to_regclass('paper_api_usage') IS NOT NULL", Boolean.class)),
-                "테스트 DB에 V8(paper_*)이 없습니다 — make db-test");
+                "SELECT to_regclass('paper_api_usage') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_attribute "
+                        + "WHERE attrelid = to_regclass('paper_track_record') AND attname = 'data_source' "
+                        + "AND NOT attisdropped)", Boolean.class)),
+                "테스트 DB에 V8·V9(paper_*)가 없습니다 — make db-test");
     }
 
     @Test

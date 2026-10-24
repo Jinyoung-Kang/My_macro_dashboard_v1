@@ -2,6 +2,7 @@ package com.macrodash.feature.paper;
 
 import com.macrodash.Kst;
 import com.macrodash.analytics.DailySeries;
+import com.macrodash.analytics.Signal13F;
 import com.macrodash.analytics.TrackRecord13F;
 import com.macrodash.analytics.TrackRecord13F.Filing;
 import com.macrodash.analytics.TrackRecord13F.Holding13F;
@@ -9,6 +10,7 @@ import com.macrodash.analytics.TrackRecord13F.Period;
 import com.macrodash.analytics.TrackRecord13F.Ranked;
 import com.macrodash.analytics.TrackRecord13F.Result;
 import com.macrodash.analytics.UsMarketCalendar;
+import com.macrodash.feature.institution.Institutions;
 import com.macrodash.read.StoreReader;
 import com.macrodash.store.Datasets;
 import com.macrodash.store.PaperStore;
@@ -66,6 +68,15 @@ import java.util.function.DoublePredicate;
  *
  * <p><b>선정은 한 번</b>: {@link #select}는 그 기준일에 선정이 이미 있으면 바꾸지 않고, {@link #rerank}(수동 재계산)는
  * 트랙레코드만 다시 계산합니다 — 그 선정으로 낸 주문 기록과 어긋나지 않게(설계 §4-0 ⑤).
+ *
+ * <p><b>두 그룹(D27, 설계 §4-0 ⑥)</b>: 그룹 A는 위의 후보 27곳(7년 창, 상위 {@code trackRecord.topN}), 그룹 B는 이미 지켜보던
+ * '기관 13F 포트폴리오 분석' 메뉴 12곳({@link Institutions#ALL})을 <b>같은 방법</b>(공시일 다음 거래일 복제)·같은 커버리지 자격·R5로
+ * 최근 {@code blend.groupB.windowYears}(2)년 창에서 잰 상위 {@code blend.groupB.topN}(4)곳입니다. 그룹 B 기관의 공시는
+ * {@code q30}이 있으면(후보 27곳과 겹치는 기관 — CUSIP 매핑 티커) 그것, 없으면 기존 메뉴 저장본 {@code q8}(이름 매핑 티커)입니다 —
+ * q8은 8분기라 2년 창이 두 저장본이 공통으로 덮는 길이입니다. 그룹 B에는 "수집 중" 자격 규칙이 없습니다(q8에는 완료 표시가
+ * 없고, 짧은 저장본은 구간 수 기준이 거름). 인덱스·연기금은 덮인 대형주만 보여 복제 수익률이 부풀지만 커버리지 기준에서 빠집니다.
+ * 선정 행 하나에 두 그룹과 <b>신호 풀</b>(A ∪ B, 겹치면 한 번 — {@link Signal13F#blendWeights}의 기관 가중과 함께)을 남기고,
+ * 규칙 책은 그 풀과 가중을 다시 계산하지 않고 읽습니다({@link #signalPool}).
  */
 @Service
 public class PaperSelectionService {
@@ -231,8 +242,29 @@ public class PaperSelectionService {
     record CollectionIndex(Instant collectedAt, List<Filer> filers, int targetQuarters) {
     }
 
-    /** 기관 하나의 q30 저장본을 계산이 받는 모양으로. 저장본이 없으면 공시 없음·수집 중. */
-    record StoredFilings(List<Filing> filings, int storedQuarters, boolean complete) {
+    /**
+     * 기관 하나의 13F 저장본을 계산이 받는 모양으로. 저장본이 없으면 공시 없음·수집 중이고 source는 null.
+     *
+     * @param source 읽은 저장본(TrackRecordRow.SOURCE_Q30·SOURCE_Q8)
+     */
+    record StoredFilings(List<Filing> filings, int storedQuarters, boolean complete, String source) {
+    }
+
+    /** 그룹 B 후보 한 곳(D27) — 기존 13F 메뉴 목록({@link Institutions#ALL})의 이름·설명 그대로. */
+    record MenuFiler(String cik, String name, String desc) {
+    }
+
+    /** 그룹 B 후보 — 기존 메뉴 12곳, 메뉴 순서. CIK는 저장본과 같은 10자리. */
+    static List<MenuFiler> groupBCandidates() {
+        List<MenuFiler> out = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (Map<String, String> entry : Institutions.ALL) {
+            String cik = normalizeCik(entry.get("cik"));
+            if (cik != null && seen.add(cik)) {
+                out.add(new MenuFiler(cik, entry.get("name"), entry.get("desc")));
+            }
+        }
+        return out;
     }
 
     Optional<CollectionIndex> index() {
@@ -261,18 +293,34 @@ public class PaperSelectionService {
                 target == null || target < 1 ? Datasets.TRACK_RECORD_QUARTERS : target.intValue()));
     }
 
+    /** 그룹 A 기관의 공시 — 후보 수집 저장본 q30만. */
+    private StoredFilings stored(String cik, Map<String, String> pool) {
+        return stored(Datasets.sec13f(cik, Datasets.TRACK_RECORD_QUARTERS), TrackRecordRow.SOURCE_Q30, pool);
+    }
+
     /**
-     * 기관 하나의 q30 저장본 → 공시 목록. 공시일을 모르는 분기는 구간을 정할 수 없어 빼고, 평가액이 없는 보유 줄은 총평가액에도
+     * 그룹 B 기관의 공시(D27) — q30이 있으면(메타의 complete와 상관없이) 그것, 없으면 기존 메뉴 저장본 q8. q30은 CUSIP 매핑
+     * 티커라 같은 기관이면 커버리지가 높고, 그룹 A와 같은 공시를 쓰게 됩니다. 둘 다 없으면 공시 없음(source null).
+     */
+    private StoredFilings storedGroupB(String cik, Map<String, String> pool) {
+        StoredFilings q30 = stored(cik, pool);
+        if (q30.source() != null) {
+            return q30;
+        }
+        return stored(Datasets.sec13f(cik, Datasets.MAX_TRACKED_QUARTERS), TrackRecordRow.SOURCE_Q8, pool);
+    }
+
+    /**
+     * 13F 저장본 하나 → 공시 목록. 공시일을 모르는 분기는 구간을 정할 수 없어 빼고, 평가액이 없는 보유 줄은 총평가액에도
      * 넣지 않습니다(모르는 값을 0으로 세지 않음). 티커 문자열은 {@code pool}로 같은 객체를 씁니다(30분기 × 보유 수천 줄).
      *
      * <p>저장본을 JSON 트리로 읽지 않고, 메타(완료 여부)와 보유 열만 DB에서 풀어 읽습니다 — 27곳 × 30분기 트리를 저장소 파싱
      * 캐시에 남기면 백엔드 힙을 위협합니다({@link StoreReader#readStoredHoldings}). 수집을 깨우지 않는 읽기입니다.
      */
-    private StoredFilings stored(String cik, Map<String, String> pool) {
-        String name = Datasets.sec13f(cik, Datasets.TRACK_RECORD_QUARTERS);
+    private StoredFilings stored(String name, String source, Map<String, String> pool) {
         Optional<Snapshot> meta = reader.readStoredMeta(name, "quarters");
         if (meta.isEmpty()) {
-            return new StoredFilings(List.of(), 0, false);
+            return new StoredFilings(List.of(), 0, false, null);
         }
         List<StoreRepository.HoldingRow> rows = reader.readStoredHoldings(name);
         Map<Integer, List<StoreRepository.HoldingRow>> byQuarter = new LinkedHashMap<>();
@@ -297,7 +345,7 @@ public class PaperSelectionService {
             }
             filings.add(new Filing(filingDate, Json.parseDate(first.reportDate()), holdings));
         }
-        return new StoredFilings(filings, byQuarter.size(), Json.asBoolean(meta.get().payload(), "complete"));
+        return new StoredFilings(filings, byQuarter.size(), Json.asBoolean(meta.get().payload(), "complete"), source);
     }
 
     /**
@@ -338,11 +386,12 @@ public class PaperSelectionService {
      *
      * @param result        자격·사유는 "수집 중"·"최신 분기 공시 없음"까지 반영한 값(수치는 {@link TrackRecord13F} 그대로)
      * @param rank          자격 있는 기관의 순위(1부터), 없으면 null
-     * @param collecting    30분기 수집이 끝나지 않아 자격에서 뺌
+     * @param collecting    30분기 수집이 끝나지 않아 자격에서 뺌(그룹 A만 — 그룹 B는 늘 false)
      * @param missingLatest 기준일에 공시 기한이 지난 최신 분기를 공시하지 않아 자격에서 뺌(R5)
+     * @param source        계산에 쓴 저장본(q30·q8). 저장본이 없으면 null
      */
     public record Scored(String cik, String name, String style, Result result, Integer rank, boolean collecting,
-                         boolean missingLatest, int storedQuarters, boolean complete) {
+                         boolean missingLatest, int storedQuarters, boolean complete, String source) {
     }
 
     /**
@@ -350,21 +399,44 @@ public class PaperSelectionService {
      *
      * @param settingsVersion 계산에 쓴 설정 버전(건너뛰었으면 null)
      * @param latestQuarter   그 기준일에 공시 기한이 지난 최신 분기 말(R5)
-     * @param candidates      후보 목록 순서(수집기 목록 순)
+     * @param candidates      그룹 A 후보, 후보 목록 순서(수집기 목록 순)
      * @param skippedReason   계산하지 못한 이유(후보 목록 없음 등). 계산했으면 null — 이때만 저장합니다
+     * @param blend           두 그룹 섞기 설정(D27) — 그룹 B 기준·선정 수·기관 가중의 g
+     * @param groupB          그룹 B 후보(D27), 기존 메뉴 순서. 건너뛰었으면 빈 목록
      */
     public record Computation(LocalDate asOf, Integer settingsVersion, TrackRecordSettings settings,
-                              LocalDate latestQuarter, List<Scored> candidates, String skippedReason) {
+                              LocalDate latestQuarter, List<Scored> candidates, String skippedReason,
+                              PaperSettings.Blend blend, List<Scored> groupB) {
 
         public Computation {
             candidates = List.copyOf(candidates);
+            groupB = List.copyOf(groupB);
         }
 
-        /** 자격 있는 기관, 순위 순. */
+        /** 그룹 A의 자격 있는 기관, 순위 순. */
         public List<Scored> ranked() {
-            return candidates.stream().filter(s -> s.rank() != null)
+            return ranked(candidates);
+        }
+
+        /** 그룹 B의 자격 있는 기관, 순위 순. */
+        public List<Scored> rankedB() {
+            return ranked(groupB);
+        }
+
+        /** 그룹 B 자격 기준 — 창·구간 수는 blend.groupB, 커버리지는 그룹 A와 같은 값(D27 "같은 커버리지 자격"). */
+        public TrackRecord13F.Criteria groupBCriteria() {
+            return PaperSelectionService.groupBCriteria(settings, blend);
+        }
+
+        private static List<Scored> ranked(List<Scored> scored) {
+            return scored.stream().filter(s -> s.rank() != null)
                     .sorted(Comparator.comparingInt(Scored::rank)).toList();
         }
+    }
+
+    static TrackRecord13F.Criteria groupBCriteria(TrackRecordSettings track, PaperSettings.Blend blend) {
+        return new TrackRecord13F.Criteria(blend.groupBWindowYears(), blend.groupBMinPeriods(),
+                track.criteria().minCoverage(), track.criteria().avgCoverage());
     }
 
     /**
@@ -390,43 +462,99 @@ public class PaperSelectionService {
         requireReady();
         LocalDate latestQuarter = UsMarketCalendar.latestQuarterEndReselectedBy(asOf);
         Optional<CollectionIndex> index = index();
+        // 후보 목록이 없으면 그룹 B도 계산하지 않습니다 — 선정은 그룹 A 없이 남기지 않으므로(그룹 B만으로 선정하지 않음)
+        // 그룹 B 행만 남기면 "계산했는데 선정이 없는" 기준일이 생깁니다.
         if (index.isEmpty()) {
-            return new Computation(asOf, null, currentSettings(), latestQuarter, List.of(), NO_INDEX_REASON);
+            return new Computation(asOf, null, currentSettings(), latestQuarter, List.of(), NO_INDEX_REASON,
+                    currentBlend(), List.of());
         }
         // 저장할 행에는 설정 버전이 필요합니다. 초기화 전이면 기본값으로 설정 행을 만듭니다(초기화가 만드는 것과 같은 값).
         SettingsRow row = settingsRow();
         TrackRecordSettings trackSettings = TrackRecordSettings.from(row.body());
-        if (!trackSettings.fallbacks().isEmpty()) {
-            log.warn("모의 매매 설정 v{}의 키 {}가 없거나 범위 밖이라 기본값으로 계산합니다", row.version(),
-                    trackSettings.fallbacks());
+        PaperSettings.Blend blend = PaperSettings.Blend.from(row.body());
+        if (!trackSettings.fallbacks().isEmpty() || !blend.fallbacks().isEmpty()) {
+            List<String> fallbacks = new ArrayList<>(trackSettings.fallbacks());
+            fallbacks.addAll(blend.fallbacks());
+            log.warn("모의 매매 설정 v{}의 키 {}가 없거나 범위 밖이라 기본값으로 계산합니다", row.version(), fallbacks);
         }
         List<Filer> candidates = index.get().filers().stream()
                 .filter(f -> trackSettings.candidateCiks() == null || trackSettings.candidateCiks().contains(f.cik()))
                 .toList();
         if (candidates.isEmpty()) {
-            return new Computation(asOf, row.version(), trackSettings, latestQuarter, List.of(), NO_CANDIDATE_REASON);
+            return new Computation(asOf, row.version(), trackSettings, latestQuarter, List.of(), NO_CANDIDATE_REASON,
+                    blend, List.of());
         }
 
-        TrackRecord13F.Criteria criteria = trackSettings.criteria();
-        LocalDate windowStart = asOf.minusYears(criteria.windowYears());
+        // 그룹마다 따로 계산합니다 — 창이 달라 가격 범위가 다르고, 한 그룹의 저장본·가격을 다 쓴 뒤 다음 그룹을 읽어 힙에
+        // 두 그룹을 한꺼번에 들지 않게.
         Map<String, String> pool = new HashMap<>();
-        Map<String, StoredFilings> storedByCik = new LinkedHashMap<>();
+        List<GroupInput> inputsA = new ArrayList<>();
+        for (Filer filer : candidates) {
+            inputsA.add(new GroupInput(filer.cik(), filer.name(), filer.style(), stored(filer.cik(), pool)));
+        }
+        List<Scored> scoredA = score(inputsA, trackSettings.criteria(), trackSettings.metric(), asOf, latestQuarter,
+                true);
+        inputsA.clear();
+        List<GroupInput> inputsB = new ArrayList<>();
+        for (MenuFiler filer : groupBCandidates()) {
+            inputsB.add(new GroupInput(filer.cik(), filer.name(), null, storedGroupB(filer.cik(), pool)));
+        }
+        TrackRecord13F.Criteria criteriaB = groupBCriteria(trackSettings, blend);
+        List<Scored> scoredB = score(inputsB, criteriaB, trackSettings.metric(), asOf, latestQuarter, false);
+        inputsB.clear();
+
+        List<TrackRecordRow> rows = new ArrayList<>();
+        for (Scored s : scoredA) {
+            rows.add(row(asOf, s, TrackRecordRow.GROUP_A, trackSettings.criteria().windowYears(),
+                    trackSettings.metric(), row.version()));
+        }
+        for (Scored s : scoredB) {
+            rows.add(row(asOf, s, TrackRecordRow.GROUP_B, criteriaB.windowYears(), trackSettings.metric(),
+                    row.version()));
+        }
+        store.atomically(() -> {
+            store.deleteTrackRecords(asOf, TrackRecordRow.GROUP_A);
+            store.deleteTrackRecords(asOf, TrackRecordRow.GROUP_B);
+            rows.forEach(store::upsertTrackRecord);
+            return null;
+        });
+        log.info("13F 트랙레코드 계산: 기준일 {}, 그룹 A 후보 {}곳·자격 {}곳, 그룹 B 후보 {}곳·자격 {}곳", asOf, scoredA.size(),
+                scoredA.stream().filter(x -> x.rank() != null).count(), scoredB.size(),
+                scoredB.stream().filter(x -> x.rank() != null).count());
+        return new Computation(asOf, row.version(), trackSettings, latestQuarter, scoredA, null, blend, scoredB);
+    }
+
+    /** 한 그룹의 계산 입력 — 후보 한 곳과 그 저장본. */
+    private record GroupInput(String cik, String name, String style, StoredFilings stored) {
+    }
+
+    /**
+     * 한 그룹의 트랙레코드와 순위. 가격은 그 그룹 창 안 공시의 티커와 SPY를 <b>한 번에</b>, 기준일까지만 읽습니다(룩어헤드 방지).
+     * 그룹의 어느 기관에도 공시가 없으면(그룹 B 저장본이 아직 없음 등) 가격을 읽지 않습니다 — 계산할 구간이 없습니다.
+     *
+     * @param collectingRule 30분기 수집이 끝나지 않은 기관을 "수집 중"으로 자격에서 뺌(그룹 A). 그룹 B는 q8에 완료 표시가 없어
+     *                       false — 짧은 저장본은 구간 수 기준이 거릅니다
+     */
+    private List<Scored> score(List<GroupInput> inputs, TrackRecord13F.Criteria criteria, TrackRecord13F.Metric metric,
+                               LocalDate asOf, LocalDate latestQuarter, boolean collectingRule) {
+        LocalDate windowStart = asOf.minusYears(criteria.windowYears());
         Set<String> tickers = new TreeSet<>();
         tickers.add(SPY);
-        for (Filer filer : candidates) {
-            StoredFilings stored = stored(filer.cik(), pool);
-            storedByCik.put(filer.cik(), stored);
-            tickers.addAll(windowTickers(stored.filings(), asOf, windowStart));
+        boolean anyFiling = false;
+        for (GroupInput input : inputs) {
+            anyFiling |= !input.stored().filings().isEmpty();
+            tickers.addAll(windowTickers(input.stored().filings(), asOf, windowStart));
         }
-        // 한 번에 읽고, 기준일 뒤 값은 읽지도 않습니다(룩어헤드 방지).
-        Map<String, DailySeries> prices = marketData.history(tickers, windowStart.minusDays(PRICE_MARGIN_DAYS), asOf);
+        Map<String, DailySeries> prices = anyFiling
+                ? marketData.history(tickers, windowStart.minusDays(PRICE_MARGIN_DAYS), asOf)
+                : Map.of();
         DailySeries spy = prices.get(SPY);
 
         List<Scored> unranked = new ArrayList<>();
-        for (Filer filer : candidates) {
-            StoredFilings stored = storedByCik.get(filer.cik());
-            Result raw = TrackRecord13F.compute(filer.cik(), stored.filings(), prices::get, spy, asOf, criteria);
-            boolean collecting = !stored.complete();
+        for (GroupInput input : inputs) {
+            StoredFilings stored = input.stored();
+            Result raw = TrackRecord13F.compute(input.cik(), stored.filings(), prices::get, spy, asOf, criteria);
+            boolean collecting = collectingRule && !stored.complete();
             // 공시가 하나도 없으면 사유 "공시 없음"이 이미 모든 것을 말합니다.
             boolean missingLatest = raw.lastFilingDate() != null
                     && !filedQuarter(stored.filings(), latestQuarter, asOf);
@@ -442,30 +570,17 @@ public class PaperSelectionService {
                 reasons.add(raw.ineligibleReason());
             }
             Result result = finite(raw, reasons.isEmpty() && raw.eligible(), String.join("; ", reasons));
-            unranked.add(new Scored(filer.cik(), filer.name(), filer.style(), result, null, collecting, missingLatest,
-                    stored.storedQuarters(), stored.complete()));
+            unranked.add(new Scored(input.cik(), input.name(), input.style(), result, null, collecting, missingLatest,
+                    stored.storedQuarters(), stored.complete(), stored.source()));
         }
 
         Map<String, Integer> rankByCik = new HashMap<>();
-        for (Ranked ranked : TrackRecord13F.rank(unranked.stream().map(Scored::result).toList(),
-                trackSettings.metric())) {
+        for (Ranked ranked : TrackRecord13F.rank(unranked.stream().map(Scored::result).toList(), metric)) {
             rankByCik.put(ranked.result().cik(), ranked.rank());
         }
-        List<Scored> scored = unranked.stream().map(s -> new Scored(s.cik(), s.name(), s.style(), s.result(),
-                rankByCik.get(s.cik()), s.collecting(), s.missingLatest(), s.storedQuarters(), s.complete())).toList();
-
-        List<TrackRecordRow> rows = new ArrayList<>();
-        for (Scored s : scored) {
-            rows.add(row(asOf, s, trackSettings, row.version()));
-        }
-        store.atomically(() -> {
-            store.deleteTrackRecords(asOf);
-            rows.forEach(store::upsertTrackRecord);
-            return null;
-        });
-        log.info("13F 트랙레코드 계산: 기준일 {}, 후보 {}곳, 자격 {}곳, 가격 {}종목", asOf, scored.size(),
-                rankByCik.size(), prices.size());
-        return new Computation(asOf, row.version(), trackSettings, latestQuarter, scored, null);
+        return unranked.stream().map(s -> new Scored(s.cik(), s.name(), s.style(), s.result(),
+                rankByCik.get(s.cik()), s.collecting(), s.missingLatest(), s.storedQuarters(), s.complete(),
+                s.source())).toList();
     }
 
     /**
@@ -483,7 +598,8 @@ public class PaperSelectionService {
         return value == null || !Double.isFinite(value) ? null : value;
     }
 
-    private TrackRecordRow row(LocalDate asOf, Scored s, TrackRecordSettings trackSettings, int version) {
+    private TrackRecordRow row(LocalDate asOf, Scored s, String group, int windowYears, TrackRecord13F.Metric metric,
+                               int version) {
         Result r = s.result();
         List<Map<String, Object>> periods = new ArrayList<>();
         for (Period p : r.periods()) {
@@ -499,10 +615,10 @@ public class PaperSelectionService {
             period.put("holdings", p.holdings());
             periods.add(period);
         }
-        return new TrackRecordRow(asOf, s.cik(), trackSettings.criteria().windowYears(), trackSettings.metric().name(),
-                r.periodsUsed(), r.periodsTotal(), r.firstFilingDate(), r.lastFilingDate(), r.cumReturnPct(),
-                r.cagrPct(), r.volPct(), r.mddPct(), r.sharpe(), r.excessVsSpyPct(), r.coverageMin(), r.coverageAvg(),
-                r.eligible(), r.ineligibleReason(), s.rank(), mapper.valueToTree(periods), version, null);
+        return new TrackRecordRow(asOf, s.cik(), windowYears, metric.name(), r.periodsUsed(), r.periodsTotal(),
+                r.firstFilingDate(), r.lastFilingDate(), r.cumReturnPct(), r.cagrPct(), r.volPct(), r.mddPct(),
+                r.sharpe(), r.excessVsSpyPct(), r.coverageMin(), r.coverageAvg(), r.eligible(), r.ineligibleReason(),
+                s.rank(), mapper.valueToTree(periods), version, null, group, s.source());
     }
 
     // ------------------------------------------------------------------ 선정
@@ -520,14 +636,15 @@ public class PaperSelectionService {
 
     /**
      * 재선정일·초기 선정(설계 §4-3·§6-2): 그 기준일에 선정이 <b>이미 있으면 계산하지 않고 그대로</b> 돌려줍니다(10분마다 도는
-     * 결정 작업이 같은 날 다시 불러도 한 번). 없으면 계산하고 자격 있는 기관 상위 {@code trackRecord.topN}곳을 남깁니다 —
-     * 자격 기관이 N곳보다 적으면 있는 만큼, 0곳이면 빈 선정(규칙 책은 SHY만). 수집 중인 후보는 자격에서 빠진 채로 선정합니다
+     * 결정 작업이 같은 날 다시 불러도 한 번). 없으면 계산하고 그룹 A 자격 상위 {@code trackRecord.topN}곳·그룹 B 자격 상위
+     * {@code blend.groupB.topN}곳과 그 신호 풀을 한 행에 남깁니다({@link #draftSelection}) — 자격 기관이 N곳보다 적으면 있는
+     * 만큼, 두 그룹 모두 0곳이면 빈 선정(규칙 책은 SHY만). 수집 중인 후보는 자격에서 빠진 채로 선정합니다
      * (설계 §6-4 — 재선정일에 새로 더한 기관 하나가 덜 모였다고 선정을 멈추지 않게).
      *
      * <p>선정을 남기지 않는 경우(모르는 것을 '자격 기관 없음'으로 굳히지 않게 — 같은 기준일은 다시 계산하지 않으므로 한 번 남긴
      * 빈 선정은 다음 재선정일까지 갑니다): ① 후보 목록 저장본이 없음, ② 자격 기관이 0곳인데 수집 중인 후보가 있음 — 처음 기동한
-     * 뒤 30분기를 채우는 동안(실행 몇 번)에 불리면 0곳이 기준 미달 때문인지 수집이 덜 끝나서인지 알 수 없습니다. 트랙레코드
-     * 계산은 둘째 경우에도 저장합니다.
+     * 뒤 30분기를 채우는 동안(실행 몇 번)에 불리면 0곳이 기준 미달 때문인지 수집이 덜 끝나서인지 알 수 없습니다. 이때 그룹 B만으로
+     * 선정하지도 않습니다 — 그룹 B만의 풀이 다음 재선정일까지 굳습니다. 트랙레코드 계산은 둘째 경우에도 저장합니다.
      */
     public SelectionOutcome select(LocalDate asOf) {
         if (asOf == null) {
@@ -552,30 +669,237 @@ public class PaperSelectionService {
                 log.info("기관 선정 건너뜀: 기준일 {}, {}", asOf, reason);
                 return new SelectionOutcome(asOf, false, null, computation, reason);
             }
-            int topN = computation.settings().topN();
-            List<String> selected = ranked.stream().limit(topN).map(Scored::cik).toList();
-            List<Map<String, Object>> ranking = new ArrayList<>();
-            for (Scored s : ranked) {
-                Map<String, Object> entry = new LinkedHashMap<>();
-                entry.put("cik", s.cik());
-                entry.put("name", s.name());
-                entry.put("rank", s.rank());
-                entry.put("metric", computation.settings().metric().name());
-                entry.put("cagrPct", s.result().cagrPct());
-                entry.put("excessVsSpyPct", s.result().excessVsSpyPct());
-                entry.put("sharpe", s.result().sharpe());
-                entry.put("selected", selected.contains(s.cik()));
-                ranking.add(entry);
-            }
-            boolean created = store.insertSelectionIfAbsent(new Selection(asOf, selected, mapper.valueToTree(ranking),
-                    computation.settingsVersion(), null));
+            boolean created = store.insertSelectionIfAbsent(draftSelection(computation));
             Selection saved = selectionAt(asOf).orElseThrow(() -> new IllegalStateException(
                     "선정을 남겼는데 다시 읽지 못했습니다: " + asOf));
-            log.info("기관 선정 {}: 기준일 {}, {}", created ? "기록" : "이미 있음", asOf, saved.selectedCiks());
+            log.info("기관 선정 {}: 기준일 {}, 신호 풀 {}", created ? "기록" : "이미 있음", asOf, saved.selectedCiks());
             return new SelectionOutcome(asOf, created, saved, computation, null);
         } finally {
             computing.unlock();
         }
+    }
+
+    /**
+     * 계산 하나로 만든 선정 행(저장하지 않음) — {@link #select}가 남기는 것과 같은 모양이라 "시작" 미리보기도 이것을 씁니다.
+     *
+     * <p>{@code selected_ciks} = 신호 풀(그룹 A 순서 뒤에 그룹 B에만 있는 기관 — {@link Signal13F#blendWeights}의 순서),
+     * {@code ranking} = {@code {groupA:[…], groupB:[…], pool:[{cik, name, groups, rankA, rankB, weight}], groupWeightA}}.
+     * groupA·groupB는 그 그룹의 자격 기관 전부(순위 순, {@code selected}가 그 그룹 선정)이고, pool의 weight는 기관 가중(합 1)을
+     * 반올림하지 않은 값입니다 — 규칙 책이 다시 계산하지 않고 이 값으로 점수를 냅니다(설정이 바뀌어도 그 선정의 가중은 그대로).
+     *
+     * @throws IllegalArgumentException 계산을 건너뛴 결과(skippedReason)
+     */
+    public Selection draftSelection(Computation computation) {
+        if (computation.skippedReason() != null) {
+            throw new IllegalArgumentException("계산하지 못한 결과로는 선정을 만들 수 없습니다: " + computation.skippedReason());
+        }
+        List<Scored> rankedA = computation.ranked();
+        List<Scored> rankedB = computation.rankedB();
+        List<Scored> topA = rankedA.stream().limit(computation.settings().topN()).toList();
+        List<Scored> topB = rankedB.stream().limit(computation.blend().groupBTopN()).toList();
+        List<String> ciksA = topA.stream().map(Scored::cik).toList();
+        List<String> ciksB = topB.stream().map(Scored::cik).toList();
+        double g = computation.blend().groupWeightA();
+        Map<String, Double> weights = Signal13F.blendWeights(ciksA, ciksB, g);
+
+        String metric = computation.settings().metric().name();
+        Map<String, String> names = new HashMap<>();
+        topB.forEach(s -> names.put(s.cik(), s.name()));
+        topA.forEach(s -> names.put(s.cik(), s.name()));   // 두 그룹에 모두 있으면 그룹 A(후보 목록)의 이름
+        List<Map<String, Object>> pool = new ArrayList<>();
+        for (Map.Entry<String, Double> entry : weights.entrySet()) {
+            int a = ciksA.indexOf(entry.getKey());
+            int b = ciksB.indexOf(entry.getKey());
+            List<String> groups = new ArrayList<>(2);
+            if (a >= 0) {
+                groups.add(TrackRecordRow.GROUP_A);
+            }
+            if (b >= 0) {
+                groups.add(TrackRecordRow.GROUP_B);
+            }
+            Map<String, Object> member = new LinkedHashMap<>();
+            member.put("cik", entry.getKey());
+            member.put("name", names.get(entry.getKey()));
+            member.put("groups", groups);
+            member.put("rankA", a >= 0 ? topA.get(a).rank() : null);
+            member.put("rankB", b >= 0 ? topB.get(b).rank() : null);
+            member.put("weight", entry.getValue());
+            pool.add(member);
+        }
+        Map<String, Object> ranking = new LinkedHashMap<>();
+        ranking.put("groupA", rankingRows(rankedA, ciksA, metric, false));
+        ranking.put("groupB", rankingRows(rankedB, ciksB, metric, true));
+        ranking.put("pool", pool);
+        ranking.put("groupWeightA", g);
+        return new Selection(computation.asOf(), List.copyOf(weights.keySet()), mapper.valueToTree(ranking),
+                computation.settingsVersion(), null);
+    }
+
+    private static List<Map<String, Object>> rankingRows(List<Scored> ranked, List<String> selected, String metric,
+                                                         boolean withSource) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Scored s : ranked) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("cik", s.cik());
+            entry.put("name", s.name());
+            entry.put("rank", s.rank());
+            entry.put("metric", metric);
+            entry.put("metricValue", metricValue(s.result(), metric));
+            entry.put("cagrPct", s.result().cagrPct());
+            entry.put("excessVsSpyPct", s.result().excessVsSpyPct());
+            entry.put("sharpe", s.result().sharpe());
+            if (withSource) {
+                entry.put("source", s.source());
+            }
+            entry.put("selected", selected.contains(s.cik()));
+            out.add(entry);
+        }
+        return out;
+    }
+
+    private static Double metricValue(Result r, String metric) {
+        return switch (TrackRecord13F.Metric.valueOf(metric)) {
+            case CAGR -> r.cagrPct();
+            case EXCESS_VS_SPY -> r.excessVsSpyPct();
+            case SHARPE -> r.sharpe();
+        };
+    }
+
+    // ------------------------------------------------------------------ 신호 풀 읽기
+    /** 선정 순위표 한 줄(그룹 하나). 이름·순위를 모르면 null. */
+    public record RankedFiler(String cik, String name, Integer rank, boolean selected) {
+    }
+
+    /**
+     * 신호 풀 기관 하나(D27).
+     *
+     * @param groups 든 그룹("A"·"B", 둘 다면 둘)
+     * @param rankA  그룹 A 순위(없으면 null)
+     * @param rankB  그룹 B 순위(없으면 null)
+     * @param weight 기관 가중(풀 합 1, 0 이상)
+     */
+    public record PoolMember(String cik, String name, List<String> groups, Integer rankA, Integer rankB,
+                             double weight) {
+        public PoolMember {
+            groups = List.copyOf(groups);
+        }
+    }
+
+    /**
+     * 선정 한 행을 읽은 것 — 두 그룹의 순위표와 신호 풀(풀 순서).
+     *
+     * @param groupWeightA 선정 때의 g. 섞기 전 선정이면 null
+     * @param legacy       D27 이전 모양(순위표가 배열 — 그룹 A만)
+     * @param notes        읽다가 뺀 것(가중을 모르는 풀 기관 등)
+     */
+    public record SignalPool(List<RankedFiler> groupA, List<RankedFiler> groupB, List<PoolMember> members,
+                             Double groupWeightA, boolean legacy, List<String> notes) {
+        public SignalPool {
+            groupA = List.copyOf(groupA);
+            groupB = List.copyOf(groupB);
+            members = List.copyOf(members);
+            notes = List.copyOf(notes);
+        }
+
+        public List<RankedFiler> selectedA() {
+            return groupA.stream().filter(RankedFiler::selected).toList();
+        }
+
+        public List<RankedFiler> selectedB() {
+            return groupB.stream().filter(RankedFiler::selected).toList();
+        }
+    }
+
+    /**
+     * 선정 행 → 두 그룹과 신호 풀(규칙 책·개요·조회가 같은 해석을 쓰게 한 곳에). 가중은 행에 남은 값 그대로입니다(다시 계산하지
+     * 않음 — 설계 §4-1, 단계 2 계약 E).
+     *
+     * <p>D27 이전에 남긴 행(순위표가 배열, 선정 = 그룹 A)은 그룹 A만의 풀로 읽고, 가중은 선정 순서의 그룹 A 순위 가중
+     * ({@link Signal13F#blendWeights}에 그룹 B 없음)으로 매깁니다 — 그 행에는 가중이 없고, 그룹 A만이면 섞기 규칙의 답이 그것입니다.
+     * 풀의 가중이 숫자가 아니거나 음수인 기관은 신호에서 빼고 notes에 남깁니다(모르는 가중을 0이나 임의 값으로 넣지 않음).
+     */
+    public static SignalPool signalPool(Selection selection) {
+        JsonNode ranking = selection.ranking();
+        List<String> notes = new ArrayList<>();
+        if (ranking != null && ranking.isObject() && Json.child(ranking, "pool") != null) {
+            List<PoolMember> members = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            for (JsonNode node : Json.array(ranking, "pool")) {
+                String cik = Json.asText(node, "cik");
+                Double weight = Json.asDouble(node, "weight");
+                if (cik == null || cik.isBlank() || !seen.add(cik)) {
+                    continue;
+                }
+                if (weight == null || !Double.isFinite(weight) || weight < 0) {
+                    notes.add(cik + ": 선정 행에 기관 가중이 없어 신호에서 뺌");
+                    continue;
+                }
+                List<String> groups = new ArrayList<>();
+                for (JsonNode group : Json.array(node, "groups")) {
+                    if (group.isString()) {
+                        groups.add(group.asString(""));
+                    }
+                }
+                members.add(new PoolMember(cik, Json.asText(node, "name"), groups, integer(node, "rankA"),
+                        integer(node, "rankB"), weight));
+            }
+            return new SignalPool(rankedFilers(Json.array(ranking, "groupA")),
+                    rankedFilers(Json.array(ranking, "groupB")), members, Json.asDouble(ranking, "groupWeightA"),
+                    false, notes);
+        }
+        // D27 이전 모양 — 순위표 배열(또는 없음), 선정 = 그룹 A.
+        Map<String, JsonNode> byCik = new HashMap<>();
+        List<JsonNode> entries = new ArrayList<>();
+        if (ranking != null && ranking.isArray()) {
+            ranking.forEach(entries::add);
+        }
+        for (JsonNode entry : entries) {
+            String cik = Json.asText(entry, "cik");
+            if (cik != null) {
+                byCik.putIfAbsent(cik, entry);
+            }
+        }
+        List<RankedFiler> groupA = new ArrayList<>();
+        for (JsonNode entry : entries) {
+            String cik = Json.asText(entry, "cik");
+            if (cik != null) {
+                groupA.add(new RankedFiler(cik, Json.asText(entry, "name"), integer(entry, "rank"),
+                        selection.selectedCiks().contains(cik)));
+            }
+        }
+        // 가중은 선정 순서(= 그 행의 순위 순)로 매기고, 순위표에 없는 CIK의 이름·순위는 지어내지 않고 null로 둡니다.
+        Map<String, Double> weights = Signal13F.blendWeights(selection.selectedCiks(), List.of(), 1.0);
+        List<PoolMember> members = new ArrayList<>();
+        for (Map.Entry<String, Double> entry : weights.entrySet()) {
+            JsonNode known = byCik.get(entry.getKey());
+            Integer rank = known == null ? null : integer(known, "rank");
+            if (known == null) {
+                groupA.add(new RankedFiler(entry.getKey(), null, null, true));
+            }
+            members.add(new PoolMember(entry.getKey(), known == null ? null : Json.asText(known, "name"),
+                    List.of(TrackRecordRow.GROUP_A), rank, null, entry.getValue()));
+        }
+        if (!members.isEmpty()) {
+            notes.add("그룹 섞기(D27) 전에 남긴 선정 — 그룹 B 없이 그룹 A 순위 가중으로 읽음");
+        }
+        return new SignalPool(groupA, List.of(), members, null, true, notes);
+    }
+
+    private static List<RankedFiler> rankedFilers(List<JsonNode> entries) {
+        List<RankedFiler> out = new ArrayList<>();
+        for (JsonNode entry : entries) {
+            String cik = Json.asText(entry, "cik");
+            if (cik != null) {
+                out.add(new RankedFiler(cik, Json.asText(entry, "name"), integer(entry, "rank"),
+                        Json.asBoolean(entry, "selected")));
+            }
+        }
+        return out;
+    }
+
+    private static Integer integer(JsonNode node, String field) {
+        Double value = Json.asDouble(node, field);
+        return value == null ? null : value.intValue();
     }
 
     /** 가장 최근 선정. 없으면 empty. */
@@ -600,8 +924,9 @@ public class PaperSelectionService {
 
     // ------------------------------------------------------------------ HTTP
     /**
-     * POST /api/paper/run/rerank — 수동 재계산. 그 기준일의 트랙레코드를 덮어쓰고 <b>선정은 바꾸지 않습니다</b>(기록용, 설계
-     * §6-4). 기준일이 없으면 마지막 완료 세션. 끝나지 않은 세션(장중의 오늘·미래)은 그날 종가가 아직 없거나 장중 값이라 400.
+     * POST /api/paper/run/rerank — 수동 재계산. 그 기준일의 트랙레코드를 두 그룹 모두 덮어쓰고 <b>선정은 바꾸지 않습니다</b>
+     * (기록용, 설계 §6-4). 기준일이 없으면 마지막 완료 세션. 끝나지 않은 세션(장중의 오늘·미래)은 그날 종가가 아직 없거나 장중
+     * 값이라 400. {@code computed}·{@code eligible}·{@code collecting}은 그룹 A, 그룹 B는 {@code groupB:{computed, eligible}}.
      *
      * @throws TooManyRequestsException 다른 계산이 돌고 있음(429)
      */
@@ -637,14 +962,21 @@ public class PaperSelectionService {
         out.put("computed", computation.candidates().size());
         out.put("eligible", computation.ranked().size());
         out.put("collecting", (int) computation.candidates().stream().filter(Scored::collecting).count());
+        Map<String, Object> groupB = new LinkedHashMap<>();
+        groupB.put("computed", computation.groupB().size());
+        groupB.put("eligible", computation.rankedB().size());
+        out.put("groupB", groupB);
         out.put("selectedUnchanged", true);
         out.put("skippedReason", computation.skippedReason());
         return out;
     }
 
     /**
-     * GET /api/paper/track-record?asOf= — 그 기준일(없으면 가장 최근에 계산한 기준일)의 트랙레코드·순위·선정·수집 진행률.
-     * 계산이 없으면 {@code computed:false}와 수집 진행률. 계산하지 않고 저장된 결과만 읽습니다.
+     * GET /api/paper/track-record?asOf= — 그 기준일(없으면 그룹 A를 가장 최근에 계산한 기준일)의 트랙레코드·순위·선정·수집
+     * 진행률. 계산이 없으면 {@code computed:false}와 수집 진행률. 계산하지 않고 저장된 결과만 읽습니다.
+     *
+     * <p>위쪽 {@code candidates}·{@code selected}는 그룹 A, {@code groupB}는 그룹 B(D27 — 같은 모양 + 출처 {@code source}·메뉴 설명
+     * {@code desc}), {@code pool}은 그 기준일에 유효한 선정의 신호 풀(가중 포함)입니다.
      */
     public Map<String, Object> trackRecord(String asOfText) {
         if (!store.ready()) {
@@ -654,8 +986,12 @@ public class PaperSelectionService {
         Optional<CollectionIndex> index = index();
         LocalDate asOf = requested != null ? requested : store.latestTrackRecordAsOf().orElse(null);
         List<TrackRecordRow> rows = asOf == null ? List.of() : store.trackRecords(asOf);
+        List<TrackRecordRow> rowsB = asOf == null ? List.of() : store.trackRecords(asOf, TrackRecordRow.GROUP_B);
         Optional<Selection> effective = asOf == null ? Optional.empty() : store.selectionOnOrBefore(asOf);
-        List<String> selected = effective.map(Selection::selectedCiks).orElse(List.of());
+        Optional<SignalPool> pool = effective.map(PaperSelectionService::signalPool);
+        List<String> selected = pool.map(p -> p.selectedA().stream().map(RankedFiler::cik).toList()).orElse(List.of());
+        List<String> selectedB = pool.map(p -> p.selectedB().stream().map(RankedFiler::cik).toList())
+                .orElse(List.of());
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("available", true);
@@ -671,11 +1007,33 @@ public class PaperSelectionService {
         out.put("candidates", candidates(rows, index, selected));
         out.put("selected", selected);
         out.put("selectedAsOfDate", effective.map(s -> s.asOfDate().toString()).orElse(null));
+
+        // 그룹 B — 기준은 계산 때 설정(행이 없으면 지금 설정), 이름·설명은 지금 메뉴 목록 값.
+        Integer versionB = rowsB.isEmpty() ? null : rowsB.get(0).settingsVersion();
+        TrackRecordSettings usedB = versionB == null ? currentSettings() : settingsOf(versionB);
+        PaperSettings.Blend blendB = versionB == null ? currentBlend() : blendOf(versionB);
+        TrackRecord13F.Criteria criteriaB = groupBCriteria(usedB, blendB);
+        Map<String, Object> groupB = new LinkedHashMap<>();
+        groupB.put("computed", !rowsB.isEmpty());
+        groupB.put("windowYears", rowsB.isEmpty() ? criteriaB.windowYears() : rowsB.get(0).windowYears());
+        groupB.put("minPeriods", criteriaB.minPeriods());
+        groupB.put("metric", rowsB.isEmpty() ? usedB.metric().name() : rowsB.get(0).metric());
+        groupB.put("criteria", criteria(criteriaB));
+        groupB.put("topN", blendB.groupBTopN());
+        groupB.put("candidates", groupBCandidates(rowsB, index, selectedB));
+        groupB.put("selected", selectedB);
+        out.put("groupB", groupB);
+        out.put("pool", pool.map(p -> poolView(p.members())).orElse(List.of()));
+        out.put("groupWeightA", pool.map(SignalPool::groupWeightA).orElse(null));
+
         List<Map<String, Object>> history = new ArrayList<>();
         for (Selection selection : store.selections()) {
+            SignalPool past = signalPool(selection);
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("asOfDate", selection.asOfDate().toString());
             entry.put("selectedCiks", selection.selectedCiks());
+            entry.put("groupA", past.selectedA().stream().map(RankedFiler::cik).toList());
+            entry.put("groupB", past.selectedB().stream().map(RankedFiler::cik).toList());
             history.add(entry);
         }
         out.put("selectionHistory", history);
@@ -700,33 +1058,92 @@ public class PaperSelectionService {
         List<Map<String, Object>> out = new ArrayList<>();
         for (TrackRecordRow r : sorted) {
             Filer filer = filers.get(r.cik());
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("cik", r.cik());
+            Map<String, Object> row = candidateRow(r, selected);
             row.put("name", filer == null ? null : filer.name());
             row.put("style", filer == null ? null : filer.style());
-            row.put("rank", r.rank());
-            row.put("eligible", r.eligible());
-            row.put("ineligibleReason", r.ineligibleReason());
-            row.put("collecting", r.ineligibleReason() != null && r.ineligibleReason().startsWith(COLLECTING_PREFIX));
-            row.put("cagrPct", PaperQueryService.round2(r.cagrPct()));
-            row.put("cumReturnPct", PaperQueryService.round2(r.cumReturnPct()));
-            // SPY 누적은 열이 없어 초과(= 누적 − SPY 누적)에서 되돌립니다. 둘 중 하나라도 없으면 null.
-            row.put("spyCumReturnPct", r.cumReturnPct() == null || r.excessVsSpyPct() == null ? null
-                    : PaperQueryService.round2(r.cumReturnPct() - r.excessVsSpyPct()));
-            row.put("excessVsSpyPct", PaperQueryService.round2(r.excessVsSpyPct()));
-            row.put("volPct", PaperQueryService.round2(r.volPct()));
-            row.put("mddPct", PaperQueryService.round2(r.mddPct()));
-            row.put("sharpe", PaperQueryService.round2(r.sharpe()));
-            row.put("periodsUsed", r.periodsUsed());
-            row.put("periodsTotal", r.periodsTotal());
-            row.put("coverageMin", PaperQueryService.round4(r.coverageMin()));
-            row.put("coverageAvg", PaperQueryService.round4(r.coverageAvg()));
-            row.put("firstFilingDate", text(r.firstFilingDate()));
-            row.put("lastFilingDate", text(r.lastFilingDate()));
             row.put("storedQuarters", filer == null ? null : filer.storedQuarters());
             row.put("complete", filer != null && filer.complete());
-            row.put("selected", selected.contains(r.cik()));
-            row.put("periods", periods(r.periods()));
+            out.add(row);
+        }
+        return out;
+    }
+
+    /** 후보 행의 공통 칸(두 그룹 같은 모양). 이름·스타일·저장 분기·완료 여부는 그룹마다 부르는 쪽이 채웁니다(자리만 잡음). */
+    private static Map<String, Object> candidateRow(TrackRecordRow r, List<String> selected) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("cik", r.cik());
+        row.put("name", null);
+        row.put("style", null);
+        row.put("rank", r.rank());
+        row.put("eligible", r.eligible());
+        row.put("ineligibleReason", r.ineligibleReason());
+        row.put("collecting", r.ineligibleReason() != null && r.ineligibleReason().startsWith(COLLECTING_PREFIX));
+        row.put("cagrPct", PaperQueryService.round2(r.cagrPct()));
+        row.put("cumReturnPct", PaperQueryService.round2(r.cumReturnPct()));
+        // SPY 누적은 열이 없어 초과(= 누적 − SPY 누적)에서 되돌립니다. 둘 중 하나라도 없으면 null.
+        row.put("spyCumReturnPct", r.cumReturnPct() == null || r.excessVsSpyPct() == null ? null
+                : PaperQueryService.round2(r.cumReturnPct() - r.excessVsSpyPct()));
+        row.put("excessVsSpyPct", PaperQueryService.round2(r.excessVsSpyPct()));
+        row.put("volPct", PaperQueryService.round2(r.volPct()));
+        row.put("mddPct", PaperQueryService.round2(r.mddPct()));
+        row.put("sharpe", PaperQueryService.round2(r.sharpe()));
+        row.put("periodsUsed", r.periodsUsed());
+        row.put("periodsTotal", r.periodsTotal());
+        row.put("coverageMin", PaperQueryService.round4(r.coverageMin()));
+        row.put("coverageAvg", PaperQueryService.round4(r.coverageAvg()));
+        row.put("firstFilingDate", text(r.firstFilingDate()));
+        row.put("lastFilingDate", text(r.lastFilingDate()));
+        row.put("storedQuarters", null);
+        row.put("complete", false);
+        row.put("selected", selected.contains(r.cik()));
+        row.put("periods", periods(r.periods()));
+        return row;
+    }
+
+    /**
+     * 그룹 B 후보 행 — 그룹 A 행과 같은 모양에 출처({@code source}, 계산 때 쓴 저장본)·메뉴 설명({@code desc})을 더합니다.
+     * 순위 순, 나머지는 메뉴 순. 이름·설명은 지금 메뉴 목록 값, 저장 분기·완료 여부는 q30 기관만 지금 수집 목록 값(q8은 null·false —
+     * 기존 메뉴 수집에는 완료 표시가 없음). 그룹 B에는 "수집 중" 규칙이 없어 {@code collecting}은 늘 false입니다.
+     */
+    private List<Map<String, Object>> groupBCandidates(List<TrackRecordRow> rows, Optional<CollectionIndex> index,
+                                                       List<String> selected) {
+        Map<String, Filer> filers = new LinkedHashMap<>();
+        index.ifPresent(i -> i.filers().forEach(f -> filers.put(f.cik(), f)));
+        Map<String, MenuFiler> menu = new LinkedHashMap<>();
+        groupBCandidates().forEach(f -> menu.put(f.cik(), f));
+        List<String> order = new ArrayList<>(menu.keySet());
+        List<TrackRecordRow> sorted = new ArrayList<>(rows);
+        sorted.sort(Comparator.comparing(TrackRecordRow::rank, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparingInt(r -> order.contains(r.cik()) ? order.indexOf(r.cik()) : Integer.MAX_VALUE)
+                .thenComparing(TrackRecordRow::cik));
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (TrackRecordRow r : sorted) {
+            Map<String, Object> row = candidateRow(r, selected);
+            MenuFiler entry = menu.get(r.cik());
+            Filer collected = TrackRecordRow.SOURCE_Q30.equals(r.dataSource()) ? filers.get(r.cik()) : null;
+            row.put("name", entry == null ? null : entry.name());
+            row.put("style", null);
+            row.put("collecting", false);
+            row.put("storedQuarters", collected == null ? null : collected.storedQuarters());
+            row.put("complete", collected != null && collected.complete());
+            row.put("source", r.dataSource());
+            row.put("desc", entry == null ? null : entry.desc());
+            out.add(row);
+        }
+        return out;
+    }
+
+    /** 신호 풀 응답 — 가중은 반올림하지 않은 값(0~1, 합 1). */
+    static List<Map<String, Object>> poolView(List<PoolMember> members) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (PoolMember m : members) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("cik", m.cik());
+            row.put("name", m.name());
+            row.put("groups", m.groups());
+            row.put("rankA", m.rankA());
+            row.put("rankB", m.rankB());
+            row.put("weight", m.weight());
             out.add(row);
         }
         return out;
@@ -815,6 +1232,18 @@ public class PaperSelectionService {
     private TrackRecordSettings settingsOf(int version) {
         return store.settingsAt(version).map(row -> TrackRecordSettings.from(row.body()))
                 .orElseGet(this::currentSettings);
+    }
+
+    /** 지금 설정의 섞기 값(쓰지 않음 — 행이 없으면 기본값). */
+    private PaperSettings.Blend currentBlend() {
+        return store.settings().map(row -> PaperSettings.Blend.from(row.body()))
+                .orElseGet(PaperSettings.Blend::defaults);
+    }
+
+    /** 그 버전의 섞기 값(이력). 이력에 없으면 지금 설정. */
+    private PaperSettings.Blend blendOf(int version) {
+        return store.settingsAt(version).map(row -> PaperSettings.Blend.from(row.body()))
+                .orElseGet(this::currentBlend);
     }
 
     private static String text(LocalDate date) {

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -66,7 +67,7 @@ class PaperQueryServiceTest {
         for (Map<String, Object> body : List.of(query.overview(), query.positions("rules"), query.orders("rules", 50),
                 query.fills("rules", 50), query.nav("rules"))) {
             assertThat(body.get("available")).isEqualTo(false);
-            assertThat((String) body.get("message")).contains("V8").contains("make up");
+            assertThat((String) body.get("message")).contains("V8").contains("V9").contains("make up");
         }
         Map<String, Object> status = query.status();
         assertThat(status.get("schemaReady")).isEqualTo(false);
@@ -217,4 +218,59 @@ class PaperQueryServiceTest {
                 .hasMessageContaining("없는 책");
         assertThat(query.status().get("settingsVersion")).isEqualTo(1);
     }
+
+    @Test
+    @DisplayName("개요의 게이트 지표는 가장 최근 거래일 줄(참고 문구 포함), 결정 목록·상세는 요약·주문 수·주문 행 — 없는 결정·책은 400")
+    void gateAndDecisions() {
+        initWithBenchmarks();
+        assertThat(query.overview().get("gate")).as("기록 전").isNull();
+        var mapper = PaperFixtures.MAPPER;
+        store.insertGateIfAbsent(new com.macrodash.store.PaperStore.GateRow(FRI, mapper.valueToTree(Map.of(
+                "us10y", Map.of("value", 4.5, "source", "macro.collected"), "conditions", Map.of("G1", true))), "L1",
+                mapper.valueToTree(Map.of("G1", 3)), null));
+        store.insertGateIfAbsent(new com.macrodash.store.PaperStore.GateRow(MON, mapper.valueToTree(Map.of(
+                "us10y", Map.of("value", 4.9, "source", "macro.collected"), "conditions", Map.of("G1", false))), "L0",
+                mapper.valueToTree(Map.of("G1", 0)), null));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> gate = (Map<String, Object>) query.overview().get("gate");
+        assertThat(gate.get("tradingDate")).isEqualTo("2026-10-26");
+        assertThat(gate.get("level")).isEqualTo("L0");
+        assertThat(gate.get("note")).isEqualTo("과거 OS가 쓴 트리거 수준 — 구속하지 않음");
+        assertThat(((tools.jackson.databind.JsonNode) gate.get("conditions")).path("G1").asBoolean(true)).isFalse();
+        assertThat(new ArrayList<Object>(((Map<?, ?>) gate.get("inputs")).keySet()))
+                .containsExactly("us10y", "brent", "wti", "usdjpy");
+
+        long id = store.insertDecisionIfAbsent(new com.macrodash.store.PaperStore.Decision(0, "rules", MON, "SCHEDULED",
+                null, "OK", null, null, 1, FRI, null, null, null, null,
+                mapper.valueToTree(Map.of("summary", "매도 1 (선정 2026-10-23 · 5곳)")), null, null, null, false, 5L,
+                0)).orElseThrow();
+        store.insertOrder(new com.macrodash.store.PaperStore.Order(0, "rules", id, "OLD", "SELL", null, null, null,
+                "NEXT_OBSERVATION", "RULE", "PENDING", null, null, MON, null, TUE_EXPIRY, null));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) query.decisions("rules", 50).get("decisions");
+        assertThat(rows).singleElement().satisfies(row -> {
+            assertThat(row.get("kind")).isEqualTo("SCHEDULED");
+            assertThat(row.get("asOfTradingDate")).isEqualTo("2026-10-26");
+            assertThat(row.get("summary")).isEqualTo("매도 1 (선정 2026-10-23 · 5곳)");
+            assertThat(row.get("orderCount")).isEqualTo(1);
+            assertThat(row.get("rejectedCount")).isEqualTo(0);
+            assertThat(row.get("pricesFinal")).isEqualTo(false);
+            assertThat(row.get("selectionAsOf")).isEqualTo("2026-10-23");
+            assertThat(row.get("model")).isNull();
+        });
+        Map<String, Object> detail = query.decision(id);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> decision = (Map<String, Object>) detail.get("decision");
+        assertThat(decision.get("latencyMs")).isEqualTo(5L);
+        assertThat(decision.get("orderCount")).isEqualTo(1);
+        assertThat((List<?>) detail.get("orders")).hasSize(1);
+        assertThatThrownBy(() -> query.decision(12_345)).isInstanceOf(InvalidRequestException.class)
+                .hasMessageContaining("없는 결정");
+        assertThatThrownBy(() -> query.decisions("bench_spy", 50)).isInstanceOf(InvalidRequestException.class);
+        assertThat(query.decisions("claude", 50).get("decisions")).isEqualTo(List.of());
+    }
+
+    private static final java.time.LocalDate TUE_EXPIRY = java.time.LocalDate.of(2026, 10, 29);
 }

@@ -86,9 +86,31 @@ class PaperStoreDbTest {
     }
 
     @Test
-    @DisplayName("테이블이 있다 — V8이 마지막에 만드는 paper_api_usage로 준비 여부를 본다")
+    @DisplayName("테이블이 있다 — V8이 마지막에 만드는 paper_api_usage와 V9가 마지막에 더하는 열로 준비 여부를 본다")
     void ready() {
-        assertThat(store.ready()).as("make db-test로 V8을 적용했는가").isTrue();
+        assertThat(store.ready()).as("make db-test로 V8·V9를 적용했는가").isTrue();
+    }
+
+    @Test
+    @DisplayName("V8만 적용된 DB(paper_track_record.data_source 열 없음)는 준비 안 됨 — 트랙레코드 SQL 오류(500) 대신 안내 문구, 시험 뒤 되돌림")
+    void readyRequiresV9() {
+        class Rollback extends RuntimeException {
+        }
+        assertThatThrownBy(() -> store.atomically(() -> {
+            jdbc.execute("ALTER TABLE paper_track_record DROP COLUMN data_source");
+            SchemaCheck schema = new SchemaCheck(jdbc);
+            assertThat(schema.tableExists("paper_api_usage")).as("V8 테이블은 있음").isTrue();
+            assertThat(schema.columnExists("paper_track_record", "data_source")).as("지운 열").isFalse();
+            assertThat(new PaperStore(jdbc, MAPPER, schema).ready()).as("V9 전이면 준비 안 됨").isFalse();
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+
+        SchemaCheck schema = new SchemaCheck(jdbc);
+        assertThat(schema.columnExists("paper_track_record", "group_code")).isTrue();
+        assertThat(schema.columnExists("paper_track_record", "data_source")).as("되돌린 뒤").isTrue();
+        assertThat(schema.columnExists("paper_track_record", "no_such_column")).isFalse();
+        assertThat(schema.columnExists("no_such_table", "data_source")).as("테이블이 없으면 false").isFalse();
+        assertThat(new PaperStore(jdbc, MAPPER, schema).ready()).isTrue();
     }
 
     @Test
@@ -584,6 +606,185 @@ class PaperStoreDbTest {
             assertThat(store.settingsAt(2).orElseThrow().body().path("trackRecord").path("windowYears").asInt())
                     .isEqualTo(5);
             assertThat(store.settingsAt(3)).isEmpty();
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+    }
+
+    /** trackRow를 그 그룹·창·출처로. */
+    private static PaperStore.TrackRecordRow groupRow(LocalDate asOf, String cik, String group, int windowYears,
+                                                      Integer rank, Double cagr, String source) {
+        PaperStore.TrackRecordRow r = trackRow(asOf, cik, rank, cagr, null);
+        return new PaperStore.TrackRecordRow(r.asOfDate(), r.cik(), windowYears, r.metric(), r.periodsUsed(),
+                r.periodsTotal(), r.firstFilingDate(), r.lastFilingDate(), r.cumReturnPct(), r.cagrPct(), r.volPct(),
+                r.mddPct(), r.sharpe(), r.excessVsSpyPct(), r.coverageMin(), r.coverageAvg(), r.eligible(),
+                r.ineligibleReason(), r.rank(), r.periods(), r.settingsVersion(), r.computedAt(), group, source);
+    }
+
+    @Test
+    @DisplayName("트랙레코드 그룹(V9): 같은 기준일·같은 기관도 그룹 A·B 행이 따로 — 그룹마다 덮어쓰고·읽고·지움, 그룹 없는 호출은 A")
+    void trackRecordGroups() {
+        class Rollback extends RuntimeException {
+        }
+        LocalDate asOf = LocalDate.of(2026, 8, 17);
+        assertThatThrownBy(() -> store.atomically(() -> {
+            jdbc.update("DELETE FROM paper_track_record");
+            // 두 그룹에 모두 있는 기관(Duquesne처럼) — 창이 달라 수치가 다른 두 행
+            store.upsertTrackRecord(trackRow(asOf, "t_duq", 1, 27.5, null));   // 그룹 없는 생성자 → A
+            store.upsertTrackRecord(groupRow(asOf, "t_duq", "B", 2, 1, 26.8, "q8"));
+            store.upsertTrackRecord(groupRow(asOf, "t_fis", "B", 2, 2, 15.4, "q8"));
+            store.upsertTrackRecord(groupRow(asOf, "t_duq", "B", 2, 1, 26.9, "q30"));   // 같은 그룹 재계산 → 덮어씀
+
+            assertThat(store.trackRecords(asOf)).as("그룹 없는 읽기 = A").singleElement().satisfies(r -> {
+                assertThat(r.groupCode()).isEqualTo("A");
+                assertThat(r.cagrPct()).isEqualTo(27.5);
+                assertThat(r.windowYears()).isEqualTo(7);
+                assertThat(r.dataSource()).as("단계 1b 모양 — 출처 모름").isNull();
+            });
+            List<PaperStore.TrackRecordRow> b = store.trackRecords(asOf, "B");
+            assertThat(b).extracting(PaperStore.TrackRecordRow::cik).containsExactly("t_duq", "t_fis");
+            assertThat(b.get(0).cagrPct()).isEqualTo(26.9);
+            assertThat(b.get(0).windowYears()).isEqualTo(2);
+            assertThat(b.get(0).dataSource()).isEqualTo("q30");
+            assertThat(b.get(1).dataSource()).isEqualTo("q8");
+            assertThat(b).allSatisfy(r -> assertThat(r.groupCode()).isEqualTo("B"));
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM paper_track_record WHERE as_of_date = ?",
+                    Integer.class, java.sql.Date.valueOf(asOf))).isEqualTo(3);
+
+            store.upsertTrackRecord(groupRow(asOf.plusDays(92), "t_fis", "B", 2, 1, 14.0, "q8"));
+            assertThat(store.latestTrackRecordAsOf()).as("A는 8-17까지").contains(asOf);
+            assertThat(store.latestTrackRecordAsOf("B")).contains(asOf.plusDays(92));
+
+            assertThat(store.deleteTrackRecords(asOf, "B")).isEqualTo(2);
+            assertThat(store.trackRecords(asOf)).as("다른 그룹은 그대로").hasSize(1);
+            assertThat(store.deleteTrackRecords(asOf)).isEqualTo(1);
+            assertThat(store.trackRecords(asOf, "B")).isEmpty();
+
+            assertThatThrownBy(() -> store.trackRecords(asOf, "C")).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> groupRow(asOf, "t_x", "b", 2, 1, 1.0, null))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> groupRow(asOf, "t_x", "B", 2, 1, 1.0, "q1"))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> jdbc.update("INSERT INTO paper_track_record (as_of_date, cik, window_years, metric, "
+                    + "periods_used, periods_total, eligible, settings_version, group_code) "
+                    + "VALUES (?, 't_x', 2, 'CAGR', 0, 0, false, 1, 'C')", java.sql.Date.valueOf(asOf)))
+                    .as("DB CHECK도 A·B만").isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+    }
+
+    private static PaperStore.Decision decision(LocalDate day, String kind, String status, JsonNode response) {
+        return new PaperStore.Decision(0, BOOK, day, kind, null, status, null, null, 3, DAY, null, null, null, null,
+                response, null, null, null, false, 42L, 0);
+    }
+
+    @Test
+    @DisplayName("결정: (책, 거래일, 종류)마다 한 건 — 두 번째 넣기는 empty, 목록은 요약·주문 수·거절 수, 상세는 JSON 그대로, 갱신은 상태·응답·오류")
+    void decisionsAreUniquePerBookDayKind() throws Exception {
+        store.insertBookIfAbsent(book(BOOK, "규칙 책"));
+        JsonNode response = MAPPER.readTree("{\"summary\":\"매도 1 (선정 2026-10-23 · 5곳)\",\"orders\":[{\"ticker\":\"SPY\"}]}");
+        long id = store.insertDecisionIfAbsent(decision(DAY, "SCHEDULED", "OK", response)).orElseThrow();
+        assertThat(store.insertDecisionIfAbsent(decision(DAY, "SCHEDULED", "NO_TRADE", null))).as("같은 날·같은 종류")
+                .isEmpty();
+        long manual = store.insertDecisionIfAbsent(decision(DAY, "MANUAL", "NO_TRADE", null)).orElseThrow();
+        long later = store.insertDecisionIfAbsent(new PaperStore.Decision(0, BOOK, DAY.plusDays(3), "REBALANCE", null,
+                "OK", "claude-sonnet-5-5", 2, 3, null, 55.5, MAPPER.readTree("{\"a\":1}"), "abc", "raw", null,
+                MAPPER.readTree("{\"inputTokens\":10}"), "경고", List.of(7L, 9L), true, null, 1)).orElseThrow();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM paper_decisions WHERE book_code = ?", Integer.class, BOOK))
+                .isEqualTo(3);
+
+        PaperStore.Order pending = pendingBuy(BOOK, "SPY", null);
+        store.insertOrder(new PaperStore.Order(0, BOOK, id, "SPY", "SELL", null, null, null, "NEXT_OBSERVATION", "RULE",
+                "PENDING", null, null, DAY, null, DAY.plusDays(5), null));
+        store.insertOrder(new PaperStore.Order(0, BOOK, id, "QQQ", "BUY", null, 5.0, null, "NEXT_OBSERVATION", "RULE",
+                "REJECTED", "상한 초과", null, DAY, null, DAY.plusDays(5), null));
+        store.insertOrder(pending);   // 결정 없는 주문은 세지 않음
+
+        List<PaperStore.DecisionSummary> list = store.decisions(BOOK, 10);
+        assertThat(list).extracting(PaperStore.DecisionSummary::id).as("최근 거래일 순, 같은 날은 나중 것 먼저")
+                .containsExactly(later, manual, id);
+        PaperStore.DecisionSummary scheduled = list.get(2);
+        assertThat(scheduled.summary()).isEqualTo("매도 1 (선정 2026-10-23 · 5곳)");
+        assertThat(scheduled.orderCount()).isEqualTo(2);
+        assertThat(scheduled.rejectedCount()).isEqualTo(1);
+        assertThat(scheduled.settingsVersion()).isEqualTo(3);
+        assertThat(scheduled.selectionAsOf()).isEqualTo(DAY);
+        assertThat(scheduled.decidedAt()).as("비우면 DB가 채움").isNotNull();
+        assertThat(list.get(1).summary()).as("응답 없음 → null").isNull();
+        assertThat(store.decisions(BOOK, 1)).hasSize(1);
+        assertThat(store.ordersByDecision(id)).extracting(PaperStore.Order::ticker).containsExactly("SPY", "QQQ");
+
+        PaperStore.Decision full = store.decision(later).orElseThrow();
+        assertThat(full.model()).isEqualTo("claude-sonnet-5-5");
+        assertThat(full.frameworkVersion()).isEqualTo(2);
+        assertThat(full.targetExposurePct()).isEqualTo(55.5);
+        assertThat(full.packet().path("a").asInt()).isEqualTo(1);
+        assertThat(full.usage().path("inputTokens").asInt()).isEqualTo(10);
+        assertThat(full.noteIds()).containsExactly(7L, 9L);
+        assertThat(full.pricesFinal()).isTrue();
+        assertThat(full.latencyMs()).isNull();
+        assertThat(full.retryCount()).isEqualTo(1);
+        PaperStore.Decision bare = store.decision(manual).orElseThrow();
+        assertThat(bare.noteIds()).isNull();
+        assertThat(bare.response()).isNull();
+        assertThat(bare.latencyMs()).isEqualTo(42L);
+        assertThat(store.decisionFor(BOOK, DAY, "SCHEDULED").orElseThrow().id()).isEqualTo(id);
+        assertThat(store.decisionFor(BOOK, DAY, "INITIAL")).isEmpty();
+        assertThat(store.decision(-1)).isEmpty();
+        // 선정 기준일로 찾기 — SCHEDULED·MANUAL은 선정 DAY, 나중 REBALANCE는 선정 없음(null)
+        assertThat(store.hasDecisionWithSelection(BOOK, List.of("SCHEDULED", "MANUAL"), DAY)).isTrue();
+        assertThat(store.hasDecisionWithSelection(BOOK, List.of("REBALANCE", "INITIAL"), DAY))
+                .as("REBALANCE는 있지만 선정 DAY로 낸 것이 아님").isFalse();
+        assertThat(store.hasDecisionWithSelection(BOOK, List.of("SCHEDULED"), DAY.plusDays(1))).isFalse();
+        assertThat(store.hasDecisionWithSelection(BOOK, List.of("SCHEDULED"), null)).isFalse();
+        assertThat(store.hasDecisionWithSelection(BOOK, List.of(), DAY)).isFalse();
+        long rebalanced = store.insertDecisionIfAbsent(new PaperStore.Decision(0, BOOK, DAY.plusDays(4), "REBALANCE",
+                null, "OK", null, null, 3, DAY.plusDays(4), null, null, null, null, null, null, null, null, true, 1L,
+                0)).orElseThrow();
+        assertThat(store.hasDecisionWithSelection(BOOK, List.of("REBALANCE", "INITIAL"), DAY.plusDays(4))).isTrue();
+        assertThat(store.hasDecisionWithSelection("bench_spy", List.of("REBALANCE"), DAY.plusDays(4)))
+                .as("다른 책").isFalse();
+        jdbc.update("DELETE FROM paper_decisions WHERE id = ?", rebalanced);
+
+        store.updateDecision(id, "NO_TRADE", MAPPER.readTree("{\"summary\":\"바뀜\"}"), "오류 한 줄");
+        assertThat(store.decision(id).orElseThrow()).extracting(PaperStore.Decision::status,
+                d -> d.response().path("summary").asString(), PaperStore.Decision::error)
+                .containsExactly("NO_TRADE", "바뀜", "오류 한 줄");
+        store.updateDecision(id, "OK", null, null);
+        assertThat(store.decision(id).orElseThrow().response().path("summary").asString()).as("null이면 응답 그대로")
+                .isEqualTo("바뀜");
+
+        store.resetBook(BOOK);
+        assertThat(store.decisions(BOOK, 10)).as("리셋이 결정도 지움").isEmpty();
+        assertThat(store.hasDecisionWithSelection(BOOK, List.of("SCHEDULED"), DAY)).isFalse();
+    }
+
+    @Test
+    @DisplayName("게이트 지표: 거래일마다 한 번(두 번째 넣기는 처음 값 그대로), 직전 기록·최근 순 — 시험 뒤 되돌림")
+    void gateLogOncePerTradingDay() {
+        class Rollback extends RuntimeException {
+        }
+        LocalDate thu = LocalDate.of(2026, 10, 22);
+        assertThatThrownBy(() -> store.atomically(() -> {
+            jdbc.update("DELETE FROM paper_gate_log");
+            JsonNode inputs = MAPPER.readTree("{\"us10y\":{\"value\":4.5,\"source\":\"macro.collected\"}}");
+            JsonNode streaks = MAPPER.readTree("{\"G1\":3,\"G2\":null}");
+            assertThat(store.insertGateIfAbsent(new PaperStore.GateRow(thu, inputs, "L1", streaks, null))).isTrue();
+            assertThat(store.insertGateIfAbsent(new PaperStore.GateRow(thu, MAPPER.createObjectNode(), "L0", null,
+                    null))).as("같은 거래일").isFalse();
+            assertThat(store.insertGateIfAbsent(new PaperStore.GateRow(DAY, MAPPER.createObjectNode(), "UNKNOWN", null,
+                    null))).isTrue();
+
+            PaperStore.GateRow saved = store.gate(thu).orElseThrow();
+            assertThat(saved.level()).isEqualTo("L1");
+            assertThat(saved.inputs().path("us10y").path("value").asDouble()).isEqualTo(4.5);
+            assertThat(saved.streaks().path("G1").asInt()).isEqualTo(3);
+            assertThat(saved.streaks().path("G2").isNull()).as("모르는 연속은 null 그대로").isTrue();
+            assertThat(saved.createdAt()).isNotNull();
+            assertThat(store.gate(DAY).orElseThrow().streaks().isEmpty()).as("null → {}").isTrue();
+            assertThat(store.latestGateBefore(DAY).orElseThrow().tradingDate()).isEqualTo(thu);
+            assertThat(store.latestGateBefore(thu)).isEmpty();
+            assertThat(store.recentGate(5)).extracting(PaperStore.GateRow::tradingDate).containsExactly(DAY, thu);
+            assertThat(store.recentGate(1)).hasSize(1);
             throw new Rollback();
         })).isInstanceOf(Rollback.class);
     }

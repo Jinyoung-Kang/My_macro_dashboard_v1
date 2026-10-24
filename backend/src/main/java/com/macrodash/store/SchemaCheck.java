@@ -18,9 +18,28 @@ public class SchemaCheck {
 
     private final JdbcTemplate jdbc;
     private final Set<String> present = ConcurrentHashMap.newKeySet();
+    /** 있다고 확인한 열("테이블\0열"). 열도 지워지지 않는다고 봅니다. */
+    private final Set<String> presentColumns = ConcurrentHashMap.newKeySet();
 
     public SchemaCheck(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /**
+     * 테이블에 그 열이 있는가 — 기존 테이블에 열을 더하는 스키마 파일(예: V9)이 적용됐는지 봅니다. 테이블이 없으면 false.
+     */
+    public boolean columnExists(String table, String column) {
+        String key = table + '\0' + column;
+        if (presentColumns.contains(key)) {
+            return true;
+        }
+        Boolean exists = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass(?) "
+                + "AND attname = ? AND attnum > 0 AND NOT attisdropped)", Boolean.class, table, column);
+        if (Boolean.TRUE.equals(exists)) {
+            presentColumns.add(key);
+            return true;
+        }
+        return false;
     }
 
     public boolean tableExists(String table) {

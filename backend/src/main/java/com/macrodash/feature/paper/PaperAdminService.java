@@ -1,15 +1,10 @@
 package com.macrodash.feature.paper;
 
-import com.macrodash.analytics.PaperLedger;
 import com.macrodash.analytics.UsMarketCalendar;
 import com.macrodash.read.StoreReader;
 import com.macrodash.store.PaperStore;
 import com.macrodash.store.PaperStore.Book;
 import com.macrodash.store.PaperStore.BookState;
-import com.macrodash.store.PaperStore.Fill;
-import com.macrodash.store.PaperStore.NavRow;
-import com.macrodash.store.PaperStore.Order;
-import com.macrodash.store.PaperStore.Position;
 import com.macrodash.store.PaperStore.StartPrice;
 import com.macrodash.support.InvalidRequestException;
 import com.macrodash.support.Params;
@@ -24,7 +19,6 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -319,47 +313,25 @@ public class PaperAdminService {
             }
             closes.put(ticker, found.get());
         }
-        double bp = current.slippageBp();
+        List<PaperLedgerService.BackfillLeg> legs = new ArrayList<>();
+        for (Map.Entry<String, Double> leg : definition.weights().entrySet()) {
+            Map<String, Object> reason = new LinkedHashMap<>();
+            reason.put("backfill", true);
+            reason.put("startDate", start.toString());
+            reason.put("weightPct", leg.getValue());
+            reason.put("note", "벤치마크 " + definition.label() + " — 출발일 종가로 사후 체결");
+            legs.add(new PaperLedgerService.BackfillLeg(leg.getKey(), PaperBooks.BUY, leg.getValue(), null,
+                    mapper.valueToTree(reason)));
+        }
+        // 체결·평가·순자산·상태·운용 전환은 규칙 책 "시작"과 같은 사후 체결 함수가 합니다(장부 서비스). 벤치마크는 정한 비중을
+        // 다 사야 하므로 한 다리라도 못 사면 트랜잭션째 되돌립니다(바깥 트랜잭션에 사후 체결이 합류).
         double initialCash = book.initialCash();
         return store.atomically(() -> {
-            double cash = initialCash;
-            Map<String, Integer> qty = new HashMap<>();
-            Map<String, Double> price = new HashMap<>();
-            for (Map.Entry<String, Double> leg : definition.weights().entrySet()) {
-                String ticker = leg.getKey();
-                PaperMarketData.SourcedClose raw = closes.get(ticker);
-                double fill = PaperLedgerService.price6(PaperLedger.fillPrice(raw.close(), PaperLedger.Side.BUY, bp));
-                int shares = PaperLedger.buyQty(initialCash * leg.getValue() / 100.0, fill);
-                if (shares <= 0) {
-                    throw new IllegalStateException(ticker + " 종가(" + raw.close() + ")로는 1주도 살 수 없습니다");
-                }
-                double gross = PaperLedgerService.gross(shares, fill);
-                Map<String, Object> reason = new LinkedHashMap<>();
-                reason.put("backfill", true);
-                reason.put("startDate", start.toString());
-                reason.put("weightPct", leg.getValue());
-                reason.put("note", "벤치마크 " + definition.label() + " — 출발일 종가로 사후 체결");
-                long orderId = store.insertOrder(new Order(0, book.code(), null, ticker, PaperBooks.BUY, null,
-                        leg.getValue(), null, PaperBooks.BACKFILL, PaperBooks.SOURCE_BENCHMARK, PaperBooks.ORDER_FILLED,
-                        null, mapper.valueToTree(reason), UsMarketCalendar.previousTradingDay(start),
-                        close.minusSeconds(1), null, close));
-                store.insertFill(new Fill(0, orderId, book.code(), ticker, PaperBooks.BUY, shares, fill, raw.close(), bp,
-                        gross, close, start, raw.source(), true, null));
-                store.upsertPosition(new Position(book.code(), ticker, shares, PaperLedger.round4(fill), start, close,
-                        PaperLedger.round4(fill), close, PaperLedger.round4(raw.close()), close, false, start,
-                        raw.close(), null));
-                cash = PaperLedger.round4(cash - gross);
-                qty.put(ticker, shares);
-                price.put(ticker, raw.close());
+            PaperLedgerService.BackfillResult result = ledger.backfill(new PaperLedgerService.BackfillRequest(book,
+                    start, PaperBooks.SOURCE_BENCHMARK, null, initialCash, initialCash, legs, closes, current));
+            if (!result.skipped().isEmpty()) {
+                throw new IllegalStateException(result.skipped().get(0).getValue());
             }
-            PaperLedger.Valuation valuation = PaperLedger.value(cash, qty, price);
-            double nav = PaperLedger.round4(valuation.nav());
-            double equity = PaperLedger.round4(valuation.equityValue());
-            double exposure = PaperLedger.round4(valuation.exposurePct());
-            store.upsertNav(new NavRow(book.code(), start, nav, cash, equity, exposure, true));
-            store.upsertState(new BookState(book.code(), cash, nav, equity, exposure, close, close, start, null));
-            store.updateBookStatus(book.code(), PaperBooks.ACTIVE);
-            store.updateBookStartedOn(book.code(), start);
             return Optional.<String>empty();
         });
     }
@@ -376,7 +348,7 @@ public class PaperAdminService {
 
     private void requireReady() {
         if (!store.ready()) {
-            throw new IllegalStateException("모의 매매 테이블이 아직 없습니다(V8 적용 전)");
+            throw new IllegalStateException("모의 매매 테이블이 아직 없습니다(V8·V9 적용 전)");
         }
     }
 }

@@ -1,11 +1,13 @@
 package com.macrodash.feature.paper;
 
 import com.macrodash.analytics.GateIndicator;
+import com.macrodash.analytics.Signal13F;
 import com.macrodash.support.Json;
 import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.DoublePredicate;
 
 /**
@@ -22,10 +24,14 @@ import java.util.function.DoublePredicate;
  * @param lockoutTradingDays 스탑 뒤 재진입 금지 거래일(0 이상, 기본 20 — D10)
  * @param cashLikeTickers    스탑을 걸지 않는 현금성 종목(기본 SHY)
  * @param gate               OS 게이트 지표의 참고 임계치(구속하지 않음 — D7)
- * @param fallbacks          기본값으로 대신 읽은 키(비어 있으면 모두 설정대로)
+ * @param fallbacks          기본값으로 대신 읽은 키(비어 있으면 모두 설정대로). {@code blend.*}는 {@link Blend#fallbacks}에
+ *                           따로 있습니다 — 장부는 그 키를 읽지 않으므로 장부 경로의 경고에 섞지 않습니다
+ * @param blend              두 기관 그룹 섞기(D27) — 규칙 책·기관 선정이 읽는 값
+ * @param rules              규칙 책의 {@code rules.*} 묶음(매일 남는 현금 SHY 기준) — 규칙 책이 읽는 값
  */
 public record PaperSettings(double slippageBp, double trailingStopPct, int lockoutTradingDays,
-                            List<String> cashLikeTickers, GateIndicator.Thresholds gate, List<String> fallbacks) {
+                            List<String> cashLikeTickers, GateIndicator.Thresholds gate, List<String> fallbacks,
+                            Blend blend, Rules rules) {
 
     public static final double DEFAULT_SLIPPAGE_BP = 5;
     public static final double DEFAULT_TRAILING_STOP_PCT = 8;
@@ -40,7 +46,7 @@ public record PaperSettings(double slippageBp, double trailingStopPct, int locko
     /** 설정 행이 아직 없을 때(초기화 전). */
     public static PaperSettings defaults() {
         return new PaperSettings(DEFAULT_SLIPPAGE_BP, DEFAULT_TRAILING_STOP_PCT, DEFAULT_LOCKOUT_TRADING_DAYS,
-                DEFAULT_CASH_LIKE, GateIndicator.Thresholds.defaults(), List.of());
+                DEFAULT_CASH_LIKE, GateIndicator.Thresholds.defaults(), List.of(), Blend.defaults(), Rules.defaults());
     }
 
     /** 스탑을 걸지 않는 현금성 종목인가. */
@@ -78,7 +84,8 @@ public record PaperSettings(double slippageBp, double trailingStopPct, int locko
         } else {
             fallbacks.add("gate");
         }
-        return new PaperSettings(slippage, stop, (int) lockout, cashLike, thresholds, fallbacks);
+        return new PaperSettings(slippage, stop, (int) lockout, cashLike, thresholds, fallbacks, Blend.from(body),
+                Rules.from(body));
     }
 
     private static double number(JsonNode body, String key, double fallback, DoublePredicate valid,
@@ -89,6 +96,129 @@ public record PaperSettings(double slippageBp, double trailingStopPct, int locko
             return fallback;
         }
         return value;
+    }
+
+    /**
+     * 두 기관 그룹 섞기(명세 R1·R2·R4·D27, 설계 §4-4 {@code blend.*}). 키가 없거나 범위 밖이면 그 키만 기본값으로 읽고
+     * {@link #fallbacks}에 {@code blend.…} 이름으로 남깁니다 — D27 이전에 만든 설정 행(blend 없음)도 기본값으로 돕니다.
+     *
+     * @param groupBTopN        그룹 B 선정 수(blend.groupB.topN, 기본 4, 1~12 — 기존 메뉴가 12곳)
+     * @param groupBWindowYears 그룹 B 트랙레코드 창(blend.groupB.windowYears, 기본 2, 1~2 — 기존 메뉴 저장본 q8이 덮는 길이)
+     * @param groupBMinPeriods  그룹 B 자격의 최소 구간 수(blend.groupB.minPeriods, 기본 6, 1~8 — 2년 창 8구간의 75%)
+     * @param groupWeightA      기관 가중에서 그룹 A 몫 g(blend.groupWeightA, 기본 0.5, 0~1)
+     * @param convictionCapPct  확신도 상한(blend.convictionCapPct, 기본 10%, 1~50)
+     * @param allocation        배분 방식(blend.allocation, 기본 CONVICTION, 대안 EQUAL)
+     * @param minTargetPct      확신도 비례 배분의 최소 목표 비중(blend.minTargetPct, 기본 1.0%, 0~10)
+     */
+    public record Blend(int groupBTopN, int groupBWindowYears, int groupBMinPeriods, double groupWeightA,
+                        double convictionCapPct, Signal13F.Mode allocation, double minTargetPct,
+                        List<String> fallbacks) {
+
+        public static final int DEFAULT_GROUP_B_TOP_N = 4;
+        public static final int DEFAULT_GROUP_B_WINDOW_YEARS = 2;
+        public static final int DEFAULT_GROUP_B_MIN_PERIODS = 6;
+        public static final double DEFAULT_GROUP_WEIGHT_A = 0.5;
+        public static final double DEFAULT_CONVICTION_CAP_PCT = 10;
+        public static final Signal13F.Mode DEFAULT_ALLOCATION = Signal13F.Mode.CONVICTION;
+        public static final double DEFAULT_MIN_TARGET_PCT = 1.0;
+
+        public Blend {
+            fallbacks = List.copyOf(fallbacks);
+        }
+
+        public static Blend defaults() {
+            return new Blend(DEFAULT_GROUP_B_TOP_N, DEFAULT_GROUP_B_WINDOW_YEARS, DEFAULT_GROUP_B_MIN_PERIODS,
+                    DEFAULT_GROUP_WEIGHT_A, DEFAULT_CONVICTION_CAP_PCT, DEFAULT_ALLOCATION, DEFAULT_MIN_TARGET_PCT,
+                    List.of());
+        }
+
+        /** 설정 본문 전체에서 {@code blend}를 읽습니다. 본문이 null이면 기본값(fallbacks 없음 — 설정 행이 없는 것). */
+        public static Blend from(JsonNode body) {
+            if (body == null) {
+                return defaults();
+            }
+            JsonNode blend = Json.child(body, "blend");
+            if (blend == null || !blend.isObject()) {
+                return new Blend(DEFAULT_GROUP_B_TOP_N, DEFAULT_GROUP_B_WINDOW_YEARS, DEFAULT_GROUP_B_MIN_PERIODS,
+                        DEFAULT_GROUP_WEIGHT_A, DEFAULT_CONVICTION_CAP_PCT, DEFAULT_ALLOCATION, DEFAULT_MIN_TARGET_PCT,
+                        List.of("blend"));
+            }
+            List<String> fallbacks = new ArrayList<>();
+            JsonNode groupB = Json.child(blend, "groupB");
+            int topN = DEFAULT_GROUP_B_TOP_N;
+            int window = DEFAULT_GROUP_B_WINDOW_YEARS;
+            int minPeriods = DEFAULT_GROUP_B_MIN_PERIODS;
+            if (groupB != null && groupB.isObject()) {
+                List<String> groupFallbacks = new ArrayList<>();
+                topN = (int) number(groupB, "topN", DEFAULT_GROUP_B_TOP_N, Blend::isWhole1To12, groupFallbacks);
+                // 창은 기존 메뉴 저장본(q8, 8분기 ≈ 2년)이 덮는 범위 안에서만 — 더 길면 q8 기관은 앞쪽이 비어 짧은 기간의 값이 됩니다.
+                window = (int) number(groupB, "windowYears", DEFAULT_GROUP_B_WINDOW_YEARS,
+                        v -> v >= 1 && v <= 2 && v == Math.rint(v), groupFallbacks);
+                minPeriods = (int) number(groupB, "minPeriods", DEFAULT_GROUP_B_MIN_PERIODS,
+                        v -> v >= 1 && v <= 8 && v == Math.rint(v), groupFallbacks);
+                groupFallbacks.forEach(key -> fallbacks.add("groupB." + key));
+            } else {
+                fallbacks.add("groupB");
+            }
+            double weightA = number(blend, "groupWeightA", DEFAULT_GROUP_WEIGHT_A, v -> v >= 0 && v <= 1, fallbacks);
+            double cap = number(blend, "convictionCapPct", DEFAULT_CONVICTION_CAP_PCT, v -> v >= 1 && v <= 50,
+                    fallbacks);
+            double minTarget = number(blend, "minTargetPct", DEFAULT_MIN_TARGET_PCT, v -> v >= 0 && v <= 10,
+                    fallbacks);
+            Signal13F.Mode mode = DEFAULT_ALLOCATION;
+            String modeText = Json.asText(blend, "allocation");
+            try {
+                mode = Signal13F.Mode.valueOf(modeText == null ? "" : modeText.trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                fallbacks.add("allocation");
+            }
+            return new Blend(topN, window, minPeriods, weightA, cap, mode, minTarget,
+                    fallbacks.stream().map(key -> "blend." + key).toList());
+        }
+
+        private static boolean isWhole1To12(double v) {
+            return v >= 1 && v <= 12 && v == Math.rint(v);
+        }
+    }
+
+    /**
+     * 규칙 책의 {@code rules.*} 묶음(설계 §4-2·§4-4). 단계 2에 더한 키라 그 전에 만든 설정 행에는 없습니다 — 키가 없거나 범위
+     * 밖이면 그 키만 기본값으로 읽고 {@link #fallbacks}에 {@code rules.…} 이름으로(묶음이 통째로 없으면 {@code rules}) 남깁니다.
+     * {@link Blend}처럼 장부의 {@link PaperSettings#fallbacks}와 따로 두는 것은 장부가 이 키를 읽지 않아서입니다(장부 경로의 경고에
+     * 섞지 않게).
+     *
+     * @param parkCashThresholdPct 재선정일이 아닌 날(SCHEDULED·MANUAL) 남는 현금을 SHY에 두는 기준(rules.parkCashThresholdPct,
+     *                             순자산의 %, 기본 2, 0~20) — 어림한 남는 현금이 이보다 클 때만 SHY 매수를 한 건 냅니다. 기준을
+     *                             두는 것은 매도 대금 몇백 달러마다 SHY를 사고팔아 슬리피지를 날마다 내지 않게 하려는 것입니다
+     */
+    public record Rules(double parkCashThresholdPct, List<String> fallbacks) {
+
+        public static final double DEFAULT_PARK_CASH_THRESHOLD_PCT = 2;
+        /** 기준의 상한(%) — 이보다 크면 매도 대금이 몇 달씩 현금으로 놀아 '남는 현금은 SHY'(R3)가 무의미해집니다. */
+        public static final double MAX_PARK_CASH_THRESHOLD_PCT = 20;
+
+        public Rules {
+            fallbacks = List.copyOf(fallbacks);
+        }
+
+        public static Rules defaults() {
+            return new Rules(DEFAULT_PARK_CASH_THRESHOLD_PCT, List.of());
+        }
+
+        /** 설정 본문 전체에서 {@code rules}를 읽습니다. 본문이 null이면 기본값(fallbacks 없음 — 설정 행이 없는 것). */
+        public static Rules from(JsonNode body) {
+            if (body == null) {
+                return defaults();
+            }
+            JsonNode rules = Json.child(body, "rules");
+            if (rules == null || !rules.isObject()) {
+                return new Rules(DEFAULT_PARK_CASH_THRESHOLD_PCT, List.of("rules"));
+            }
+            List<String> fallbacks = new ArrayList<>();
+            double threshold = number(rules, "parkCashThresholdPct", DEFAULT_PARK_CASH_THRESHOLD_PCT,
+                    v -> v >= 0 && v <= MAX_PARK_CASH_THRESHOLD_PCT, fallbacks);
+            return new Rules(threshold, fallbacks.stream().map(key -> "rules." + key).toList());
+        }
     }
 
     private static List<String> tickers(JsonNode body, String key, List<String> fallbacks) {

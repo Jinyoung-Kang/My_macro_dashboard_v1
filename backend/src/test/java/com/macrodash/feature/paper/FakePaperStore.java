@@ -42,9 +42,11 @@ class FakePaperStore extends PaperStore {
     Map<String, TreeMap<LocalDate, NavRow>> nav = new HashMap<>();
     List<JobRun> jobRuns = new ArrayList<>();
     Map<String, StartPrice> startPrices = new TreeMap<>();
-    /** 트랙레코드: 기준일 → (CIK → 행). */
+    /** 트랙레코드: 기준일 → ("그룹:CIK" → 행). 두 그룹에 모두 있는 기관은 행이 둘(V9). */
     TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> trackRecords = new TreeMap<>();
     TreeMap<LocalDate, Selection> selections = new TreeMap<>();
+    TreeMap<Long, Decision> decisions = new TreeMap<>();
+    TreeMap<LocalDate, GateRow> gates = new TreeMap<>();
     SettingsRow settings;
     Map<Integer, SettingsRow> settingsHistory = new TreeMap<>();
     long sequence;
@@ -201,6 +203,11 @@ class FakePaperStore extends PaperStore {
     }
 
     @Override
+    public List<Order> ordersByDecision(long decisionId) {
+        return orders.values().stream().filter(o -> o.decisionId() != null && o.decisionId() == decisionId).toList();
+    }
+
+    @Override
     public int expireOrders(String code, LocalDate today) {
         int n = 0;
         for (Order o : new ArrayList<>(orders.values())) {
@@ -340,7 +347,7 @@ class FakePaperStore extends PaperStore {
     }
 
     // ------------------------------------------------------------------ 트랙레코드·선정
-    /** (기준일, CIK) 충돌 시 통째로 바꿉니다. 비유한 수치는 실제 저장소처럼 거절합니다. */
+    /** (기준일, 그룹, CIK) 충돌 시 통째로 바꿉니다. 비유한 수치는 실제 저장소처럼 거절합니다. */
     @Override
     public void upsertTrackRecord(TrackRecordRow r) {
         for (Double value : java.util.Arrays.asList(r.cumReturnPct(), r.cagrPct(), r.volPct(), r.mddPct(), r.sharpe(),
@@ -349,32 +356,46 @@ class FakePaperStore extends PaperStore {
                 throw new IllegalArgumentException("유한하지 않은 수치: " + r);
             }
         }
-        trackRecords.computeIfAbsent(r.asOfDate(), k -> new TreeMap<>()).put(r.cik(),
+        trackRecords.computeIfAbsent(r.asOfDate(), k -> new TreeMap<>()).put(r.groupCode() + ":" + r.cik(),
                 new TrackRecordRow(r.asOfDate(), r.cik(), r.windowYears(), r.metric(), r.periodsUsed(),
                         r.periodsTotal(), r.firstFilingDate(), r.lastFilingDate(), r.cumReturnPct(), r.cagrPct(),
                         r.volPct(), r.mddPct(), r.sharpe(), r.excessVsSpyPct(), r.coverageMin(), r.coverageAvg(),
                         r.eligible(), r.ineligibleReason(), r.rank(), r.periods(), r.settingsVersion(),
-                        r.computedAt() == null ? dbNow : r.computedAt()));
+                        r.computedAt() == null ? dbNow : r.computedAt(), r.groupCode(), r.dataSource()));
     }
 
     @Override
-    public int deleteTrackRecords(LocalDate asOf) {
-        TreeMap<String, TrackRecordRow> removed = trackRecords.remove(asOf);
-        return removed == null ? 0 : removed.size();
+    public int deleteTrackRecords(LocalDate asOf, String groupCode) {
+        TrackRecordRow.requireGroup(groupCode);
+        TreeMap<String, TrackRecordRow> rows = trackRecords.get(asOf);
+        if (rows == null) {
+            return 0;
+        }
+        int before = rows.size();
+        rows.values().removeIf(r -> r.groupCode().equals(groupCode));
+        if (rows.isEmpty()) {
+            trackRecords.remove(asOf);
+        }
+        return before - rows.size();
     }
 
-    /** 순위 순(없는 것은 뒤), CIK 순. */
+    /** 그 그룹만, 순위 순(없는 것은 뒤), CIK 순. */
     @Override
-    public List<TrackRecordRow> trackRecords(LocalDate asOf) {
+    public List<TrackRecordRow> trackRecords(LocalDate asOf, String groupCode) {
+        TrackRecordRow.requireGroup(groupCode);
         return trackRecords.getOrDefault(asOf, new TreeMap<>()).values().stream()
+                .filter(r -> r.groupCode().equals(groupCode))
                 .sorted(Comparator.comparing(TrackRecordRow::rank, Comparator.nullsLast(Comparator.naturalOrder()))
                         .thenComparing(TrackRecordRow::cik))
                 .toList();
     }
 
     @Override
-    public Optional<LocalDate> latestTrackRecordAsOf() {
-        return trackRecords.isEmpty() ? Optional.empty() : Optional.of(trackRecords.lastKey());
+    public Optional<LocalDate> latestTrackRecordAsOf(String groupCode) {
+        TrackRecordRow.requireGroup(groupCode);
+        return trackRecords.descendingMap().entrySet().stream()
+                .filter(e -> e.getValue().values().stream().anyMatch(r -> r.groupCode().equals(groupCode)))
+                .map(Map.Entry::getKey).findFirst();
     }
 
     @Override
@@ -398,8 +419,97 @@ class FakePaperStore extends PaperStore {
         return Optional.ofNullable(selections.floorEntry(date)).map(Map.Entry::getValue);
     }
 
+    // ------------------------------------------------------------------ 결정·게이트
+    /** (책, 거래일, 종류) 유일 — 이미 있으면 empty. */
+    @Override
+    public Optional<Long> insertDecisionIfAbsent(Decision d) {
+        if (decisionFor(d.bookCode(), d.asOfTradingDate(), d.kind()).isPresent()) {
+            return Optional.empty();
+        }
+        long id = ++sequence;
+        decisions.put(id, new Decision(id, d.bookCode(), d.asOfTradingDate(), d.kind(),
+                d.decidedAt() == null ? dbNow : d.decidedAt(), d.status(), d.model(), d.frameworkVersion(),
+                d.settingsVersion(), d.selectionAsOf(), d.targetExposurePct(), d.packet(), d.packetHash(),
+                d.responseRaw(), d.response(), d.usage(), d.error(), d.noteIds(), d.pricesFinal(), d.latencyMs(),
+                d.retryCount()));
+        return Optional.of(id);
+    }
+
+    @Override
+    public Optional<Decision> decision(long id) {
+        return Optional.ofNullable(decisions.get(id));
+    }
+
+    @Override
+    public Optional<Decision> decisionFor(String code, LocalDate tradingDate, String kind) {
+        return decisions.values().stream().filter(d -> d.bookCode().equals(code)
+                && d.asOfTradingDate().equals(tradingDate) && d.kind().equals(kind)).findFirst();
+    }
+
+    @Override
+    public boolean hasDecisionWithSelection(String code, java.util.Collection<String> kinds, LocalDate selectionAsOf) {
+        return selectionAsOf != null && decisions.values().stream().anyMatch(d -> d.bookCode().equals(code)
+                && kinds.contains(d.kind()) && selectionAsOf.equals(d.selectionAsOf()));
+    }
+
+    @Override
+    public List<DecisionSummary> decisions(String code, int limit) {
+        return decisions.values().stream().filter(d -> d.bookCode().equals(code))
+                .sorted(Comparator.comparing(Decision::asOfTradingDate).thenComparing(Decision::decidedAt)
+                        .thenComparing(Decision::id).reversed())
+                .limit(limit)
+                .map(d -> {
+                    List<Order> made = ordersByDecision(d.id());
+                    JsonNode summary = d.response() == null ? null : d.response().get("summary");
+                    return new DecisionSummary(d.id(), d.bookCode(), d.asOfTradingDate(), d.kind(), d.decidedAt(),
+                            d.status(), d.model(), d.frameworkVersion(), d.settingsVersion(), d.selectionAsOf(),
+                            d.targetExposurePct(), summary == null || summary.isNull() ? null : summary.asString(""),
+                            d.error(), d.pricesFinal(), made.size(),
+                            (int) made.stream().filter(o -> "REJECTED".equals(o.status())).count());
+                }).toList();
+    }
+
+    @Override
+    public void updateDecision(long id, String status, JsonNode response, String error) {
+        Decision d = decisions.get(id);
+        decisions.put(id, new Decision(d.id(), d.bookCode(), d.asOfTradingDate(), d.kind(), d.decidedAt(), status,
+                d.model(), d.frameworkVersion(), d.settingsVersion(), d.selectionAsOf(), d.targetExposurePct(),
+                d.packet(), d.packetHash(), d.responseRaw(), response == null ? d.response() : response, d.usage(),
+                error, d.noteIds(), d.pricesFinal(), d.latencyMs(), d.retryCount()));
+    }
+
+    List<Decision> decisionsOf(String code) {
+        return decisions.values().stream().filter(d -> d.bookCode().equals(code)).toList();
+    }
+
+    @Override
+    public boolean insertGateIfAbsent(GateRow g) {
+        if (gates.containsKey(g.tradingDate())) {
+            return false;
+        }
+        gates.put(g.tradingDate(), new GateRow(g.tradingDate(), g.inputs(), g.level(),
+                g.streaks() == null ? new ObjectMapper().createObjectNode() : g.streaks(), dbNow));
+        return true;
+    }
+
+    @Override
+    public Optional<GateRow> gate(LocalDate tradingDate) {
+        return Optional.ofNullable(gates.get(tradingDate));
+    }
+
+    @Override
+    public Optional<GateRow> latestGateBefore(LocalDate tradingDate) {
+        return Optional.ofNullable(gates.lowerEntry(tradingDate)).map(Map.Entry::getValue);
+    }
+
+    @Override
+    public List<GateRow> recentGate(int limit) {
+        return gates.descendingMap().values().stream().limit(limit).toList();
+    }
+
     @Override
     public void resetBook(String code) {
+        decisions.values().removeIf(d -> d.bookCode().equals(code));
         orders.values().removeIf(o -> o.bookCode().equals(code));
         fills.values().removeIf(f -> f.bookCode().equals(code));
         positions.remove(code);
@@ -415,11 +525,13 @@ class FakePaperStore extends PaperStore {
                             TreeMap<Long, Fill> fills, Map<String, TreeMap<LocalDate, NavRow>> nav,
                             List<JobRun> jobRuns, Map<String, StartPrice> startPrices, SettingsRow settings,
                             TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> trackRecords,
-                            TreeMap<LocalDate, Selection> selections) {
+                            TreeMap<LocalDate, Selection> selections, TreeMap<Long, Decision> decisions,
+                            TreeMap<LocalDate, GateRow> gates) {
         Snapshot(FakePaperStore s) {
             this(new TreeMap<>(s.books), new TreeMap<>(s.states), deep(s.positions), deep(s.lockouts),
                     new TreeMap<>(s.orders), new TreeMap<>(s.fills), deep(s.nav), new ArrayList<>(s.jobRuns),
-                    new TreeMap<>(s.startPrices), s.settings, deepDates(s.trackRecords), new TreeMap<>(s.selections));
+                    new TreeMap<>(s.startPrices), s.settings, deepDates(s.trackRecords), new TreeMap<>(s.selections),
+                    new TreeMap<>(s.decisions), new TreeMap<>(s.gates));
         }
 
         void restore(FakePaperStore s) {
@@ -435,6 +547,8 @@ class FakePaperStore extends PaperStore {
             s.settings = settings;
             s.trackRecords = trackRecords;
             s.selections = selections;
+            s.decisions = decisions;
+            s.gates = gates;
         }
 
         private static TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> deepDates(

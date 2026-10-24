@@ -54,6 +54,9 @@ import static org.mockito.Mockito.when;
  *
  * <p>날짜: 기준일 2026-10-23(금). 그날 공시 기한이 지난 최신 분기는 2026-06-30(재선정일 2026-08-17 ≤ 10-23, 다음 분기
  * 재선정일 11-17은 뒤). 창은 설정으로 1년(창 시작 2025-10-23)으로 줄여, 분기 공시 다섯 건으로 구간 다섯 개가 됩니다.
+ *
+ * <p>그룹 B(D27)는 기존 13F 메뉴 12곳의 실제 CIK(Institutions.ALL)이고 창은 기본 2년(창 시작 2024-10-23), 분기 공시 아홉 건
+ * ({@link #FILINGS_B})으로 구간 아홉 개입니다. 기본 고정본에는 그룹 B 저장본이 없어(공시 없음) 그룹 A 시험에 끼어들지 않습니다.
  */
 class PaperSelectionServiceTest {
 
@@ -67,6 +70,22 @@ class PaperSelectionServiceTest {
     private static final String C = "0000000003";   // 수집 중(3/30) — 수치는 좋아도 순위에 오르지 않음
     private static final String D = "0000000004";   // 2026-06-30 분기 공시 없음(R5)
     private static final String E = "0000000005";   // q30 저장본 없음
+
+    // 그룹 B(기존 13F 메뉴의 실제 CIK)
+    private static final String DUQ = "0001536411";   // q30(ZZZ) + q8(BBB) — q30을 씀, 그룹 A 후보와 겹칠 수 있음
+    private static final String FIS = "0000850529";   // q8만(CCC)
+    private static final String BRK = "0001067983";   // q8만(AAA)
+    private static final String BW = "0001350694";    // q8만(BBB, 보합)
+    private static final String VAN = "0000102909";   // q8 — CCC 40% + 티커 없는 60%: 수익률은 높지만 커버리지 미달(인덱스형)
+    private static final String SCION = "0001649339"; // q8 — 2026-06-30 분기 공시 없음(R5)
+
+    /** 그룹 B 분기 공시 — 2년 창을 덮는 아홉 분기. */
+    private static final List<String[]> FILINGS_B = List.of(
+            new String[]{"2024-08-14", "2024-06-30"}, new String[]{"2024-11-14", "2024-09-30"},
+            new String[]{"2025-02-14", "2024-12-31"}, new String[]{"2025-05-15", "2025-03-31"},
+            new String[]{"2025-08-14", "2025-06-30"}, new String[]{"2025-11-14", "2025-09-30"},
+            new String[]{"2026-02-13", "2025-12-31"}, new String[]{"2026-05-15", "2026-03-31"},
+            new String[]{"2026-08-14", "2026-06-30"});
 
     /** 분기 공시일 — 실제 13F 기한 근처(금요일들). */
     private static final List<String[]> FILINGS = List.of(
@@ -202,6 +221,41 @@ class PaperSelectionServiceTest {
         payload.put("complete", complete);
         payload.put("fetchedThisRun", 0);
         snapshot(Datasets.sec13f(cik, Datasets.TRACK_RECORD_QUARTERS), payload);
+    }
+
+    /** 기존 메뉴 저장본(q8) — 완료 표시가 없는 모양(task_sec_13f). */
+    private void q8(String cik, List<Map<String, Object>> quarters) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("cik", cik);
+        payload.put("error", null);
+        payload.put("quarters", quarters);
+        snapshot(Datasets.sec13f(cik, Datasets.MAX_TRACKED_QUARTERS), payload);
+    }
+
+    /** 그룹 B 고정본 — 클래스 상수 설명대로. 기대 순위(CAGR): DUQ(ZZZ) · FIS(CCC) · BRK(AAA) · BW(BBB). */
+    private void groupBFixture() {
+        q30(DUQ, true, quarters(FILINGS_B, "ZZZ", 100.0));
+        q8(DUQ, quarters(FILINGS_B, "BBB", 100.0));
+        q8(FIS, quarters(FILINGS_B, "CCC", 100.0));
+        q8(BRK, quarters(FILINGS_B, "AAA", 100.0));
+        q8(BW, quarters(FILINGS_B, "BBB", 100.0));
+        q8(VAN, quarters(FILINGS_B, "CCC", 40.0, null, 60.0));
+        q8(SCION, quarters(FILINGS_B.subList(0, 8), "ZZZ", 100.0));
+    }
+
+    private Map<String, TrackRecordRow> rowsB(LocalDate asOf) {
+        Map<String, TrackRecordRow> out = new LinkedHashMap<>();
+        store.trackRecords(asOf, "B").forEach(r -> out.put(r.cik(), r));
+        return out;
+    }
+
+    /** 그룹 B 기준(2년 창, 구간 6, 커버리지 0.5·0.7)으로 계산 함수를 직접 부른 값. */
+    private TrackRecord13F.Result directB(String cik, List<TrackRecord13F.Filing> filings) {
+        LocalDate from = AS_OF.minusYears(2).minusDays(PaperSelectionService.PRICE_MARGIN_DAYS);
+        Map<String, DailySeries> prices = new HashMap<>();
+        fullPrices.forEach((t, s) -> prices.put(t, DailySeries.of(s.subMap(from, true, AS_OF, true))));
+        return TrackRecord13F.compute(cik, filings, prices::get, prices.get("SPY"), AS_OF,
+                new TrackRecord13F.Criteria(2, 6, 0.5, 0.7));
     }
 
     private void index(String... ciks) {
@@ -496,9 +550,12 @@ class PaperSelectionServiceTest {
         assertThat(first.selection().selectedCiks()).containsExactly(A, B);
         assertThat(first.selection().settingsVersion()).isEqualTo(1);
         JsonNode ranking = first.selection().ranking();
-        assertThat(ranking).hasSize(2);
-        assertThat(ranking.get(0).path("cik").asString()).isEqualTo(A);
-        assertThat(ranking.get(0).path("selected").asBoolean()).isTrue();
+        assertThat(ranking.path("groupA")).hasSize(2);
+        assertThat(ranking.path("groupA").get(0).path("cik").asString()).isEqualTo(A);
+        assertThat(ranking.path("groupA").get(0).path("selected").asBoolean()).isTrue();
+        assertThat(ranking.path("groupB")).as("그룹 B 저장본 없음").isEmpty();
+        assertThat(ranking.path("pool")).extracting(m -> m.path("cik").asString()).containsExactly(A, B);
+        assertThat(ranking.path("groupWeightA").asDouble()).isEqualTo(0.5);
         assertThat(historyCalls).hasSize(1);
 
         PaperSelectionService.SelectionOutcome again = service.select(AS_OF);
@@ -637,13 +694,14 @@ class PaperSelectionServiceTest {
     }
 
     @Test
-    @DisplayName("개요 응답에 가장 최근 선정의 요지가 실린다 — 단계 2 계약 모양 {asOfDate, selected:[{cik,name,rank}]}, 없으면 null")
+    @DisplayName("개요 응답에 가장 최근 선정의 요지 {asOfDate, groupA, groupB, pool:[{cik,name,groups,weight}]}가 실린다(D27), 없으면 null")
     void overviewCarriesLatestSelection() {
         PaperQueryService query = new PaperQueryService(store, marketData, PaperFixtures.quietReader(),
                 PaperFixtures.settings(store), PaperFixtures.config(), NOW);
         when(marketData.quotes()).thenReturn(Optional.empty());
         assertThat(query.overview().get("selection")).isNull();
 
+        groupBFixture();
         service.select(AS_OF);
 
         Map<String, Object> first = new LinkedHashMap<>();
@@ -654,18 +712,35 @@ class PaperSelectionServiceTest {
         second.put("cik", B);
         second.put("name", "기관 " + B);
         second.put("rank", 2);
-        assertThat(query.overview().get("selection")).isEqualTo(Map.of("asOfDate", "2026-10-23",
-                "selected", List.of(first, second)));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> selection = (Map<String, Object>) query.overview().get("selection");
+        assertThat(selection.get("asOfDate")).isEqualTo("2026-10-23");
+        assertThat(selection.get("groupA")).isEqualTo(List.of(first, second));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> groupB = (List<Map<String, Object>>) selection.get("groupB");
+        assertThat(groupB).extracting(r -> r.get("cik")).containsExactly(DUQ, FIS, BRK, BW);
+        assertThat(groupB.get(0)).containsEntry("rank", 1).containsEntry("name", "🇺🇸 듀케인 패밀리 오피스 (Duquesne Family Office)");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> pool = (List<Map<String, Object>>) selection.get("pool");
+        assertThat(pool).extracting(r -> r.get("cik")).containsExactly(A, B, DUQ, FIS, BRK, BW);
+        assertThat(pool.get(0)).containsEntry("groups", List.of("A"));
+        assertThat((Double) pool.get(2).get("weight")).as("B1 = 0.5 × 4/10").isCloseTo(0.2, within(1e-12));
+        assertThat(pool.stream().mapToDouble(r -> (Double) r.get("weight")).sum()).isCloseTo(1.0, within(1e-12));
 
-        // 순위표에 없는 CIK(옛 선정 행 등)는 이름·순위를 지어내지 않고 null.
+        // 섞기 전 모양(순위표 배열)의 선정 — 그룹 A만, 순위표에 없는 CIK는 이름·순위를 지어내지 않고 null.
         store.selections.clear();
         store.insertSelectionIfAbsent(new Selection(AS_OF, List.of("0000000099"), MAPPER.createArrayNode(), 1, null));
         Map<String, Object> unknown = new LinkedHashMap<>();
         unknown.put("cik", "0000000099");
         unknown.put("name", null);
         unknown.put("rank", null);
+        Map<String, Object> pooled = new LinkedHashMap<>();
+        pooled.put("cik", "0000000099");
+        pooled.put("name", null);
+        pooled.put("groups", List.of("A"));
+        pooled.put("weight", 1.0);
         assertThat(query.overview().get("selection")).isEqualTo(Map.of("asOfDate", "2026-10-23",
-                "selected", List.of(unknown)));
+                "groupA", List.of(unknown), "groupB", List.of(), "pool", List.of(pooled)));
     }
 
     @Test
@@ -753,6 +828,245 @@ class PaperSelectionServiceTest {
         assertThat(outcome.skippedReason()).isNull();
         assertThat(outcome.created()).isTrue();
         assertThat(outcome.selection().selectedCiks()).isEmpty();
+    }
+
+    // ------------------------------------------------------------------ 그룹 B(D27)
+    @Test
+    @DisplayName("그룹 B: 기존 메뉴 12곳을 2년 창으로 — q30이 있으면 q30(DUQ), 없으면 q8, 값은 계산 함수를 직접 부른 것과 같고 출처를 남긴다")
+    void groupBUsesQ30ElseQ8OverTwoYears() {
+        groupBFixture();
+
+        PaperSelectionService.Computation computation = service.compute(AS_OF);
+
+        assertThat(computation.rankedB()).extracting(PaperSelectionService.Scored::cik)
+                .containsExactly(DUQ, FIS, BRK, BW);
+        Map<String, TrackRecordRow> b = rowsB(AS_OF);
+        assertThat(b).as("메뉴 12곳 모두 저장(저장본 없는 곳은 공시 없음)").hasSize(12);
+        TrackRecordRow duq = b.get(DUQ);
+        assertThat(duq.groupCode()).isEqualTo("B");
+        assertThat(duq.dataSource()).as("q30이 있으면 q8(BBB)이 아니라 q30(ZZZ)").isEqualTo("q30");
+        assertThat(duq.windowYears()).isEqualTo(2);
+        assertThat(duq.rank()).isEqualTo(1);
+        assertThat(duq.periodsUsed()).isEqualTo(9);
+        assertThat(duq.cagrPct()).isCloseTo(directB(DUQ, filings(FILINGS_B, "ZZZ", 100.0)).cagrPct(), within(1e-12));
+        assertThat(duq.periods().get(0).path("start").asString()).as("첫 구간은 2년 창 시작으로 자름")
+                .isEqualTo("2024-10-23");
+        TrackRecordRow fis = b.get(FIS);
+        assertThat(fis.dataSource()).isEqualTo("q8");
+        assertThat(fis.cagrPct()).isCloseTo(directB(FIS, filings(FILINGS_B, "CCC", 100.0)).cagrPct(), within(1e-12));
+        assertThat(b.get("0001608046").dataSource()).as("국민연금 — 저장본 없음").isNull();
+        assertThat(b.get("0001608046").ineligibleReason()).isEqualTo("공시 없음");
+        assertThat(b.values()).noneMatch(r -> r.ineligibleReason() != null
+                && r.ineligibleReason().startsWith("수집 중"));
+
+        // 그룹마다 가격을 한 번씩 — 그룹 B는 2년 창, 기준일까지만.
+        assertThat(historyCalls).hasSize(2);
+        HistoryCall callB = historyCalls.get(1);
+        assertThat(callB.from()).isEqualTo(AS_OF.minusYears(2).minusDays(14));
+        assertThat(callB.to()).isEqualTo(AS_OF);
+        assertThat(callB.tickers()).containsExactly("AAA", "BBB", "CCC", "SPY", "ZZZ");
+        assertThat(rows(AS_OF)).as("그룹 A 행은 그대로").hasSize(5);
+    }
+
+    @Test
+    @DisplayName("그룹 B 자격은 그룹 A와 같은 커버리지 기준·R5 — 수익률 높은 인덱스형(커버리지 40%)·최신 분기 미공시(사이언)는 순위 밖")
+    void groupBEligibilityUsesCoverageAndR5() {
+        groupBFixture();
+
+        service.compute(AS_OF);
+
+        TrackRecordRow van = rowsB(AS_OF).get(VAN);
+        assertThat(van.eligible()).isFalse();
+        assertThat(van.rank()).isNull();
+        assertThat(van.coverageAvg()).isCloseTo(0.4, within(1e-12));
+        assertThat(van.ineligibleReason()).contains("커버리지");
+        assertThat(van.cagrPct()).as("CCC를 들어 BRK(AAA)보다 높아도 순위 밖")
+                .isGreaterThan(rowsB(AS_OF).get(BRK).cagrPct());
+        TrackRecordRow scion = rowsB(AS_OF).get(SCION);
+        assertThat(scion.ineligibleReason()).isEqualTo("최신 분기(2026-06-30) 공시 없음");
+        assertThat(scion.cagrPct()).as("ZZZ — 수치는 그대로 계산").isNotNull();
+    }
+
+    @Test
+    @DisplayName("그룹 B도 기준일 뒤 공시·가격을 쓰지 않는다 — q8의 늦은 분기(티커 포함)는 읽지 않음")
+    void groupBCutsAtAsOf() {
+        groupBFixture();
+        List<Map<String, Object>> late = new ArrayList<>(quarters(FILINGS_B, "CCC", 100.0));
+        late.add(0, quarter("2026-10-26", "2026-09-30", "LATE", 100.0));
+        q8(FIS, late);
+        TreeMap<LocalDate, Double> ccc = fullPrices.get("CCC");
+        for (LocalDate day : new ArrayList<>(ccc.tailMap(AS_OF, false).keySet())) {
+            ccc.put(day, ccc.get(day) * 10);
+        }
+
+        service.compute(AS_OF);
+
+        TrackRecordRow fis = rowsB(AS_OF).get(FIS);
+        assertThat(fis.lastFilingDate()).isEqualTo(LocalDate.of(2026, 8, 14));
+        assertThat(fis.cagrPct()).isCloseTo(directB(FIS, filings(FILINGS_B, "CCC", 100.0)).cagrPct(), within(1e-12));
+        assertThat(historyCalls.get(1).tickers()).doesNotContain("LATE");
+    }
+
+    @Test
+    @DisplayName("선정: 신호 풀 = A ∪ B(A 순서 뒤에 B에만 있는 기관) — 두 그룹에 모두 있는 DUQ는 두 가중을 다 받고(0.5333), 합 1")
+    void selectionPoolUnionWithOverlap() {
+        groupBFixture();
+        index(A, B, C, D, E, DUQ);   // DUQ를 그룹 A 후보에도 — 1년 창에서 ZZZ로 1위
+
+        PaperSelectionService.SelectionOutcome outcome = service.select(AS_OF);
+
+        Selection saved = outcome.selection();
+        assertThat(saved.selectedCiks()).containsExactly(DUQ, A, FIS, BRK, BW);
+        JsonNode ranking = saved.ranking();
+        assertThat(ranking.path("groupA")).extracting(r -> r.path("cik").asString()).containsExactly(DUQ, A, B);
+        assertThat(ranking.path("groupA").get(2).path("selected").asBoolean()).as("topN 2 밖").isFalse();
+        assertThat(ranking.path("groupB")).extracting(r -> r.path("cik").asString())
+                .containsExactly(DUQ, FIS, BRK, BW);
+        assertThat(ranking.path("groupB").get(1).path("source").asString()).isEqualTo("q8");
+        assertThat(ranking.path("groupB").get(0).path("metricValue").asDouble())
+                .isEqualTo(ranking.path("groupB").get(0).path("cagrPct").asDouble());
+        JsonNode pool = ranking.path("pool");
+        // a(r) = (3 − r)/3(A 2곳), b(r) = (5 − r)/10(B 4곳), g = 0.5
+        JsonNode duq = pool.get(0);
+        assertThat(duq.path("groups").toString()).isEqualTo("[\"A\",\"B\"]");
+        assertThat(duq.path("rankA").asInt()).isEqualTo(1);
+        assertThat(duq.path("rankB").asInt()).isEqualTo(1);
+        assertThat(duq.path("weight").asDouble()).isCloseTo(0.5 * 2 / 3 + 0.5 * 0.4, within(1e-12));
+        assertThat(pool.get(1).path("weight").asDouble()).isCloseTo(0.5 / 3, within(1e-12));
+        assertThat(pool.get(1).path("rankB").isNull()).isTrue();
+        assertThat(pool.get(2).path("weight").asDouble()).isCloseTo(0.15, within(1e-12));
+        assertThat(pool.get(4).path("weight").asDouble()).isCloseTo(0.05, within(1e-12));
+        double sum = 0;
+        for (JsonNode m : pool) {
+            sum += m.path("weight").asDouble();
+        }
+        assertThat(sum).isCloseTo(1.0, within(1e-12));
+        assertThat(ranking.path("groupWeightA").asDouble()).isEqualTo(0.5);
+
+        // 규칙 책이 읽는 모양 — 가중은 행 그대로(다시 계산하지 않음).
+        PaperSelectionService.SignalPool parsed = PaperSelectionService.signalPool(saved);
+        assertThat(parsed.legacy()).isFalse();
+        assertThat(parsed.members()).extracting(PaperSelectionService.PoolMember::weight)
+                .containsExactly(duq.path("weight").asDouble(), 0.5 / 3, 0.15, 0.1, 0.05);
+        assertThat(parsed.selectedA()).extracting(PaperSelectionService.RankedFiler::cik).containsExactly(DUQ, A);
+        assertThat(parsed.selectedB()).extracting(PaperSelectionService.RankedFiler::cik)
+                .containsExactly(DUQ, FIS, BRK, BW);
+    }
+
+    @Test
+    @DisplayName("그룹 A가 수집 중으로 비면 그룹 B가 준비돼 있어도 선정을 남기지 않는다 — 그룹 B만으로 선정하지 않음")
+    void noGroupBOnlySelectionWhileCollecting() {
+        groupBFixture();
+        q30(A, false, quarters(FILINGS, "AAA", 100.0));
+        q30(B, false, quarters(FILINGS, "BBB", 80.0, null, 20.0));
+
+        PaperSelectionService.SelectionOutcome outcome = service.select(AS_OF);
+
+        assertThat(outcome.selection()).isNull();
+        assertThat(outcome.skippedReason()).startsWith("수집 중 4곳(후보 5곳)");
+        assertThat(outcome.computation().rankedB()).as("그룹 B는 계산됨").hasSize(4);
+        assertThat(store.selections).isEmpty();
+    }
+
+    @Test
+    @DisplayName("그룹 A가 (수집이 끝난 채로) 0곳이면 신호 풀은 그룹 B만 — 그룹 B가 가중 1을 다 받음(4·3·2·1/10)")
+    void groupAEmptyButKnownLeavesGroupBPool() {
+        groupBFixture();
+        settings(1, 1, 2, 0.5, 0.7, "CAGR", List.of(D));
+
+        Selection saved = service.select(AS_OF).selection();
+
+        assertThat(saved.selectedCiks()).containsExactly(DUQ, FIS, BRK, BW);
+        assertThat(PaperSelectionService.signalPool(saved).members())
+                .extracting(PaperSelectionService.PoolMember::weight).containsExactly(0.4, 0.3, 0.2, 0.1);
+    }
+
+    @Test
+    @DisplayName("수동 재계산은 두 그룹을 다시 계산하고 선정은 그대로 — 응답 groupB:{computed, eligible}")
+    @SuppressWarnings("unchecked")
+    void rerankRecomputesBothGroups() {
+        groupBFixture();
+        service.select(AS_OF);
+        List<String> before = store.selections.get(AS_OF).selectedCiks();
+        q8(FIS, quarters(FILINGS_B, "ZZZ", 100.0));   // FIS도 ZZZ — DUQ와 같은 수익률, CIK 순으로 1위
+
+        Map<String, Object> response = service.rerank("2026-10-23");
+
+        assertThat((Map<String, Object>) response.get("groupB")).containsEntry("computed", 12)
+                .containsEntry("eligible", 4);
+        assertThat(rowsB(AS_OF).get(FIS).rank()).isEqualTo(1);
+        assertThat(store.selections.get(AS_OF).selectedCiks()).as("선정은 그대로").isEqualTo(before);
+    }
+
+    @Test
+    @DisplayName("조회: groupB(창·기준·후보 + 출처·메뉴 설명·선정)와 신호 풀·g — 위쪽 selected는 그룹 A 선정")
+    @SuppressWarnings("unchecked")
+    void trackRecordResponseHasGroupBAndPool() {
+        groupBFixture();
+        service.select(AS_OF);
+
+        Map<String, Object> out = service.trackRecord(null);
+
+        assertThat((List<String>) out.get("selected")).containsExactly(A, B);
+        Map<String, Object> groupB = (Map<String, Object>) out.get("groupB");
+        assertThat(groupB).containsEntry("computed", true).containsEntry("windowYears", 2)
+                .containsEntry("minPeriods", 6).containsEntry("metric", "CAGR").containsEntry("topN", 4);
+        assertThat((Map<String, Object>) groupB.get("criteria")).containsEntry("windowYears", 2)
+                .containsEntry("minPeriods", 6).containsEntry("minCoverage", 0.5).containsEntry("avgCoverage", 0.7);
+        assertThat((List<String>) groupB.get("selected")).containsExactly(DUQ, FIS, BRK, BW);
+        List<Map<String, Object>> candidates = (List<Map<String, Object>>) groupB.get("candidates");
+        assertThat(candidates).hasSize(12);
+        assertThat(candidates).extracting(c -> c.get("cik")).as("순위 순, 나머지는 메뉴 순")
+                .startsWith(DUQ, FIS, BRK, BW, "0001608046", "0001374170");
+        assertThat(candidates.get(0)).containsEntry("source", "q30").containsEntry("selected", true)
+                .containsEntry("rank", 1).containsEntry("collecting", false)
+                .containsEntry("name", "🇺🇸 듀케인 패밀리 오피스 (Duquesne Family Office)")
+                .containsEntry("desc", "스탠리 드러켄밀러, 테크 트렌드 포착형 매크로 운용");
+        assertThat(candidates.get(1)).containsEntry("source", "q8").containsEntry("storedQuarters", null)
+                .containsEntry("complete", false);
+        assertThat(candidates.get(0).get("periods")).asList().hasSize(9);
+
+        List<Map<String, Object>> pool = (List<Map<String, Object>>) out.get("pool");
+        assertThat(pool).extracting(m -> m.get("cik")).containsExactly(A, B, DUQ, FIS, BRK, BW);
+        assertThat(pool.get(2)).containsEntry("groups", List.of("B")).containsEntry("rankA", null)
+                .containsEntry("rankB", 1);
+        assertThat(out.get("groupWeightA")).isEqualTo(0.5);
+        Map<String, Object> history = ((List<Map<String, Object>>) out.get("selectionHistory")).get(0);
+        assertThat((List<String>) history.get("groupA")).containsExactly(A, B);
+        assertThat((List<String>) history.get("groupB")).containsExactly(DUQ, FIS, BRK, BW);
+        assertThat((List<String>) history.get("selectedCiks")).containsExactly(A, B, DUQ, FIS, BRK, BW);
+    }
+
+    @Test
+    @DisplayName("blend 설정: 범위 밖·없는 키는 그 키만 기본값으로 읽고 blend.… 이름으로 남긴다(D27 전 행은 blend 통째로)")
+    void blendSettingsFallbacks() {
+        ObjectNode body = MAPPER.createObjectNode();
+        ObjectNode blend = body.putObject("blend");
+        blend.putObject("groupB").put("topN", 13).put("windowYears", 2).put("minPeriods", 4.5);
+        blend.put("groupWeightA", 0.7);
+        blend.put("convictionCapPct", 0.5);
+        blend.put("allocation", "equal");
+        blend.put("minTargetPct", 11);
+
+        PaperSettings.Blend parsed = PaperSettings.Blend.from(body);
+
+        assertThat(parsed.groupBTopN()).isEqualTo(4);
+        assertThat(parsed.groupBWindowYears()).isEqualTo(2);
+        assertThat(parsed.groupBMinPeriods()).isEqualTo(6);
+        assertThat(parsed.groupWeightA()).isEqualTo(0.7);
+        assertThat(parsed.convictionCapPct()).isEqualTo(10);
+        assertThat(parsed.allocation()).isEqualTo(com.macrodash.analytics.Signal13F.Mode.EQUAL);
+        assertThat(parsed.minTargetPct()).isEqualTo(1.0);
+        assertThat(parsed.fallbacks()).containsExactly("blend.groupB.topN", "blend.groupB.minPeriods",
+                "blend.convictionCapPct", "blend.minTargetPct");
+
+        PaperSettings.Blend old = PaperSettings.Blend.from(MAPPER.createObjectNode().put("minHolders", 2));
+        assertThat(old.fallbacks()).containsExactly("blend");
+        assertThat(old.allocation()).isEqualTo(com.macrodash.analytics.Signal13F.Mode.CONVICTION);
+        assertThat(PaperSettings.Blend.from(PaperFixtures.settings(store).defaultsJson()))
+                .isEqualTo(PaperSettings.Blend.defaults());
+        assertThat(PaperSettings.from(PaperFixtures.settings(store).defaultsJson()).fallbacks())
+                .as("blend 기본값은 장부 경고에 섞지 않음").isEmpty();
     }
 
     /** 저장본 고정본 → StoreRepository.readQuarterHoldings가 돌려줄 줄(보유 없는 분기도 한 줄). */

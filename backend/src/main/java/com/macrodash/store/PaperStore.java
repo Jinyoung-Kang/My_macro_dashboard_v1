@@ -17,6 +17,9 @@ import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -103,13 +106,58 @@ public class PaperStore {
      * 기준일 하나·기관 하나의 13F 트랙레코드(설계 §4-0 ④, {@code paper_track_record}). 수치는 {@code TrackRecord13F.Result}
      * 그대로(%는 ×100, 커버리지는 0~1 비율)이고 표본이 없으면 null입니다. {@code rank}는 자격 있는 기관만(1부터), 없으면 null.
      * {@code periods}는 구간 목록 JSON 배열(null이면 {@code []}), {@code computedAt}은 넣을 때 null이면 DB가 지금으로 채웁니다.
+     *
+     * <p>{@code groupCode}(V9, D27)는 어느 기관 그룹의 계산인가 — {@link #GROUP_A}(후보 27곳, 7년 창)·{@link #GROUP_B}(기존 13F
+     * 메뉴 12곳, 2년 창). 두 그룹에 모두 있는 기관은 창이 달라 수치가 다르므로 같은 기준일에 행이 둘입니다. 그룹을 받지 않는
+     * 생성자·메서드는 그룹 A입니다(단계 1b 호출 그대로). {@code dataSource}(V9)는 계산에 쓴 13F 저장본({@link #SOURCE_Q30}·
+     * {@link #SOURCE_Q8}), 모르면 null(단계 1b 행).
      */
     public record TrackRecordRow(LocalDate asOfDate, String cik, int windowYears, String metric, int periodsUsed,
                                  int periodsTotal, LocalDate firstFilingDate, LocalDate lastFilingDate,
                                  Double cumReturnPct, Double cagrPct, Double volPct, Double mddPct, Double sharpe,
                                  Double excessVsSpyPct, Double coverageMin, Double coverageAvg, boolean eligible,
                                  String ineligibleReason, Integer rank, JsonNode periods, int settingsVersion,
-                                 Instant computedAt) {
+                                 Instant computedAt, String groupCode, String dataSource) {
+
+        /** 후보 27곳·7년 창(R1 그룹 A). DB CHECK와 같은 문자열. */
+        public static final String GROUP_A = "A";
+        /** 기존 13F 메뉴 12곳·2년 창(R1 그룹 B, D27). */
+        public static final String GROUP_B = "B";
+        /** 후보 수집 저장본 {@code sec.13f.{cik}.q30}(CUSIP 매핑 티커). DB CHECK와 같은 문자열. */
+        public static final String SOURCE_Q30 = "q30";
+        /** 기존 13F 메뉴 저장본 {@code sec.13f.{cik}.q8}(이름 매핑 티커). */
+        public static final String SOURCE_Q8 = "q8";
+
+        public TrackRecordRow {
+            requireGroup(groupCode);
+            if (dataSource != null && !SOURCE_Q30.equals(dataSource) && !SOURCE_Q8.equals(dataSource)) {
+                throw new IllegalArgumentException("트랙레코드 출처는 q30·q8입니다: " + dataSource);
+            }
+        }
+
+        /** 그룹 A 행(단계 1b 모양 — 출처 모름). */
+        public TrackRecordRow(LocalDate asOfDate, String cik, int windowYears, String metric, int periodsUsed,
+                              int periodsTotal, LocalDate firstFilingDate, LocalDate lastFilingDate,
+                              Double cumReturnPct, Double cagrPct, Double volPct, Double mddPct, Double sharpe,
+                              Double excessVsSpyPct, Double coverageMin, Double coverageAvg, boolean eligible,
+                              String ineligibleReason, Integer rank, JsonNode periods, int settingsVersion,
+                              Instant computedAt) {
+            this(asOfDate, cik, windowYears, metric, periodsUsed, periodsTotal, firstFilingDate, lastFilingDate,
+                    cumReturnPct, cagrPct, volPct, mddPct, sharpe, excessVsSpyPct, coverageMin, coverageAvg, eligible,
+                    ineligibleReason, rank, periods, settingsVersion, computedAt, GROUP_A, null);
+        }
+
+        /**
+         * 그룹 코드 확인 — DB CHECK보다 먼저 막아, 오타 난 그룹이 "그 그룹의 행 없음"으로 조용히 읽히지 않게 합니다.
+         *
+         * @throws IllegalArgumentException A·B가 아님
+         */
+        public static String requireGroup(String groupCode) {
+            if (!GROUP_A.equals(groupCode) && !GROUP_B.equals(groupCode)) {
+                throw new IllegalArgumentException("트랙레코드 그룹은 A·B입니다: " + groupCode);
+            }
+            return groupCode;
+        }
     }
 
     /**
@@ -121,6 +169,38 @@ public class PaperStore {
         public Selection {
             selectedCiks = selectedCiks == null ? List.of() : List.copyOf(selectedCiks);
         }
+    }
+
+    /**
+     * 결정 한 건({@code paper_decisions}). (책, 기준 거래일, 종류)마다 하나입니다. 규칙 책은 {@code model}·{@code packet}·
+     * {@code usage}처럼 Claude 호출에만 있는 열이 null이고, 판단 근거는 {@code response} JSON에 있습니다.
+     * {@code decidedAt}은 넣을 때 null이면 DB가 지금으로 채웁니다.
+     */
+    public record Decision(long id, String bookCode, LocalDate asOfTradingDate, String kind, Instant decidedAt,
+                           String status, String model, Integer frameworkVersion, int settingsVersion,
+                           LocalDate selectionAsOf, Double targetExposurePct, JsonNode packet, String packetHash,
+                           String responseRaw, JsonNode response, JsonNode usage, String error, List<Long> noteIds,
+                           boolean pricesFinal, Long latencyMs, int retryCount) {
+        public Decision {
+            noteIds = noteIds == null ? null : List.copyOf(noteIds);
+        }
+    }
+
+    /**
+     * 결정 목록의 한 줄 — 큰 JSON(패킷·응답)은 읽지 않고 응답의 {@code summary}만, 그 결정이 낸 주문 수·거절 수와 함께.
+     * 하루 한 건씩 쌓이는 표를 50건씩 보여 주는데 응답 JSON에는 신호 이벤트 수백 개가 들어 있을 수 있습니다.
+     */
+    public record DecisionSummary(long id, String bookCode, LocalDate asOfTradingDate, String kind, Instant decidedAt,
+                                  String status, String model, Integer frameworkVersion, int settingsVersion,
+                                  LocalDate selectionAsOf, Double targetExposurePct, String summary, String error,
+                                  boolean pricesFinal, int orderCount, int rejectedCount) {
+    }
+
+    /**
+     * 거래일 하나의 게이트 지표({@code paper_gate_log}, 참고 — 구속하지 않음). {@code inputs}·{@code streaks}는 JSON 그대로이고
+     * {@code createdAt}은 넣을 때 쓰지 않고 DB가 채웁니다.
+     */
+    public record GateRow(LocalDate tradingDate, JsonNode inputs, String level, JsonNode streaks, Instant createdAt) {
     }
 
     private static final String BOOK_COLUMNS = "code, kind, label, initial_cash, started_on, status, created_at";
@@ -141,9 +221,22 @@ public class PaperStore {
     private static final String TRACK_RECORD_COLUMNS = "as_of_date, cik, window_years, metric, periods_used, "
             + "periods_total, first_filing_date, last_filing_date, cum_return_pct, cagr_pct, vol_pct, mdd_pct, sharpe, "
             + "excess_vs_spy_pct, coverage_min, coverage_avg, eligible, ineligible_reason, rank, periods::text AS periods, "
-            + "settings_version, computed_at";
+            + "settings_version, computed_at, group_code, data_source";
     private static final String SELECTION_COLUMNS = "as_of_date, selected_ciks, ranking::text AS ranking, "
             + "settings_version, created_at";
+    private static final String DECISION_COLUMNS = "id, book_code, as_of_trading_date, kind, decided_at, status, model, "
+            + "framework_version, settings_version, selection_as_of, target_exposure_pct, packet::text AS packet, "
+            + "packet_hash, response_raw, response::text AS response, usage::text AS usage, error, note_ids, "
+            + "prices_final, latency_ms, retry_count";
+    /** 목록용 — 응답 JSON은 요약 한 칸만 꺼내고, 주문 수·거절 수는 주문 표에서 셉니다(주문은 결정 번호로 찾음). */
+    private static final String DECISION_SUMMARY_COLUMNS = "d.id, d.book_code, d.as_of_trading_date, d.kind, "
+            + "d.decided_at, d.status, d.model, d.framework_version, d.settings_version, d.selection_as_of, "
+            + "d.target_exposure_pct, d.response->>'summary' AS summary, d.error, d.prices_final, "
+            + "(SELECT COUNT(*) FROM paper_orders o WHERE o.decision_id = d.id) AS order_count, "
+            + "(SELECT COUNT(*) FROM paper_orders o WHERE o.decision_id = d.id AND o.status = 'REJECTED') "
+            + "AS rejected_count";
+    private static final String GATE_COLUMNS = "trading_date, inputs::text AS inputs, level, streaks::text AS streaks, "
+            + "created_at";
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -158,9 +251,13 @@ public class PaperStore {
         this.transactions = new TransactionTemplate(new DataSourceTransactionManager(jdbc.getDataSource()));
     }
 
-    /** 테이블이 있는가. 수집기가 아직 V8을 적용하지 않았으면 false입니다(V8이 마지막에 만드는 테이블로 봄). */
+    /**
+     * 테이블이 있는가. 수집기가 아직 V8·V9를 적용하지 않았으면 false입니다 — V8이 마지막에 만드는 테이블과 V9가 마지막에 더하는
+     * 열({@code paper_track_record.data_source})로 봅니다. V8만 있는 DB(백엔드만 새로 띄운 경우, QA-016)에서 참이면 트랙레코드
+     * 읽기·쓰기가 {@code group_code}·{@code data_source} 열과 새 기본키에서 SQL 오류(500)를 냅니다.
+     */
     public boolean ready() {
-        return schema.tableExists("paper_api_usage");
+        return schema.tableExists("paper_api_usage") && schema.columnExists("paper_track_record", "data_source");
     }
 
     /**
@@ -373,6 +470,12 @@ public class PaperStore {
     public List<Order> recentOrders(String code, int limit) {
         return jdbc.query("SELECT " + ORDER_COLUMNS + " FROM paper_orders WHERE book_code = ? "
                 + "ORDER BY created_at DESC, id DESC LIMIT ?", orderMapper(), code, limit);
+    }
+
+    /** 결정 하나가 낸 주문, 낸 순서(id 순). 없으면 빈 목록. */
+    public List<Order> ordersByDecision(long decisionId) {
+        return jdbc.query("SELECT " + ORDER_COLUMNS + " FROM paper_orders WHERE decision_id = ? ORDER BY id",
+                orderMapper(), decisionId);
     }
 
     public void markOrderFilled(long id, Instant filledAt) {
@@ -600,18 +703,19 @@ public class PaperStore {
 
     // ------------------------------------------------------------------ 트랙레코드·선정
     /**
-     * 트랙레코드 한 행을 넣거나 통째로 바꿉니다({@code (as_of_date, cik)} 충돌 시 갱신 — 같은 기준일의 수동 재계산이 덮어씀).
-     * 수치가 NaN·무한대이면 저장하지 않고 {@link IllegalArgumentException}(DOUBLE PRECISION은 NaN을 받아 주므로 여기서 막음).
+     * 트랙레코드 한 행을 넣거나 통째로 바꿉니다({@code (as_of_date, group_code, cik)} 충돌 시 갱신 — 같은 기준일의 수동
+     * 재계산이 덮어씀, V9). 수치가 NaN·무한대이면 저장하지 않고 {@link IllegalArgumentException}(DOUBLE PRECISION은 NaN을 받아
+     * 주므로 여기서 막음).
      */
     public void upsertTrackRecord(TrackRecordRow r) {
         String periodsJson = r.periods() == null ? null : mapper.writeValueAsString(r.periods());
         jdbc.update("INSERT INTO paper_track_record (as_of_date, cik, window_years, metric, periods_used, periods_total, "
                         + "first_filing_date, last_filing_date, cum_return_pct, cagr_pct, vol_pct, mdd_pct, sharpe, "
                         + "excess_vs_spy_pct, coverage_min, coverage_avg, eligible, ineligible_reason, rank, periods, "
-                        + "settings_version, computed_at) "
+                        + "settings_version, computed_at, group_code, data_source) "
                         + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-                        + "COALESCE(CAST(? AS jsonb), '[]'::jsonb), ?, COALESCE(CAST(? AS timestamptz), now())) "
-                        + "ON CONFLICT (as_of_date, cik) DO UPDATE SET window_years = EXCLUDED.window_years, "
+                        + "COALESCE(CAST(? AS jsonb), '[]'::jsonb), ?, COALESCE(CAST(? AS timestamptz), now()), ?, ?) "
+                        + "ON CONFLICT (as_of_date, group_code, cik) DO UPDATE SET window_years = EXCLUDED.window_years, "
                         + "metric = EXCLUDED.metric, periods_used = EXCLUDED.periods_used, "
                         + "periods_total = EXCLUDED.periods_total, first_filing_date = EXCLUDED.first_filing_date, "
                         + "last_filing_date = EXCLUDED.last_filing_date, cum_return_pct = EXCLUDED.cum_return_pct, "
@@ -620,7 +724,8 @@ public class PaperStore {
                         + "coverage_min = EXCLUDED.coverage_min, coverage_avg = EXCLUDED.coverage_avg, "
                         + "eligible = EXCLUDED.eligible, ineligible_reason = EXCLUDED.ineligible_reason, "
                         + "rank = EXCLUDED.rank, periods = EXCLUDED.periods, "
-                        + "settings_version = EXCLUDED.settings_version, computed_at = EXCLUDED.computed_at",
+                        + "settings_version = EXCLUDED.settings_version, computed_at = EXCLUDED.computed_at, "
+                        + "data_source = EXCLUDED.data_source",
                 ps -> {
                     setDate(ps, 1, r.asOfDate());
                     ps.setString(2, r.cik());
@@ -644,23 +749,41 @@ public class PaperStore {
                     ps.setString(20, periodsJson);
                     ps.setInt(21, r.settingsVersion());
                     setInstant(ps, 22, r.computedAt());
+                    ps.setString(23, r.groupCode());
+                    ps.setString(24, r.dataSource());
                 });
     }
 
-    /**
-     * 그 기준일의 트랙레코드를 모두 지웁니다 — 다시 계산할 때 후보 목록이 줄었으면 빠진 기관의 옛 행이 남지 않게,
-     * {@link #atomically} 안에서 지우고 새로 넣습니다.
-     *
-     * @return 지운 행 수
-     */
+    /** {@link #deleteTrackRecords(LocalDate, String)} — 그룹 A. */
     public int deleteTrackRecords(LocalDate asOf) {
-        return jdbc.update("DELETE FROM paper_track_record WHERE as_of_date = ?", Date.valueOf(asOf));
+        return deleteTrackRecords(asOf, TrackRecordRow.GROUP_A);
     }
 
-    /** 그 기준일의 트랙레코드, 순위 순(자격 없는 기관은 뒤, CIK 순). 계산한 적 없으면 빈 목록. */
+    /**
+     * 그 기준일·그 그룹의 트랙레코드를 모두 지웁니다 — 다시 계산할 때 후보 목록이 줄었으면 빠진 기관의 옛 행이 남지 않게,
+     * {@link #atomically} 안에서 지우고 새로 넣습니다. 다른 그룹의 행은 그대로입니다.
+     *
+     * @return 지운 행 수
+     * @throws IllegalArgumentException 그룹이 A·B가 아님
+     */
+    public int deleteTrackRecords(LocalDate asOf, String groupCode) {
+        return jdbc.update("DELETE FROM paper_track_record WHERE as_of_date = ? AND group_code = ?", Date.valueOf(asOf),
+                TrackRecordRow.requireGroup(groupCode));
+    }
+
+    /** {@link #trackRecords(LocalDate, String)} — 그룹 A. */
     public List<TrackRecordRow> trackRecords(LocalDate asOf) {
+        return trackRecords(asOf, TrackRecordRow.GROUP_A);
+    }
+
+    /**
+     * 그 기준일·그 그룹의 트랙레코드, 순위 순(자격 없는 기관은 뒤, CIK 순). 계산한 적 없으면 빈 목록.
+     *
+     * @throws IllegalArgumentException 그룹이 A·B가 아님
+     */
+    public List<TrackRecordRow> trackRecords(LocalDate asOf, String groupCode) {
         return jdbc.query("SELECT " + TRACK_RECORD_COLUMNS + " FROM paper_track_record WHERE as_of_date = ? "
-                        + "ORDER BY rank NULLS LAST, cik",
+                        + "AND group_code = ? ORDER BY rank NULLS LAST, cik",
                 (rs, rowNum) -> new TrackRecordRow(date(rs, "as_of_date"), rs.getString("cik"),
                         rs.getInt("window_years"), rs.getString("metric"), rs.getInt("periods_used"),
                         rs.getInt("periods_total"), date(rs, "first_filing_date"), date(rs, "last_filing_date"),
@@ -668,14 +791,24 @@ public class PaperStore {
                         stat(rs, "sharpe"), stat(rs, "excess_vs_spy_pct"), stat(rs, "coverage_min"),
                         stat(rs, "coverage_avg"), rs.getBoolean("eligible"), rs.getString("ineligible_reason"),
                         rs.getObject("rank", Integer.class), json(rs, "periods"), rs.getInt("settings_version"),
-                        instant(rs, "computed_at")),
-                Date.valueOf(asOf));
+                        instant(rs, "computed_at"), rs.getString("group_code"), rs.getString("data_source")),
+                Date.valueOf(asOf), TrackRecordRow.requireGroup(groupCode));
     }
 
-    /** 트랙레코드를 계산한 가장 늦은 기준일. 한 번도 없으면 empty. */
+    /** {@link #latestTrackRecordAsOf(String)} — 그룹 A. */
     public Optional<LocalDate> latestTrackRecordAsOf() {
-        List<LocalDate> rows = jdbc.query("SELECT max(as_of_date) AS as_of_date FROM paper_track_record",
-                (rs, rowNum) -> date(rs, "as_of_date"));
+        return latestTrackRecordAsOf(TrackRecordRow.GROUP_A);
+    }
+
+    /**
+     * 그 그룹의 트랙레코드를 계산한 가장 늦은 기준일. 한 번도 없으면 empty.
+     *
+     * @throws IllegalArgumentException 그룹이 A·B가 아님
+     */
+    public Optional<LocalDate> latestTrackRecordAsOf(String groupCode) {
+        List<LocalDate> rows = jdbc.query("SELECT max(as_of_date) AS as_of_date FROM paper_track_record "
+                        + "WHERE group_code = ?", (rs, rowNum) -> date(rs, "as_of_date"),
+                TrackRecordRow.requireGroup(groupCode));
         return rows.isEmpty() ? Optional.empty() : Optional.ofNullable(rows.get(0));
     }
 
@@ -708,6 +841,151 @@ public class PaperStore {
     public Optional<Selection> selectionOnOrBefore(LocalDate date) {
         return jdbc.query("SELECT " + SELECTION_COLUMNS + " FROM paper_selection_log WHERE as_of_date <= ? "
                 + "ORDER BY as_of_date DESC LIMIT 1", selectionMapper(), Date.valueOf(date)).stream().findFirst();
+    }
+
+    // ------------------------------------------------------------------ 결정
+    /**
+     * 결정을 (책, 기준 거래일, 종류)에 아직 없을 때만 넣습니다({@code ON CONFLICT DO NOTHING}) — 결정 작업이 같은 거래일에
+     * 두 번 돌아도 결정은 한 건입니다(수용 기준). {@code id}는 무시하고 DB가 매기며, {@code decidedAt}이 null이면 지금입니다.
+     *
+     * @return 이번에 넣었으면 새 번호, 이미 있었으면 empty(기존 결정은 그대로 — {@link #decisionFor}로 읽음)
+     */
+    public Optional<Long> insertDecisionIfAbsent(Decision d) {
+        String packet = d.packet() == null ? null : mapper.writeValueAsString(d.packet());
+        String response = d.response() == null ? null : mapper.writeValueAsString(d.response());
+        String usage = d.usage() == null ? null : mapper.writeValueAsString(d.usage());
+        List<Long> ids = jdbc.query("INSERT INTO paper_decisions (book_code, as_of_trading_date, kind, decided_at, status, "
+                        + "model, framework_version, settings_version, selection_as_of, target_exposure_pct, packet, "
+                        + "packet_hash, response_raw, response, usage, error, note_ids, prices_final, latency_ms, "
+                        + "retry_count) VALUES (?, ?, ?, COALESCE(CAST(? AS timestamptz), now()), ?, ?, ?, ?, ?, ?, "
+                        + "CAST(? AS jsonb), ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?, ?, ?, ?) "
+                        + "ON CONFLICT (book_code, as_of_trading_date, kind) DO NOTHING RETURNING id",
+                ps -> {
+                    ps.setString(1, d.bookCode());
+                    setDate(ps, 2, d.asOfTradingDate());
+                    ps.setString(3, d.kind());
+                    setInstant(ps, 4, d.decidedAt());
+                    ps.setString(5, d.status());
+                    ps.setString(6, d.model());
+                    setInteger(ps, 7, d.frameworkVersion());
+                    ps.setInt(8, d.settingsVersion());
+                    setDate(ps, 9, d.selectionAsOf());
+                    setMoney(ps, 10, d.targetExposurePct(), "target_exposure_pct");
+                    ps.setString(11, packet);
+                    ps.setString(12, d.packetHash());
+                    ps.setString(13, d.responseRaw());
+                    ps.setString(14, response);
+                    ps.setString(15, usage);
+                    ps.setString(16, d.error());
+                    if (d.noteIds() == null) {
+                        ps.setNull(17, Types.ARRAY);
+                    } else {
+                        ps.setArray(17, ps.getConnection().createArrayOf("bigint", d.noteIds().toArray()));
+                    }
+                    ps.setBoolean(18, d.pricesFinal());
+                    setLong(ps, 19, d.latencyMs());
+                    ps.setInt(20, d.retryCount());
+                },
+                (rs, rowNum) -> rs.getLong("id"));
+        return ids.stream().findFirst();
+    }
+
+    public Optional<Decision> decision(long id) {
+        return jdbc.query("SELECT " + DECISION_COLUMNS + " FROM paper_decisions WHERE id = ?", decisionMapper(), id)
+                .stream().findFirst();
+    }
+
+    /** 그 (책, 기준 거래일, 종류)의 결정. 없으면 empty. */
+    public Optional<Decision> decisionFor(String code, LocalDate tradingDate, String kind) {
+        return jdbc.query("SELECT " + DECISION_COLUMNS + " FROM paper_decisions "
+                        + "WHERE book_code = ? AND as_of_trading_date = ? AND kind = ?", decisionMapper(), code,
+                Date.valueOf(tradingDate), kind).stream().findFirst();
+    }
+
+    /**
+     * 한 책에서 그 종류들의 결정 중 그 선정(기준일 {@code selection_as_of})으로 낸 것이 있나 — 결정 작업이 "이 분기 재선정일 r의
+     * 선정으로 매수 결정(REBALANCE·INITIAL)을 냈나"를 봅니다. 날짜가 아니라 선정으로 보는 것은, r에 선정을 건너뛰면 그날
+     * REBALANCE가 지난 선정으로(매수 없이) 남기 때문입니다. 종류가 비었거나 선정 기준일이 null이면 false.
+     */
+    public boolean hasDecisionWithSelection(String code, Collection<String> kinds, LocalDate selectionAsOf) {
+        if (kinds == null || kinds.isEmpty() || selectionAsOf == null) {
+            return false;
+        }
+        List<Object> args = new ArrayList<>();
+        args.add(code);
+        args.add(Date.valueOf(selectionAsOf));
+        args.addAll(kinds);
+        String marks = String.join(", ", Collections.nCopies(kinds.size(), "?"));
+        Boolean found = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM paper_decisions WHERE book_code = ? "
+                + "AND selection_as_of = ? AND kind IN (" + marks + "))", Boolean.class, args.toArray());
+        return Boolean.TRUE.equals(found);
+    }
+
+    /** 한 책의 최근 결정 {@code limit}건 — 기준 거래일 최근 순(같은 날이면 나중에 낸 것 먼저). */
+    public List<DecisionSummary> decisions(String code, int limit) {
+        return jdbc.query("SELECT " + DECISION_SUMMARY_COLUMNS + " FROM paper_decisions d WHERE d.book_code = ? "
+                        + "ORDER BY d.as_of_trading_date DESC, d.decided_at DESC, d.id DESC LIMIT ?",
+                (rs, rowNum) -> new DecisionSummary(rs.getLong("id"), rs.getString("book_code"),
+                        date(rs, "as_of_trading_date"), rs.getString("kind"), instant(rs, "decided_at"),
+                        rs.getString("status"), rs.getString("model"), rs.getObject("framework_version", Integer.class),
+                        rs.getInt("settings_version"), date(rs, "selection_as_of"),
+                        nullableDouble(rs, "target_exposure_pct"), rs.getString("summary"), rs.getString("error"),
+                        rs.getBoolean("prices_final"), rs.getInt("order_count"), rs.getInt("rejected_count")),
+                code, limit);
+    }
+
+    /**
+     * 결정의 상태·응답·오류를 바꿉니다(응답이 null이면 그대로 둠). 결정 행을 먼저 넣어 번호를 받고 그 번호로 주문·체결을 낸 뒤,
+     * 체결 결과(사후 체결의 체결가·건너뛴 종목)를 같은 기록에 덧붙일 때 씁니다.
+     */
+    public void updateDecision(long id, String status, JsonNode response, String error) {
+        String json = response == null ? null : mapper.writeValueAsString(response);
+        jdbc.update("UPDATE paper_decisions SET status = ?, response = COALESCE(CAST(? AS jsonb), response), error = ? "
+                + "WHERE id = ?", ps -> {
+                    ps.setString(1, status);
+                    ps.setString(2, json);
+                    ps.setString(3, error);
+                    ps.setLong(4, id);
+                });
+    }
+
+    // ------------------------------------------------------------------ 게이트 지표
+    /**
+     * 그 거래일의 게이트 지표가 아직 없을 때만 넣습니다({@code ON CONFLICT DO NOTHING}) — 거래일마다 한 번 계산하고(연속 일수가
+     * 두 번 세지지 않게), 같은 날 다시 돌아도 처음 값이 남습니다.
+     *
+     * @return 이번에 넣었으면 true
+     */
+    public boolean insertGateIfAbsent(GateRow g) {
+        String inputs = mapper.writeValueAsString(g.inputs());
+        String streaks = g.streaks() == null ? null : mapper.writeValueAsString(g.streaks());
+        return jdbc.update("INSERT INTO paper_gate_log (trading_date, inputs, level, streaks) "
+                        + "VALUES (?, CAST(? AS jsonb), ?, COALESCE(CAST(? AS jsonb), '{}'::jsonb)) "
+                        + "ON CONFLICT (trading_date) DO NOTHING",
+                ps -> {
+                    setDate(ps, 1, g.tradingDate());
+                    ps.setString(2, inputs);
+                    ps.setString(3, g.level());
+                    ps.setString(4, streaks);
+                }) == 1;
+    }
+
+    /** 그 거래일의 게이트 지표. 없으면 empty. */
+    public Optional<GateRow> gate(LocalDate tradingDate) {
+        return jdbc.query("SELECT " + GATE_COLUMNS + " FROM paper_gate_log WHERE trading_date = ?", gateMapper(),
+                Date.valueOf(tradingDate)).stream().findFirst();
+    }
+
+    /** 그 거래일보다 앞선 가장 최근 게이트 지표(연속 일수를 이어 셀 직전 기록). 없으면 empty. */
+    public Optional<GateRow> latestGateBefore(LocalDate tradingDate) {
+        return jdbc.query("SELECT " + GATE_COLUMNS + " FROM paper_gate_log WHERE trading_date < ? "
+                + "ORDER BY trading_date DESC LIMIT 1", gateMapper(), Date.valueOf(tradingDate)).stream().findFirst();
+    }
+
+    /** 최근 게이트 지표 {@code limit}건, 최근 거래일 순. */
+    public List<GateRow> recentGate(int limit) {
+        return jdbc.query("SELECT " + GATE_COLUMNS + " FROM paper_gate_log ORDER BY trading_date DESC LIMIT ?",
+                gateMapper(), limit);
     }
 
     // ------------------------------------------------------------------ 출발일 종가
@@ -791,6 +1069,31 @@ public class PaperStore {
             return new Selection(date(rs, "as_of_date"), ciks, json(rs, "ranking"), rs.getInt("settings_version"),
                     instant(rs, "created_at"));
         };
+    }
+
+    private RowMapper<Decision> decisionMapper() {
+        return (rs, rowNum) -> {
+            java.sql.Array array = rs.getArray("note_ids");
+            List<Long> noteIds = null;
+            if (array != null) {
+                noteIds = new java.util.ArrayList<>();
+                for (Object id : (Object[]) array.getArray()) {
+                    noteIds.add(((Number) id).longValue());
+                }
+            }
+            return new Decision(rs.getLong("id"), rs.getString("book_code"), date(rs, "as_of_trading_date"),
+                    rs.getString("kind"), instant(rs, "decided_at"), rs.getString("status"), rs.getString("model"),
+                    rs.getObject("framework_version", Integer.class), rs.getInt("settings_version"),
+                    date(rs, "selection_as_of"), nullableDouble(rs, "target_exposure_pct"), json(rs, "packet"),
+                    rs.getString("packet_hash"), rs.getString("response_raw"), json(rs, "response"),
+                    json(rs, "usage"), rs.getString("error"), noteIds, rs.getBoolean("prices_final"),
+                    rs.getObject("latency_ms", Long.class), rs.getInt("retry_count"));
+        };
+    }
+
+    private RowMapper<GateRow> gateMapper() {
+        return (rs, rowNum) -> new GateRow(date(rs, "trading_date"), json(rs, "inputs"), rs.getString("level"),
+                json(rs, "streaks"), instant(rs, "created_at"));
     }
 
     private static RowMapper<NavRow> navMapper() {

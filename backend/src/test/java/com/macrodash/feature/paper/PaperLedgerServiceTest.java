@@ -280,6 +280,110 @@ class PaperLedgerServiceTest {
             assertThat(order(store, id).status()).isEqualTo("EXPIRED");
             assertThat(fills()).isEmpty();
         }
+
+        @Test
+        @DisplayName("현금성(SHY) 매수는 먼저 만들었어도 같은 관측치의 종목 매수 뒤에 체결한다 — 남는 현금 주문이 신호 종목의 현금을 뺏지 않게")
+        void cashLikeBuysFillLast() {
+            activeBook(store, BOOK, PaperBooks.KIND_CLAUDE, 10_000, null);
+            long shy = pending(store, BOOK, "SHY", "BUY", null, 60.0, null, "NEXT_OBSERVATION", FRI, SAT);
+            long aaa = pending(store, BOOK, "AAA", "BUY", null, 60.0, null, "NEXT_OBSERVATION", FRI, SAT.plusSeconds(1));
+
+            ledger.process(quotes(MON_INTRADAY, bar("AAA", FRI, 100, MON, 100), bar("SHY", FRI, 80, MON, 80)));
+
+            // AAA: 6,000 / 100.05 → 59주 = 5,902.95 → 현금 4,097.05. SHY: 순자산 9,997.05 × 60% / 80.04 = 74주를 원하지만
+            // 현금으로는 51주(4,082.04)뿐 — SHY가 먼저였다면 AAA가 40주로 줄었을 것입니다.
+            assertThat(fills()).extracting(Fill::ticker, Fill::qty).containsExactly(
+                    org.assertj.core.groups.Tuple.tuple("AAA", 59), org.assertj.core.groups.Tuple.tuple("SHY", 51));
+            assertThat(order(store, aaa).reason()).as("종목 매수는 줄지 않음").isNull();
+            assertThat(order(store, shy).reason().path("cashLimited").asBoolean()).isTrue();
+            assertThat(store.states.get(BOOK).cash()).isEqualTo(15.01);
+        }
+    }
+
+    @Nested
+    @DisplayName("사후 체결·미확정 순자산 줄(결정 작업이 씀)")
+    class BackfillAndSettle {
+
+        private final PaperMarketData.SourcedClose aaa = new PaperMarketData.SourcedClose(100, "equity_close");
+
+        @Test
+        @DisplayName("사후 체결: 매도 → 종목 매수 → 현금성 매수, 기준 순자산 × 비중으로 수량, 출발일 마감 관측·is_backfill, 끝나면 운용·확정 순자산")
+        void backfillOrdersSellsBuysThenCashLike() {
+            store.books.put(PaperBooks.RULES, new com.macrodash.store.PaperStore.Book(PaperBooks.RULES,
+                    PaperBooks.KIND_RULES, "규칙 책", 100_000, null, PaperBooks.NOT_STARTED, FRI_CLOSE));
+            store.states.put(PaperBooks.RULES, new BookState(PaperBooks.RULES, 10_000, 10_000, 0, 0, MON_FINAL,
+                    MON_FINAL, null, null));
+            position(store, PaperBooks.RULES, "BBB", 10, 40, 40, 50.0, FRI, 50);
+            var legs = List.of(
+                    new PaperLedgerService.BackfillLeg("SHY", "BUY", 30.0, null, null),
+                    new PaperLedgerService.BackfillLeg("AAA", "BUY", 50.0, null, null),
+                    new PaperLedgerService.BackfillLeg("ZZZ", "BUY", 5.0, null, null),
+                    new PaperLedgerService.BackfillLeg("BBB", "SELL", null, null, null));
+            var closes = Map.of("AAA", aaa, "SHY", new PaperMarketData.SourcedClose(80, "equity_close"),
+                    "BBB", new PaperMarketData.SourcedClose(50, "paper.quotes"));
+
+            PaperLedgerService.BackfillResult result = ledger.backfill(new PaperLedgerService.BackfillRequest(
+                    store.books.get(PaperBooks.RULES), FRI, "RULE", 7L, 10_000, 10_000, legs, closes,
+                    PaperSettings.defaults()));
+
+            // 매도 BBB 10 × 49.975 = 499.75 → 현금 10,499.75. AAA 5,000 / 100.05 → 49주 = 4,902.45, SHY 3,000 / 80.04 → 37주.
+            assertThat(result.fills()).extracting(Fill::side, Fill::ticker, Fill::qty).containsExactly(
+                    org.assertj.core.groups.Tuple.tuple("SELL", "BBB", 10),
+                    org.assertj.core.groups.Tuple.tuple("BUY", "AAA", 49),
+                    org.assertj.core.groups.Tuple.tuple("BUY", "SHY", 37));
+            assertThat(result.skipped()).singleElement().satisfies(skip -> {
+                assertThat(skip.getKey()).isEqualTo("ZZZ");
+                assertThat(skip.getValue()).contains("종가가 없습니다");
+            });
+            assertThat(result.cash()).isEqualTo(2_635.82);
+            List<Fill> saved = store.fillsOf(PaperBooks.RULES);
+            assertThat(saved).allSatisfy(f -> {
+                assertThat(f.backfill()).isTrue();
+                assertThat(f.observedAt()).isEqualTo(FRI_CLOSE);
+                assertThat(f.observationDate()).isEqualTo(FRI);
+            });
+            assertThat(saved.get(0).priceSource()).isEqualTo("paper.quotes");
+            assertThat(store.ordersOf(PaperBooks.RULES)).allSatisfy(o -> {
+                assertThat(o.timing()).isEqualTo("BACKFILL");
+                assertThat(o.source()).isEqualTo("RULE");
+                assertThat(o.status()).isEqualTo("FILLED");
+                assertThat(o.decisionId()).isEqualTo(7L);
+                assertThat(o.asOfTradingDate()).isEqualTo(LocalDate.of(2026, 10, 22));
+                assertThat(o.createdAt()).isEqualTo(FRI_CLOSE.minusSeconds(1));
+            });
+            assertThat(store.positions(PaperBooks.RULES)).extracting(Position::ticker).containsExactly("AAA", "SHY");
+            assertThat(store.navSeries(PaperBooks.RULES)).singleElement().satisfies(row -> {
+                assertThat(row.tradingDate()).isEqualTo(FRI);
+                assertThat(row.pricesFinal()).isTrue();
+                assertThat(row.nav()).isEqualTo(2_635.82 + 49 * 100 + 37 * 80);
+            });
+            BookState state = store.states.get(PaperBooks.RULES);
+            assertThat(state.lastProcessedCollectedAt()).as("출발일 뒤 관측치를 다시 처리하게").isEqualTo(FRI_CLOSE);
+            assertThat(store.books.get(PaperBooks.RULES).status()).isEqualTo("ACTIVE");
+            assertThat(store.books.get(PaperBooks.RULES).startedOn()).isEqualTo(FRI);
+        }
+
+        @Test
+        @DisplayName("미확정 순자산 줄: 그날 줄이 없는 시작한 책에만 지금 상태를 prices_final=false로 쓰고, 있는 줄·시작 전 책·확정 관측치는 건드리지 않는다")
+        void settleNavFillsOnlyMissingRows() {
+            activeBook(store, BOOK, PaperBooks.KIND_CLAUDE, 50_000, MON_INTRADAY);
+            activeBook(store, PaperBooks.BENCH_SPY, PaperBooks.KIND_BENCHMARK, 1_000, MON_INTRADAY);
+            store.upsertNav(new com.macrodash.store.PaperStore.NavRow(PaperBooks.BENCH_SPY, MON, 99, 1, 98, 99, true));
+            store.books.put(PaperBooks.RULES, new com.macrodash.store.PaperStore.Book(PaperBooks.RULES,
+                    PaperBooks.KIND_RULES, "규칙 책", 100_000, null, PaperBooks.NOT_STARTED, FRI_CLOSE));
+
+            assertThat(ledger.settleNav(MON, true)).as("확정 줄은 관측치 처리만 씀").isEmpty();
+            assertThat(ledger.settleNav(MON, false)).containsExactly(BOOK);
+
+            assertThat(store.navSeries(BOOK)).singleElement().satisfies(row -> {
+                assertThat(row.tradingDate()).isEqualTo(MON);
+                assertThat(row.pricesFinal()).isFalse();
+                assertThat(row.nav()).isEqualTo(50_000);
+            });
+            assertThat(store.states.get(BOOK).lastNavTradingDate()).isEqualTo(MON);
+            assertThat(store.navSeries(PaperBooks.BENCH_SPY).get(0).nav()).as("있던 줄 그대로").isEqualTo(99);
+            assertThat(store.navSeries(PaperBooks.RULES)).isEmpty();
+        }
     }
 
     @Nested

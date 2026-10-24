@@ -106,7 +106,7 @@ public class PaperRiskJob {
     /** 한 번 실행(정기·수동 공통). 테스트도 부릅니다. */
     Outcome run(boolean manual) {
         if (!store.ready()) {
-            return Outcome.skipped("모의 매매 테이블이 아직 없습니다(V8 적용 전) — make up 후 다시 보세요");
+            return Outcome.skipped("모의 매매 테이블이 아직 없습니다(V8·V9 적용 전) — make up 후 다시 보세요");
         }
         Instant started = clock.instant();
         Optional<Quotes> quotes = reader.quietly(marketData::quotes);

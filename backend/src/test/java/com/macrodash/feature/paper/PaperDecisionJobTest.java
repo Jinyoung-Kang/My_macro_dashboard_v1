@@ -1,0 +1,460 @@
+package com.macrodash.feature.paper;
+
+import com.macrodash.read.StoreReader;
+import com.macrodash.store.Datasets;
+import com.macrodash.store.PaperStore.Book;
+import com.macrodash.store.PaperStore.BookState;
+import com.macrodash.store.PaperStore.Decision;
+import com.macrodash.store.PaperStore.GateRow;
+import com.macrodash.store.PaperStore.NavRow;
+import com.macrodash.store.PaperStore.Selection;
+import com.macrodash.store.Snapshot;
+import com.macrodash.support.InvalidRequestException;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Supplier;
+
+import static com.macrodash.feature.paper.PaperFixtures.FRI;
+import static com.macrodash.feature.paper.PaperFixtures.FRI_CLOSE;
+import static com.macrodash.feature.paper.PaperFixtures.MAPPER;
+import static com.macrodash.feature.paper.PaperFixtures.bar;
+import static com.macrodash.feature.paper.PaperFixtures.quotes;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * 결정 작업(설계 §6-2) — 결정 시각 전·확정 종가 기다림·기한 뒤 미확정 진행·재선정일·이미 결정함·게이트 지표·수동 실행.
+ *
+ * <p>거래일 d = 2026-10-23(금, EDT 마감 20:00Z). d 다음 날 07:30 KST = 2026-10-23T22:30Z, 12:00 KST = 2026-10-24T03:00Z.
+ * 규칙 책 결정 자체({@link RuleBookService})는 가짜로 두고, 작업이 무엇을 언제 부르는지만 봅니다.
+ */
+class PaperDecisionJobTest {
+
+    /** 금요일 장중(15:30 ET) 저장본 — 확정 종가 아님. */
+    private static final Instant FRI_INTRADAY = Instant.parse("2026-10-23T19:30:00Z");
+    /** 2026-11-17(화) = 2026-09-30 분기의 재선정일. EST라 마감 21:00Z. */
+    private static final LocalDate RESELECTION = LocalDate.of(2026, 11, 17);
+
+    private FakePaperStore store;
+    private StoreReader reader;
+    private PaperMarketData marketData;
+    private PaperSelectionService selection;
+    private RuleBookService rules;
+    private Map<String, Snapshot> snapshots;
+    private List<String> decided;
+
+    @BeforeEach
+    @SuppressWarnings("unchecked")
+    void setUp() {
+        store = new FakePaperStore();
+        snapshots = new HashMap<>();
+        reader = mock(StoreReader.class);
+        when(reader.quietly(any())).thenAnswer(invocation -> ((Supplier<Object>) invocation.getArgument(0)).get());
+        when(reader.read(anyString(), anyLong(), any())).thenAnswer(invocation ->
+                Optional.ofNullable(snapshots.get((String) invocation.getArgument(0))));
+        marketData = mock(PaperMarketData.class);
+        when(marketData.history(anyCollection(), any(), any())).thenReturn(Map.of());
+        selection = mock(PaperSelectionService.class);
+        rules = mock(RuleBookService.class);
+        decided = new ArrayList<>();
+        when(rules.decide(any(), anyString(), anyBoolean())).thenAnswer(invocation -> {
+            LocalDate d = invocation.getArgument(0);
+            String kind = invocation.getArgument(1);
+            boolean pricesFinal = invocation.getArgument(2);
+            decided.add(d + " " + kind + " " + pricesFinal);
+            return new Decision(99, PaperBooks.RULES, d, kind, store.dbNow, "NO_TRADE", null, null, 1, null, null, null,
+                    null, null, MAPPER.valueToTree(Map.of("summary", "주문 없음")), null, null, null, pricesFinal,
+                    0L, 0);
+        });
+        store.initSettingsIfAbsent(PaperFixtures.settings(store).defaultsJson());
+        // 운용 중인 규칙 책(현금만)과 시작 전 Claude 책
+        store.books.put(PaperBooks.RULES, new Book(PaperBooks.RULES, PaperBooks.KIND_RULES, "규칙 책", 100_000, FRI,
+                PaperBooks.ACTIVE, FRI_CLOSE));
+        store.states.put(PaperBooks.RULES, new BookState(PaperBooks.RULES, 100_000, 100_000, 0, 0, FRI_CLOSE,
+                FRI_CLOSE, FRI, null));
+        store.books.put(PaperBooks.CLAUDE, new Book(PaperBooks.CLAUDE, PaperBooks.KIND_CLAUDE, "Claude 재량 책", 100_000,
+                null, PaperBooks.NOT_STARTED, FRI_CLOSE));
+        store.states.put(PaperBooks.CLAUDE, new BookState(PaperBooks.CLAUDE, 100_000, 100_000, 0, 0, null, null, null,
+                null));
+        macro(4.5, 80.0, 75.0, 150.0);
+    }
+
+    private PaperDecisionJob job(Instant now) {
+        PaperSettingsService settings = PaperFixtures.settings(store);
+        return new PaperDecisionJob(store, reader, marketData,
+                new PaperLedgerService(store, marketData, settings, MAPPER), selection, rules, settings,
+                PaperFixtures.config(), MAPPER, Clock.fixed(now, ZoneOffset.UTC));
+    }
+
+    private void observed(Instant collectedAt, LocalDate barDate) {
+        when(marketData.quotes()).thenReturn(Optional.of(quotes(collectedAt,
+                bar("SPY", barDate.minusDays(1), 499, barDate, 500))));
+    }
+
+    /** 매크로 카드 저장본(us10y·brent·wti·usdjpy). null이면 그 카드는 수집 실패. 카드 시각은 10-23(금) 마감 무렵(KST). */
+    private void macro(Double us10y, Double brent, Double wti, Double usdjpy) {
+        macro("2026-10-24 05:00", Map.of(), us10y, brent, wti, usdjpy);
+    }
+
+    /**
+     * 카드 시각(KST, 수집기 표기)과 이어 쓴(isStale) 카드를 정해 둔 매크로 저장본.
+     *
+     * @param stale 키 → 이어 쓴 값의 카드 시각(그 카드만 isStale)
+     */
+    private void macro(String lastTs, Map<String, String> stale, Double us10y, Double brent, Double wti,
+                       Double usdjpy) {
+        List<Map<String, Object>> items = new ArrayList<>();
+        Object[][] cards = {{"us10y", us10y}, {"brent", brent}, {"wti", wti}, {"usdjpy", usdjpy}};
+        for (Object[] card : cards) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("key", card[0]);
+            item.put("status", card[1] == null ? "fail" : "ok");
+            item.put("price", card[1]);
+            item.put("lastTs", stale.getOrDefault((String) card[0], lastTs));
+            item.put("isStale", stale.containsKey((String) card[0]));
+            items.add(item);
+        }
+        snapshots.put(Datasets.SNAP_MACRO_COLLECTED, new Snapshot(Datasets.SNAP_MACRO_COLLECTED,
+                MAPPER.valueToTree(Map.of("categories", List.of(Map.of("id", "rates", "items", items)))), "json",
+                "ok", null, Instant.parse("2026-10-23T21:00:00Z")));
+    }
+
+    @Test
+    @DisplayName("결정 시각(다음 날 07:30 KST) 전이면 아무것도 읽지 않고 기록도 남기지 않는다")
+    void tooEarly() {
+        PaperDecisionJob.Result result = job(Instant.parse("2026-10-23T22:00:00Z")).run();
+
+        assertThat(result.outcome()).isEqualTo(PaperDecisionJob.TOO_EARLY);
+        assertThat(result.tradingDate()).isEqualTo(FRI);
+        verify(marketData, never()).quotes();
+        assertThat(store.jobRuns).isEmpty();
+        assertThat(store.gates).isEmpty();
+    }
+
+    @Test
+    @DisplayName("확정 종가 관측치가 아니면 마감 기한(12:00 KST) 전까지 기다린다 — 결정·게이트·기록 없음")
+    void pricesNotFinalBeforeDeadline() {
+        observed(FRI_INTRADAY, FRI);
+
+        PaperDecisionJob.Result result = job(Instant.parse("2026-10-23T23:00:00Z")).run();
+
+        assertThat(result.outcome()).isEqualTo(PaperDecisionJob.PRICES_NOT_FINAL);
+        assertThat(decided).isEmpty();
+        assertThat(store.gates).isEmpty();
+        assertThat(store.jobRuns).isEmpty();
+        assertThat(store.nav.getOrDefault(PaperBooks.RULES, new java.util.TreeMap<>())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("기한을 넘기면 확정 종가 없이 진행 — 그날 순자산 줄과 결정에 prices_final=false, 재선정일이 아니면 SCHEDULED")
+    void proceedsNonFinalAfterDeadline() {
+        observed(FRI_INTRADAY, FRI);
+
+        PaperDecisionJob.Result result = job(Instant.parse("2026-10-24T03:30:00Z")).run();
+
+        assertThat(result.outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(result.pricesFinal()).isFalse();
+        assertThat(decided).containsExactly("2026-10-23 SCHEDULED false");
+        verify(selection, never()).select(any());
+        NavRow row = store.navSeries(PaperBooks.RULES).get(0);
+        assertThat(row.tradingDate()).isEqualTo(FRI);
+        assertThat(row.pricesFinal()).isFalse();
+        assertThat(store.navSeries(PaperBooks.CLAUDE)).as("시작 전 책은 줄 없음").isEmpty();
+        assertThat(store.jobRuns).singleElement().satisfies(run -> {
+            assertThat(run.job()).isEqualTo("decision");
+            assertThat(run.outcome()).isEqualTo("DECIDED");
+            assertThat(run.detail().path("pricesFinal").asBoolean(true)).isFalse();
+            assertThat(run.detail().path("pastDeadline").asBoolean()).isTrue();
+            assertThat(run.detail().path("rules").path("kind").asString()).isEqualTo("SCHEDULED");
+        });
+    }
+
+    @Test
+    @DisplayName("재선정일이면 그날 기준으로 다시 선정한 뒤 규칙 책은 REBALANCE — 확정 종가면 prices_final=true")
+    void reselectionDaySelectsThenRebalances() {
+        observed(Instant.parse("2026-11-17T21:30:00Z"), RESELECTION);
+        when(selection.select(RESELECTION)).thenReturn(new PaperSelectionService.SelectionOutcome(RESELECTION, true,
+                new Selection(RESELECTION, List.of("0000000001"), null, 1, null), null, null));
+
+        PaperDecisionJob.Result result = job(Instant.parse("2026-11-17T23:00:00Z")).run();
+
+        assertThat(result.outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(result.tradingDate()).isEqualTo(RESELECTION);
+        verify(selection).select(RESELECTION);
+        assertThat(decided).containsExactly("2026-11-17 REBALANCE true");
+        JsonNode detail = store.jobRuns.get(0).detail();
+        assertThat(detail.path("reselectionDay").asBoolean()).isTrue();
+        assertThat(detail.path("selection").path("created").asBoolean()).isTrue();
+        assertThat(detail.path("navSettled").isEmpty()).as("확정 줄은 관측치 처리가 씀").isTrue();
+    }
+
+    @Test
+    @DisplayName("그날 게이트 지표와 규칙 책 정기 결정이 이미 있으면 ALREADY_DECIDED — 아무것도 다시 하지 않는다")
+    void alreadyDecided() {
+        observed(Instant.parse("2026-10-23T20:30:00Z"), FRI);
+        store.insertDecisionIfAbsent(new Decision(0, PaperBooks.RULES, FRI, "SCHEDULED", null, "NO_TRADE", null, null, 1,
+                null, null, null, null, null, null, null, null, null, true, 0L, 0));
+        store.insertGateIfAbsent(new GateRow(FRI, MAPPER.createObjectNode(), "L0", MAPPER.createObjectNode(), null));
+
+        PaperDecisionJob.Result result = job(Instant.parse("2026-10-24T00:00:00Z")).run();
+
+        assertThat(result.outcome()).isEqualTo(PaperDecisionJob.ALREADY_DECIDED);
+        assertThat(decided).isEmpty();
+        verify(marketData, never()).quotes();
+        assertThat(store.jobRuns).isEmpty();
+    }
+
+    @Test
+    @DisplayName("게이트 지표: 매크로 카드 값과 출처·시각을 남기고, 연속 일수는 바로 전 거래일 기록에서 잇는다(빠진 날이 있으면 처음부터)")
+    void gateRecordsInputsAndContinuesStreaks() {
+        observed(Instant.parse("2026-10-23T20:30:00Z"), FRI);
+        store.insertGateIfAbsent(new GateRow(LocalDate.of(2026, 10, 22), MAPPER.createObjectNode(), "L1",
+                MAPPER.valueToTree(Map.of("G1", 2, "G2", 2, "G3", 2, "G4", 2, "G5", 0)), null));
+
+        job(Instant.parse("2026-10-24T00:00:00Z")).run();
+
+        GateRow gate = store.gates.get(FRI);
+        assertThat(gate.level()).as("G2·G3·G4가 3거래일 연속").isEqualTo("L2");
+        assertThat(gate.streaks().path("G2").asInt()).isEqualTo(3);
+        assertThat(gate.streaks().path("G5").asInt()).as("USD/JPY 150 < 155").isZero();
+        assertThat(gate.inputs().path("us10y").path("value").asDouble()).isEqualTo(4.5);
+        assertThat(gate.inputs().path("us10y").path("source").asString()).isEqualTo("macro.collected");
+        assertThat(gate.inputs().path("us10y").path("lastTs").asString()).isEqualTo("2026-10-24 05:00");
+        assertThat(gate.inputs().path("conditions").path("G5").asBoolean(true)).isFalse();
+
+        // 다음 거래일(월)은 전 거래일(금) 기록에서 잇고, 화·수 기록이 빠지면 목요일은 1부터
+        macro("2026-10-27 05:00", Map.of(), null, 80.0, 75.0, 150.0);
+        observed(Instant.parse("2026-10-26T20:30:00Z"), LocalDate.of(2026, 10, 26));
+        job(Instant.parse("2026-10-27T00:00:00Z")).run();
+        GateRow monday = store.gates.get(LocalDate.of(2026, 10, 26));
+        assertThat(monday.level()).as("10년물 카드 수집 실패").isEqualTo("UNKNOWN");
+        assertThat(monday.inputs().path("us10y").path("value").isNull()).isTrue();
+        assertThat(monday.streaks().path("G1").isNull()).as("모르는 날은 null").isTrue();
+        assertThat(monday.streaks().path("G3").asInt()).isEqualTo(4);
+
+        macro("2026-10-30 05:00", Map.of(), 4.5, 80.0, 75.0, 150.0);
+        observed(Instant.parse("2026-10-29T20:30:00Z"), LocalDate.of(2026, 10, 29));
+        job(Instant.parse("2026-10-30T00:00:00Z")).run();   // 10-29(목) — 10-27·28 기록 없음
+        assertThat(store.gates.get(LocalDate.of(2026, 10, 29)).streaks().path("G3").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("이어 쓴(isStale) 값·그 거래일보다 앞선 카드 값은 연속 일수에 넣지 않는다 — 하루치 값이 매일 +1 돼 '3일 확인'이 되지 않게")
+    void staleGateInputsDoNotExtendStreaks() {
+        observed(Instant.parse("2026-10-23T20:30:00Z"), FRI);
+        store.insertGateIfAbsent(new GateRow(LocalDate.of(2026, 10, 22), MAPPER.createObjectNode(), "L1",
+                MAPPER.valueToTree(Map.of("G1", 2, "G2", 2, "G3", 2, "G4", 2, "G5", 0)), null));
+        // 10년물: 수집 실패로 월요일(10-19) 값을 이어 씀 · 브렌트: 이어 쓴 표시는 없지만 카드 시각이 목요일(10-22 ET) 마감
+        macro("2026-10-24 05:00", Map.of("us10y", "2026-10-20 05:00"), 4.70, 80.0, 75.0, 150.0);
+        snapshots.compute(Datasets.SNAP_MACRO_COLLECTED, (key, snapshot) -> {
+            tools.jackson.databind.node.ObjectNode brent = (tools.jackson.databind.node.ObjectNode)
+                    snapshot.payload().path("categories").get(0).path("items").get(1);
+            brent.put("lastTs", "2026-10-23 05:59");
+            return snapshot;
+        });
+
+        job(Instant.parse("2026-10-24T00:00:00Z")).run();
+
+        GateRow gate = store.gates.get(FRI);
+        assertThat(gate.level()).as("그날 값으로 확인되지 않은 입력이 있음").isEqualTo("UNKNOWN");
+        assertThat(gate.streaks().path("G2").isNull()).as("이어 쓴 10년물로 G2를 3으로 올리지 않음").isTrue();
+        assertThat(gate.streaks().path("G3").isNull()).as("목요일 카드 값").isTrue();
+        assertThat(gate.streaks().path("G4").asInt()).as("그날 값인 WTI는 이어 셈").isEqualTo(3);
+        JsonNode us10y = gate.inputs().path("us10y");
+        assertThat(us10y.path("value").asDouble()).as("기록에는 값 그대로").isEqualTo(4.70);
+        assertThat(us10y.path("isStale").asBoolean()).isTrue();
+        assertThat(us10y.path("counted").asBoolean(true)).isFalse();
+        assertThat(gate.inputs().path("brent").path("counted").asBoolean(true)).isFalse();
+        assertThat(gate.inputs().path("wti").path("counted").asBoolean()).isTrue();
+        assertThat(gate.inputs().path("missing").toString()).contains("us10y", "brent");
+
+        assertThat(PaperGate.observedDate("2026-10-24 05:00 (TradingView 수집 시각)")).as("KST → 미국 동부")
+                .isEqualTo(FRI);
+        assertThat(PaperGate.observedDate("2026-10-22 일봉 기준")).isEqualTo(LocalDate.of(2026, 10, 22));
+        assertThat(PaperGate.observedDate("N/A")).isNull();
+        assertThat(PaperGate.counted(new PaperGate.Input(4.5, "N/A", false), FRI)).as("시각을 못 읽으면 시각으로 빼지 않음")
+                .isTrue();
+        assertThat(PaperGate.counted(new PaperGate.Input(4.5, "2026-10-24 05:00", true), FRI))
+                .as("카드 시각이 그날이어도 이어 쓴 값이면 세지 않음").isFalse();
+    }
+
+    @Test
+    @DisplayName("재선정일 결정을 놓쳤으면 다음 결정 날에 그 재선정일(r) 기준으로 선정하고 REBALANCE — r 이후 매수 결정이 있으면 하지 않는다")
+    void missedReselectionDayCatchesUp() {
+        LocalDate wednesday = LocalDate.of(2026, 11, 18);
+        observed(Instant.parse("2026-11-18T21:30:00Z"), wednesday);
+        store.insertDecisionIfAbsent(new Decision(0, PaperBooks.RULES, FRI, "INITIAL", null, "OK", null, null, 1, FRI,
+                null, null, null, null, null, null, null, null, true, 0L, 0));
+        when(selection.select(RESELECTION)).thenReturn(new PaperSelectionService.SelectionOutcome(RESELECTION, true,
+                new Selection(RESELECTION, List.of("0000000001"), null, 1, null), null, null));
+
+        // 11-17(재선정일)의 결정 창 동안 작업이 한 번도 끝나지 못했고, 지금은 11-18 다음 날 아침
+        PaperDecisionJob.Result result = job(Instant.parse("2026-11-18T23:00:00Z")).run();
+
+        assertThat(result.outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        verify(selection).select(RESELECTION);
+        verify(selection, never()).select(wednesday);
+        assertThat(decided).containsExactly("2026-11-18 REBALANCE true");
+        JsonNode detail = store.jobRuns.get(0).detail();
+        assertThat(detail.path("reselectionDay").asBoolean(true)).isFalse();
+        assertThat(detail.path("catchUpReselection").asString()).isEqualTo("2026-11-17");
+
+        // 그 분기 매수 결정(REBALANCE)이 r 이후에 있으면 다음 날은 정기 결정만 — 다시 선정하지 않음
+        store.insertDecisionIfAbsent(new Decision(0, PaperBooks.RULES, wednesday, "REBALANCE", null, "OK", null, null,
+                1, RESELECTION, null, null, null, null, null, null, null, null, true, 0L, 0));
+        LocalDate thursday = LocalDate.of(2026, 11, 19);
+        observed(Instant.parse("2026-11-19T21:30:00Z"), thursday);
+        job(Instant.parse("2026-11-19T23:00:00Z")).run();
+        assertThat(decided).containsExactly("2026-11-18 REBALANCE true", "2026-11-19 SCHEDULED true");
+        verify(selection).select(RESELECTION);   // 여전히 한 번
+    }
+
+    @Test
+    @DisplayName("재선정일에 선정을 건너뛰면(수집 중) 그날 REBALANCE는 지난 선정이라 세지 않고, 다음 결정 날에 select(r)를 다시 불러 그 분기 매수를 낸다")
+    void skippedReselectionIsRetriedNextDay() {
+        store.insertDecisionIfAbsent(new Decision(0, PaperBooks.RULES, FRI, "INITIAL", null, "OK", null, null, 1, FRI,
+                null, null, null, null, null, null, null, null, true, 0L, 0));
+        // 진짜 규칙 책처럼 결정을 남기고 selection_as_of에 그날 유효한 선정(가장 최근 선정)의 기준일을 적습니다.
+        LocalDate[] effective = {FRI};
+        // doAnswer — when(rules.decide(…))로 다시 정하면 정하는 호출이 setUp의 답을 한 번 불러 decided에 남습니다.
+        doAnswer(invocation -> {
+            LocalDate d = invocation.getArgument(0);
+            String kind = invocation.getArgument(1);
+            boolean pricesFinal = invocation.getArgument(2);
+            decided.add(d + " " + kind + " " + pricesFinal);
+            store.insertDecisionIfAbsent(new Decision(0, PaperBooks.RULES, d, kind, null, "NO_TRADE", null, null, 1,
+                    effective[0], null, null, null, null, MAPPER.valueToTree(Map.of("summary", "주문 없음")), null,
+                    null, null, pricesFinal, 0L, 0));
+            return store.decisionFor(PaperBooks.RULES, d, kind).orElseThrow();
+        }).when(rules).decide(any(), anyString(), anyBoolean());
+        String collecting = String.format(Locale.ROOT, PaperSelectionService.COLLECTING_SKIP_REASON, 3, 27);
+        when(selection.select(RESELECTION))
+                .thenReturn(new PaperSelectionService.SelectionOutcome(RESELECTION, false, null, null, collecting))
+                .thenAnswer(invocation -> {
+                    effective[0] = RESELECTION;
+                    return new PaperSelectionService.SelectionOutcome(RESELECTION, true,
+                            new Selection(RESELECTION, List.of("0000000001"), null, 1, null), null, null);
+                });
+
+        // 11-17(재선정일): 수집 중이라 선정을 남기지 않음 → REBALANCE는 지난 선정(FRI)으로, 매수 없이
+        observed(Instant.parse("2026-11-17T21:30:00Z"), RESELECTION);
+        assertThat(job(Instant.parse("2026-11-17T23:00:00Z")).run().outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(decided).containsExactly("2026-11-17 REBALANCE true");
+        assertThat(store.decisionFor(PaperBooks.RULES, RESELECTION, "REBALANCE").orElseThrow().selectionAsOf())
+                .isEqualTo(FRI);
+        assertThat(store.jobRuns.get(0).detail().path("selection").path("skippedReason").asString())
+                .startsWith("수집 중");
+
+        // 11-18: 수집이 끝남 — r 선정으로 낸 매수 결정이 없으니 select(r)를 다시 불러 따라잡기 REBALANCE
+        LocalDate wednesday = LocalDate.of(2026, 11, 18);
+        observed(Instant.parse("2026-11-18T21:30:00Z"), wednesday);
+        assertThat(job(Instant.parse("2026-11-18T23:00:00Z")).run().outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        verify(selection, times(2)).select(RESELECTION);
+        assertThat(decided).containsExactly("2026-11-17 REBALANCE true", "2026-11-18 REBALANCE true");
+        assertThat(store.jobRuns.get(1).detail().path("catchUpReselection").asString()).isEqualTo("2026-11-17");
+        assertThat(store.decisionFor(PaperBooks.RULES, wednesday, "REBALANCE").orElseThrow().selectionAsOf())
+                .isEqualTo(RESELECTION);
+
+        // 11-19: r 선정으로 매수 결정을 냈으니 정기 결정만 — 다시 선정하지 않음
+        LocalDate thursday = LocalDate.of(2026, 11, 19);
+        observed(Instant.parse("2026-11-19T21:30:00Z"), thursday);
+        job(Instant.parse("2026-11-19T23:00:00Z")).run();
+        verify(selection, times(2)).select(RESELECTION);
+        assertThat(decided).containsExactly("2026-11-17 REBALANCE true", "2026-11-18 REBALANCE true",
+                "2026-11-19 SCHEDULED true");
+    }
+
+    @Test
+    @DisplayName("초기화 전이면 아무것도 하지 않고, 시작 전 규칙 책은 결정하지 않지만 게이트 지표는 남긴다")
+    void notInitializedAndNotStarted() {
+        Map<String, Book> books = new java.util.TreeMap<>(store.books);
+        store.books.clear();
+        assertThat(job(Instant.parse("2026-10-24T00:00:00Z")).run().outcome())
+                .isEqualTo(PaperDecisionJob.NOT_INITIALIZED);
+
+        store.books.putAll(books);
+        store.books.put(PaperBooks.RULES, new Book(PaperBooks.RULES, PaperBooks.KIND_RULES, "규칙 책", 100_000, null,
+                PaperBooks.NOT_STARTED, FRI_CLOSE));
+        observed(Instant.parse("2026-10-23T20:30:00Z"), FRI);
+        PaperDecisionJob job = job(Instant.parse("2026-10-24T00:00:00Z"));
+        assertThat(job.run().outcome()).isEqualTo(PaperDecisionJob.DECIDED);
+        assertThat(decided).isEmpty();
+        assertThat(store.gates).containsKey(FRI);
+        assertThat(job.run().outcome()).as("할 일을 다 함").isEqualTo(PaperDecisionJob.ALREADY_DECIDED);
+    }
+
+    @Test
+    @DisplayName("같은 거래일에 오류가 세 번 나면 그날은 더 시도하지 않고, 수동 실행은 다시 시도한다")
+    void givesUpAfterRepeatedErrors() {
+        observed(Instant.parse("2026-10-23T20:30:00Z"), FRI);
+        when(rules.decide(eq(FRI), eq("SCHEDULED"), anyBoolean())).thenThrow(new IllegalStateException("고장"));
+        PaperDecisionJob job = job(Instant.parse("2026-10-24T00:00:00Z"));
+
+        for (int i = 0; i < PaperDecisionJob.MAX_ATTEMPTS; i++) {
+            assertThat(job.run().outcome()).isEqualTo(PaperDecisionJob.ERROR);
+        }
+        assertThat(job.run().outcome()).isEqualTo(PaperDecisionJob.GAVE_UP);
+        assertThat(store.jobRuns).hasSize(PaperDecisionJob.MAX_ATTEMPTS);
+        assertThat(store.jobRuns.get(0).detail().path("error").asString()).contains("고장");
+
+        // 수동 실행은 그날 오류 횟수를 지워, 다음 정기 실행이 다시 시도합니다(포기 상태로 남지 않음).
+        assertThat(job.runNow("rules").kind()).isEqualTo("MANUAL");
+        assertThat(job.run().outcome()).as("포기하지 않고 다시 시도해 같은 오류").isEqualTo(PaperDecisionJob.ERROR);
+        assertThat(store.jobRuns.get(store.jobRuns.size() - 1).detail().path("attempt").asInt())
+                .as("오류 횟수를 처음부터 셈").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("수동 실행: 시각·확정 종가를 기다리지 않고 규칙 책만 MANUAL로, Claude 책·다른 값은 400")
+    void runNowDecidesManual() {
+        observed(FRI_INTRADAY, FRI);
+        PaperDecisionJob job = job(Instant.parse("2026-10-23T22:00:00Z"));   // 결정 시각 전
+
+        Decision decision = job.runNow("rules");
+
+        assertThat(decision.kind()).isEqualTo("MANUAL");
+        assertThat(decided).containsExactly("2026-10-23 MANUAL false");
+        assertThat(store.jobRuns).singleElement().satisfies(run ->
+                assertThat(run.detail().path("manual").asBoolean()).isTrue());
+        assertThatThrownBy(() -> job.runNow("claude")).isInstanceOf(InvalidRequestException.class)
+                .hasMessageContaining("다음 단계");
+        assertThatThrownBy(() -> job.runNow("bench_spy")).isInstanceOf(InvalidRequestException.class);
+    }
+
+    @Test
+    @DisplayName("설정의 결정 시각·마감 기한을 읽고, 없거나 틀리면 07:30·12:00")
+    void decisionTimesFromSettings() {
+        assertThat(job(FRI_CLOSE).times()).isEqualTo(new PaperDecisionJob.Times(
+                java.time.LocalTime.of(7, 30), java.time.LocalTime.of(12, 0)));
+        ((tools.jackson.databind.node.ObjectNode) store.settings.body()).put("decisionTimeKst", "08:15")
+                .put("decisionDeadlineKst", "25:99");
+        assertThat(job(FRI_CLOSE).times()).isEqualTo(new PaperDecisionJob.Times(
+                java.time.LocalTime.of(8, 15), java.time.LocalTime.of(12, 0)));
+    }
+}

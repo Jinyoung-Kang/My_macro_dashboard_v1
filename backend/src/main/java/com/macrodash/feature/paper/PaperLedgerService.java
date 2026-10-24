@@ -19,6 +19,7 @@ import com.macrodash.store.PaperStore.Position;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -194,7 +195,7 @@ public class PaperLedgerService {
 
     private Outcome processLocked(Quotes quotes) {
         if (!store.ready()) {
-            return Outcome.skipped("모의 매매 테이블이 아직 없습니다(V8 적용 전)");
+            return Outcome.skipped("모의 매매 테이블이 아직 없습니다(V8·V9 적용 전)");
         }
         List<Book> books = new ArrayList<>(store.books());
         if (books.isEmpty()) {
@@ -372,16 +373,27 @@ public class PaperLedgerService {
     }
 
     // ------------------------------------------------------------------ 3·5. 체결
-    /** 대기 주문 중 그쪽(매도·매수)만, 만든 순서대로. 매도는 스탑 앞, 매수는 스탑 뒤(클래스 설명의 처리 순서). */
+    /**
+     * 대기 주문 중 그쪽(매도·매수)만, 만든 순서대로. 매도는 스탑 앞, 매수는 스탑 뒤(클래스 설명의 처리 순서).
+     *
+     * <p>매수는 현금성(설정 {@code cashLikeTickers}, 기본 SHY)이 아닌 것을 먼저, 현금성 매수를 마지막에 체결합니다. 규칙 책은
+     * 종목 매수와 함께 "남는 현금은 SHY에" 주문을 내는데, 그 주문은 남는 현금을 어림한 값이라 체결 시점 가격이 조금만 달라도
+     * 종목 매수와 현금을 다툽니다 — SHY가 먼저 체결되면 신호 종목이 현금 부족으로 줄어듭니다(설계 §4-2: SHY는 남는 현금).
+     */
     private void fill(BookRun run, List<Order> pending, String side) {
-        for (Order order : pending) {
-            if (!side.equals(order.side())) {
-                continue;
+        if (PaperBooks.SELL.equals(side)) {
+            for (Order order : pending) {
+                if (PaperBooks.SELL.equals(order.side())) {
+                    fillSell(run, order);
+                }
             }
-            if (PaperBooks.SELL.equals(side)) {
-                fillSell(run, order);
-            } else {
-                fillBuy(run, order);
+            return;
+        }
+        for (boolean cashLikePass : new boolean[]{false, true}) {
+            for (Order order : pending) {
+                if (PaperBooks.BUY.equals(order.side()) && run.settings.cashLike(order.ticker()) == cashLikePass) {
+                    fillBuy(run, order);
+                }
             }
         }
     }
@@ -625,6 +637,236 @@ public class PaperLedgerService {
             }
         }
         return true;
+    }
+
+    // ------------------------------------------------------------------ 결정 작업이 채우는 순자산 줄
+    /**
+     * 결정 작업이 확정 종가를 끝내 받지 못한 채 마감 기한(설정 {@code decisionDeadlineKst}, 기본 12:00 KST)을 넘겨 진행할 때,
+     * 그 거래일 순자산 줄이 없는 책에 지금 상태(마지막 관측치의 평가)를 <b>미확정</b>({@code prices_final = false}) 줄로 남깁니다
+     * (설계 §6-2). 확정 줄은 관측치 처리만 씁니다 — 보유마다 그 세션의 확정 봉으로 평가됐는지를 보는 곳이 거기라서
+     * ({@link #process}의 '순자산 줄'), {@code pricesFinal}이 true면 아무것도 하지 않습니다. 미확정 줄은 나중의 확정 관측치가
+     * 덮습니다({@link PaperStore#upsertNav}). 이미 그날 줄이 있으면(확정이든 아니든) 건드리지 않습니다. 시작한(운용·일시정지)
+     * 책만, 출발일 전 날짜는 쓰지 않습니다.
+     *
+     * @return 줄을 새로 쓴 책(정의 순)
+     */
+    public List<String> settleNav(LocalDate tradingDate, boolean pricesFinal) {
+        if (pricesFinal) {
+            return List.of();
+        }
+        return exclusively(() -> {
+            if (!store.ready()) {
+                return List.of();
+            }
+            List<Book> books = new ArrayList<>(store.books());
+            books.sort((a, b) -> PaperBooks.ORDER.compare(a.code(), b.code()));
+            List<String> written = new ArrayList<>();
+            for (Book book : books) {
+                boolean started = PaperBooks.ACTIVE.equals(book.status()) || PaperBooks.PAUSED.equals(book.status());
+                if (!started || book.startedOn() == null || tradingDate.isBefore(book.startedOn())) {
+                    continue;
+                }
+                Optional<BookState> state = store.state(book.code());
+                boolean exists = store.navSeries(book.code()).stream()
+                        .anyMatch(row -> row.tradingDate().equals(tradingDate));
+                if (state.isEmpty() || exists) {
+                    continue;
+                }
+                BookState s = state.get();
+                store.atomically(() -> {
+                    store.upsertNav(new NavRow(book.code(), tradingDate, s.nav(), s.cash(), s.equityValue(),
+                            s.exposurePct(), false));
+                    LocalDate navDate = s.lastNavTradingDate() == null || tradingDate.isAfter(s.lastNavTradingDate())
+                            ? tradingDate : s.lastNavTradingDate();
+                    store.upsertState(new BookState(s.bookCode(), s.cash(), s.nav(), s.equityValue(), s.exposurePct(),
+                            s.lastObservedAt(), s.lastProcessedCollectedAt(), navDate, null));
+                    return null;
+                });
+                written.add(book.code());
+            }
+            return written;
+        });
+    }
+
+    // ------------------------------------------------------------------ 사후 체결(BACKFILL)
+    /**
+     * 사후 체결 주문 한 줄.
+     *
+     * @param targetWeightPct 매수: 기준 순자산({@link BackfillRequest#baseNav}) 대비 살 금액(%). 매도에는 쓰지 않음
+     * @param sellFraction    매도: 보유 중 팔 비율. null이면 전량
+     * @param reason          주문 근거 JSON — 주문 행에 그대로 남습니다
+     */
+    public record BackfillLeg(String ticker, String side, Double targetWeightPct, Double sellFraction,
+                              JsonNode reason) {
+    }
+
+    /**
+     * 사후 체결 요청.
+     *
+     * @param tradingDate 체결 거래일(출발일). 그날 종가로, 관측 시각은 그날 마감(16:00 ET)
+     * @param source      주문 출처(BENCHMARK·RULE …, paper_orders.source)
+     * @param decisionId  그 주문을 낸 결정(벤치마크는 null)
+     * @param cash        체결 전 현금
+     * @param baseNav     매수 금액의 기준 순자산. 다리마다 바뀌는 순자산이 아니라 체결 전 값입니다 — 슬리피지만큼 순자산이 줄어
+     *                    뒤 다리일수록 덜 사는 일이 없게(벤치마크 60/40이 처음 정한 비중대로)
+     * @param closes      종목 → 그날 종가와 출처(얼린 출발일 종가 — {@link PaperAdminService#startClose})
+     * @param settings    슬리피지·현금성 종목
+     */
+    public record BackfillRequest(Book book, LocalDate tradingDate, String source, Long decisionId, double cash,
+                                  double baseNav, List<BackfillLeg> legs,
+                                  Map<String, PaperMarketData.SourcedClose> closes, PaperSettings settings) {
+    }
+
+    /**
+     * 사후 체결 결과.
+     *
+     * @param fills   낸 체결(체결 순서 — 매도 → 매수 → 현금성 매수)
+     * @param skipped 체결하지 못한 다리: 티커 → 사유(종가 없음·1주도 살 수 없음·보유 없음). 주문 행은 남기지 않습니다
+     */
+    public record BackfillResult(List<Fill> fills, List<Map.Entry<String, String>> skipped, double cash,
+                                 PaperLedger.Valuation valuation) {
+    }
+
+    /**
+     * 주문 목록을 그 거래일 종가로 한 번에 체결합니다(사후 체결, 명세 L2) — 벤치마크 초기화와 규칙 책 "시작"이 함께 씁니다.
+     *
+     * <p>순서는 관측치 처리와 같습니다: 매도 → 현금성이 아닌 매수 → 현금성 매수({@link #fill}의 이유). 체결가는 종가에 슬리피지,
+     * 매수 수량은 {@code baseNav × 목표 비중}을 체결가로 나눠 내림(현금보다 많이 사지 않음 — 줄였으면 근거에 {@code cashLimited}).
+     * 주문은 출처 그대로 {@code BACKFILL}·{@code FILLED}로 남기고(생성 = 그날 마감 1초 전, 기준 거래일 = 그 전 거래일 — 기록에서
+     * 주문이 관측치보다 앞서 보이게), 체결은 {@code is_backfill = true}·관측 시각 = 그날 마감·가격 출처 = 종가의 출처입니다.
+     *
+     * <p>끝나면 그 종가로 평가해 그 거래일 순자산 줄(확정)·상태(멱등 키 = 그날 마감 — 그 전 저장본이 나중에 처리되며 장부를
+     * 되돌리지 않게)를 쓰고 책을 운용(ACTIVE)·출발일 = 그 거래일로 바꿉니다. 한 트랜잭션이고, 바깥 트랜잭션이 있으면 합류합니다 —
+     * 다리 하나라도 못 사면 되돌려야 하는 쪽(벤치마크)은 바깥에서 {@code skipped}를 보고 예외를 던지면 됩니다.
+     */
+    public BackfillResult backfill(BackfillRequest request) {
+        return store.atomically(() -> backfillLocked(request));
+    }
+
+    private BackfillResult backfillLocked(BackfillRequest r) {
+        String code = r.book().code();
+        LocalDate day = r.tradingDate();
+        Instant close = UsMarketCalendar.closeInstant(day);
+        double bp = r.settings().slippageBp();
+        Map<String, Position> held = new TreeMap<>();
+        store.positions(code).forEach(p -> held.put(p.ticker(), p));
+        double cash = r.cash();
+        List<Fill> fills = new ArrayList<>();
+        List<Map.Entry<String, String>> skipped = new ArrayList<>();
+        for (BackfillLeg leg : backfillOrder(r.legs(), r.settings())) {
+            String ticker = leg.ticker();
+            PaperMarketData.SourcedClose raw = r.closes().get(ticker);
+            if (raw == null) {
+                skipped.add(Map.entry(ticker, day + " " + ticker + " 종가가 없습니다"));
+                continue;
+            }
+            if (PaperBooks.SELL.equals(leg.side())) {
+                Position position = held.get(ticker);
+                if (position == null) {
+                    skipped.add(Map.entry(ticker, "체결 시점에 보유가 없습니다"));
+                    continue;
+                }
+                int qty = PaperLedger.sellQty(position.qty(), leg.sellFraction());
+                double price = price6(PaperLedger.fillPrice(raw.close(), PaperLedger.Side.SELL, bp));
+                double gross = gross(qty, price);
+                fills.add(backfillFill(r, leg, leg.reason(), qty, price, raw, gross, close));
+                cash = PaperLedger.round4(cash + gross);
+                int left = position.qty() - qty;
+                if (left == 0) {
+                    held.remove(ticker);
+                    store.deletePosition(code, ticker);
+                } else {
+                    Position kept = new Position(code, ticker, left, position.avgCost(), position.openedOn(),
+                            position.openedAt(), position.highWatermark(), position.watermarkAt(),
+                            PaperLedger.round4(raw.close()), close, false, position.fillRefDate(),
+                            position.fillRefClose(), position.splitNote());
+                    held.put(ticker, kept);
+                    store.upsertPosition(kept);
+                }
+                continue;
+            }
+            double price = price6(PaperLedger.fillPrice(raw.close(), PaperLedger.Side.BUY, bp));
+            double weight = leg.targetWeightPct() == null ? 0 : leg.targetWeightPct();
+            int wanted = PaperLedger.buyQty(r.baseNav() * weight / 100.0, price);
+            if (wanted <= 0) {
+                skipped.add(Map.entry(ticker, ticker + " 종가(" + raw.close() + ")로는 1주도 살 수 없습니다"));
+                continue;
+            }
+            int qty = Math.min(wanted, PaperLedger.buyQty(cash, price));
+            if (qty <= 0) {
+                skipped.add(Map.entry(ticker, "현금이 모자라 1주도 살 수 없습니다(현금 " + money(cash) + ")"));
+                continue;
+            }
+            JsonNode reason = leg.reason();
+            if (qty < wanted) {
+                ObjectNode limited = reason instanceof ObjectNode existing ? existing.deepCopy()
+                        : mapper.createObjectNode();
+                limited.put("cashLimited", true);
+                limited.put("requestedQty", wanted);
+                limited.put("filledQty", qty);
+                reason = limited;
+            }
+            double gross = gross(qty, price);
+            fills.add(backfillFill(r, leg, reason, qty, price, raw, gross, close));
+            cash = PaperLedger.round4(cash - gross);
+            Position before = held.get(ticker);
+            Position after = before == null
+                    ? new Position(code, ticker, qty, PaperLedger.round4(price), day, close, PaperLedger.round4(price),
+                    close, PaperLedger.round4(raw.close()), close, false, day, raw.close(), null)
+                    : new Position(code, ticker, before.qty() + qty,
+                    PaperLedger.round4(PaperLedger.averageCost(before.qty(), before.avgCost(), qty, price)),
+                    before.openedOn(), before.openedAt(),
+                    PaperLedger.round4(TrailingStop.raiseWatermark(before.highWatermark(), price)), close,
+                    PaperLedger.round4(raw.close()), close, false, before.fillRefDate(), before.fillRefClose(),
+                    before.splitNote());
+            held.put(ticker, after);
+            store.upsertPosition(after);
+        }
+
+        Map<String, Integer> qty = new HashMap<>();
+        Map<String, Double> price = new HashMap<>();
+        for (Position position : held.values()) {
+            PaperMarketData.SourcedClose raw = r.closes().get(position.ticker());
+            qty.put(position.ticker(), position.qty());
+            price.put(position.ticker(), raw != null ? raw.close()
+                    : position.lastPrice() != null ? position.lastPrice() : position.avgCost());
+        }
+        PaperLedger.Valuation valuation = PaperLedger.value(cash, qty, price);
+        double nav = PaperLedger.round4(valuation.nav());
+        double equity = PaperLedger.round4(valuation.equityValue());
+        double exposure = PaperLedger.round4(valuation.exposurePct());
+        store.upsertNav(new NavRow(code, day, nav, cash, equity, exposure, true));
+        store.upsertState(new BookState(code, cash, nav, equity, exposure, close, close, day, null));
+        store.updateBookStatus(code, PaperBooks.ACTIVE);
+        store.updateBookStartedOn(code, day);
+        return new BackfillResult(fills, skipped, cash, valuation);
+    }
+
+    /** 사후 체결 순서: 매도 → 현금성이 아닌 매수 → 현금성 매수. 같은 묶음 안은 받은 순서. */
+    private static List<BackfillLeg> backfillOrder(List<BackfillLeg> legs, PaperSettings settings) {
+        List<BackfillLeg> out = new ArrayList<>();
+        legs.stream().filter(leg -> PaperBooks.SELL.equals(leg.side())).forEach(out::add);
+        legs.stream().filter(leg -> !PaperBooks.SELL.equals(leg.side()) && !settings.cashLike(leg.ticker()))
+                .forEach(out::add);
+        legs.stream().filter(leg -> !PaperBooks.SELL.equals(leg.side()) && settings.cashLike(leg.ticker()))
+                .forEach(out::add);
+        return out;
+    }
+
+    private Fill backfillFill(BackfillRequest r, BackfillLeg leg, JsonNode reason, int qty, double price,
+                              PaperMarketData.SourcedClose raw, double gross, Instant close) {
+        String code = r.book().code();
+        String side = PaperBooks.SELL.equals(leg.side()) ? PaperBooks.SELL : PaperBooks.BUY;
+        long orderId = store.insertOrder(new Order(0, code, r.decisionId(), leg.ticker(), side, null,
+                PaperBooks.SELL.equals(side) ? null : leg.targetWeightPct(),
+                PaperBooks.SELL.equals(side) ? leg.sellFraction() : null, PaperBooks.BACKFILL, r.source(),
+                PaperBooks.ORDER_FILLED, null, reason, UsMarketCalendar.previousTradingDay(r.tradingDate()),
+                close.minusSeconds(1), null, close));
+        Fill fill = new Fill(0, orderId, code, leg.ticker(), side, qty, price, raw.close(), r.settings().slippageBp(),
+                gross, close, r.tradingDate(), raw.source(), true, null);
+        long fillId = store.insertFill(fill);
+        return new Fill(fillId, orderId, code, leg.ticker(), side, qty, price, raw.close(), r.settings().slippageBp(),
+                gross, close, r.tradingDate(), raw.source(), true, null);
     }
 
     private void recordFill(BookRun run, long orderId, String ticker, String side, int qty, double price, Bar bar,

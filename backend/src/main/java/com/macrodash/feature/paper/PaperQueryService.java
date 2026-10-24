@@ -20,7 +20,6 @@ import com.macrodash.support.Json;
 import com.macrodash.support.Params;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -40,7 +39,7 @@ import java.util.TreeSet;
 /**
  * 🧪 모의 매매 화면 응답(API.md "🧪 모의 매매") — 장부 테이블을 읽어 화면이 그대로 그릴 숫자로 만듭니다(ADR 0004: 화면은 계산하지 않음).
  *
- * <p>준비 여부는 {@code SchemaCheck}가 아니라 {@link PaperStore#ready()}로 봅니다(V8의 마지막 테이블). 테이블이 없으면 모든 응답이
+ * <p>준비 여부는 {@code SchemaCheck}가 아니라 {@link PaperStore#ready()}로 봅니다(V8의 마지막 테이블·V9의 마지막 열). 테이블이 없으면 모든 응답이
  * {@code {available:false, message}}입니다. 초기화 전이면 {@code available:true, initialized:false}.
  *
  * <p>숫자 규칙: 총액(현금·순자산·평가액·체결 금액)은 소수 2자리, 주당 가격(평단·체결가·최고가·스탑가)은 4자리 — 5bp 슬리피지가
@@ -53,7 +52,7 @@ import java.util.TreeSet;
 @Service
 public class PaperQueryService {
 
-    static final String NOT_READY_MESSAGE = "모의 매매 테이블이 아직 없습니다. 수집기가 스키마(V8)를 적용하면 생깁니다 — "
+    static final String NOT_READY_MESSAGE = "모의 매매 테이블이 아직 없습니다. 수집기가 스키마(V8·V9)를 적용하면 생깁니다 — "
             + "make up 후 다시 보세요.";
     /** 개요에 싣는 최근 작업 기록 수. */
     static final int OVERVIEW_JOBS = 10;
@@ -140,9 +139,99 @@ public class PaperQueryService {
         out.put("navSeries", navSeries(books, navByBook));
         out.put("quotes", quotesSummary());
         out.put("selection", latestSelection());
+        // OS 게이트 지표(참고 — 구속하지 않음, D7·D19): 결정 작업이 거래일마다 남긴 가장 최근 줄. 없으면 null.
+        out.put("gate", store.recentGate(1).stream().findFirst().map(PaperGate::view).orElse(null));
         out.put("limits", limits());
         out.put("jobs", jobs(OVERVIEW_JOBS));
         return out;
+    }
+
+    // ------------------------------------------------------------------ 결정
+    /** GET /api/paper/decisions?book=&limit= (1–500, 최근 순). 결정을 내는 책은 rules·claude뿐입니다. */
+    public Map<String, Object> decisions(String book, int limit) {
+        if (!ready()) {
+            return notReady();
+        }
+        String code = Params.oneOf("book", book, List.of(PaperBooks.RULES, PaperBooks.CLAUDE));
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (PaperStore.DecisionSummary d : store.decisions(code, Params.clamp(limit, 1, MAX_LIMIT))) {
+            rows.add(decisionRow(d.id(), d.bookCode(), d.asOfTradingDate(), d.kind(), d.status(), d.decidedAt(),
+                    d.model(), d.frameworkVersion(), d.settingsVersion(), d.selectionAsOf(), d.targetExposurePct(),
+                    d.summary(), d.orderCount(), d.rejectedCount(), d.pricesFinal(), d.error()));
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("available", true);
+        out.put("decisions", rows);
+        return out;
+    }
+
+    /**
+     * GET /api/paper/decisions/{id} — 결정 한 건의 전체 기록(패킷·응답·사용량)과 그 결정이 낸 주문.
+     *
+     * @throws InvalidRequestException 없는 결정 번호(404가 아니라 400 — 책 코드와 같은 규칙)
+     */
+    public Map<String, Object> decision(long id) {
+        if (!ready()) {
+            return notReady();
+        }
+        PaperStore.Decision d = store.decision(id).orElseThrow(() -> new InvalidRequestException(
+                "없는 결정입니다: " + id));
+        List<Order> orders = store.ordersByDecision(id);
+        Map<String, Object> detail = decisionSummary(d, orders);
+        detail.put("packet", d.packet());
+        detail.put("packetHash", d.packetHash());
+        detail.put("response", d.response());
+        detail.put("usage", d.usage());
+        detail.put("noteIds", d.noteIds());
+        detail.put("latencyMs", d.latencyMs());
+        detail.put("retryCount", d.retryCount());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("available", true);
+        out.put("decision", detail);
+        out.put("orders", orders.stream().map(PaperQueryService::orderRow).toList());
+        return out;
+    }
+
+    /** 결정 요약 한 줄(목록과 같은 모양) — 버튼 응답(수동 결정·시작)이 방금 낸 결정을 그릴 때. */
+    public Map<String, Object> decisionSummary(PaperStore.Decision d) {
+        return decisionSummary(d, store.ordersByDecision(d.id()));
+    }
+
+    private static Map<String, Object> decisionSummary(PaperStore.Decision d, List<Order> orders) {
+        int rejected = (int) orders.stream().filter(o -> "REJECTED".equals(o.status())).count();
+        return decisionRow(d.id(), d.bookCode(), d.asOfTradingDate(), d.kind(), d.status(), d.decidedAt(), d.model(),
+                d.frameworkVersion(), d.settingsVersion(), d.selectionAsOf(), d.targetExposurePct(),
+                Json.asText(d.response(), "summary"), orders.size(), rejected, d.pricesFinal(), d.error());
+    }
+
+    private static Map<String, Object> decisionRow(long id, String book, LocalDate asOf, String kind, String status,
+                                                   Instant decidedAt, String model, Integer frameworkVersion,
+                                                   int settingsVersion, LocalDate selectionAsOf,
+                                                   Double targetExposurePct, String summary, int orderCount,
+                                                   int rejectedCount, boolean pricesFinal, String error) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", id);
+        row.put("book", book);
+        row.put("asOfTradingDate", text(asOf));
+        row.put("kind", kind);
+        row.put("status", status);
+        row.put("decidedAtKst", stamp(decidedAt));
+        row.put("model", model);
+        row.put("frameworkVersion", frameworkVersion);
+        row.put("settingsVersion", settingsVersion);
+        row.put("selectionAsOf", text(selectionAsOf));
+        row.put("targetExposurePct", round2(targetExposurePct));
+        row.put("summary", summary);
+        row.put("orderCount", orderCount);
+        row.put("rejectedCount", rejectedCount);
+        row.put("pricesFinal", pricesFinal);
+        row.put("error", error);
+        return row;
+    }
+
+    /** 체결 행(체결 목록과 같은 모양) — 시작(사후 체결) 응답이 방금 낸 체결을 그릴 때. */
+    public List<Map<String, Object>> fillRows(List<Fill> fills) {
+        return fills.stream().map(PaperQueryService::fillRow).toList();
     }
 
     /** GET /api/paper/status */
@@ -164,7 +253,12 @@ public class PaperQueryService {
         out.put("jobs", jobs(STATUS_JOBS));
         PaperSettingsService.Current current = settings.current();
         out.put("settingsVersion", current.version());
-        out.put("settingsFallbacks", current.settings().fallbacks());
+        // 장부 키와 섞기 키(blend.*)·규칙 책 묶음(rules.*) — 둘 다 단계 2 전 설정 행에는 없음 — 를 함께, 어느 키를 기본값으로
+        // 읽고 있는지 화면이 한 곳에서 보게.
+        List<String> fallbacks = new ArrayList<>(current.settings().fallbacks());
+        fallbacks.addAll(current.settings().blend().fallbacks());
+        fallbacks.addAll(current.settings().rules().fallbacks());
+        out.put("settingsFallbacks", fallbacks);
         return out;
     }
 
@@ -257,28 +351,33 @@ public class PaperQueryService {
         existing(code);
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Order o : store.recentOrders(code, Params.clamp(limit, 1, MAX_LIMIT))) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("id", o.id());
-            row.put("ticker", o.ticker());
-            row.put("side", o.side());
-            row.put("qty", o.qty());
-            row.put("targetWeightPct", o.targetWeightPct());
-            row.put("sellFraction", o.sellFraction());
-            row.put("timing", o.timing());
-            row.put("source", o.source());
-            row.put("status", o.status());
-            row.put("rejectReason", o.rejectReason());
-            row.put("reason", o.reason());
-            row.put("asOfTradingDate", text(o.asOfTradingDate()));
-            row.put("createdAtKst", stamp(o.createdAt()));
-            row.put("expiresOn", text(o.expiresOn()));
-            row.put("filledAtKst", stamp(o.filledAt()));
-            rows.add(row);
+            rows.add(orderRow(o));
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("available", true);
         out.put("orders", rows);
         return out;
+    }
+
+    /** 주문 한 줄(주문 목록·결정 상세가 같은 모양). */
+    private static Map<String, Object> orderRow(Order o) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", o.id());
+        row.put("ticker", o.ticker());
+        row.put("side", o.side());
+        row.put("qty", o.qty());
+        row.put("targetWeightPct", o.targetWeightPct());
+        row.put("sellFraction", o.sellFraction());
+        row.put("timing", o.timing());
+        row.put("source", o.source());
+        row.put("status", o.status());
+        row.put("rejectReason", o.rejectReason());
+        row.put("reason", o.reason());
+        row.put("asOfTradingDate", text(o.asOfTradingDate()));
+        row.put("createdAtKst", stamp(o.createdAt()));
+        row.put("expiresOn", text(o.expiresOn()));
+        row.put("filledAtKst", stamp(o.filledAt()));
+        return row;
     }
 
     /** GET /api/paper/books/{code}/fills?limit= (1–500, 최근 순) */
@@ -289,26 +388,31 @@ public class PaperQueryService {
         existing(code);
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Fill f : store.recentFills(code, Params.clamp(limit, 1, MAX_LIMIT))) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("id", f.id());
-            row.put("orderId", f.orderId());
-            row.put("ticker", f.ticker());
-            row.put("side", f.side());
-            row.put("qty", f.qty());
-            row.put("price", round4(f.price()));
-            row.put("rawPrice", round4(f.rawPrice()));
-            row.put("slippageBp", f.slippageBp());
-            row.put("gross", round2(f.gross()));
-            row.put("observedAtKst", stamp(f.observedAt()));
-            row.put("observationDate", text(f.observationDate()));
-            row.put("priceSource", f.priceSource());
-            row.put("backfill", f.backfill());
-            rows.add(row);
+            rows.add(fillRow(f));
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("available", true);
         out.put("fills", rows);
         return out;
+    }
+
+    /** 체결 한 줄(체결 목록·시작 응답이 같은 모양). */
+    private static Map<String, Object> fillRow(Fill f) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", f.id());
+        row.put("orderId", f.orderId());
+        row.put("ticker", f.ticker());
+        row.put("side", f.side());
+        row.put("qty", f.qty());
+        row.put("price", round4(f.price()));
+        row.put("rawPrice", round4(f.rawPrice()));
+        row.put("slippageBp", f.slippageBp());
+        row.put("gross", round2(f.gross()));
+        row.put("observedAtKst", stamp(f.observedAt()));
+        row.put("observationDate", text(f.observationDate()));
+        row.put("priceSource", f.priceSource());
+        row.put("backfill", f.backfill());
+        return row;
     }
 
     /** GET /api/paper/books/{code}/nav — 거래일 오름차순. */
@@ -445,36 +549,43 @@ public class PaperQueryService {
     }
 
     /**
-     * 가장 최근 기관 선정의 요지 {@code {asOfDate, selected:[{cik, name, rank}]}}(단계 2 계약의 모양 — 자세한 것은
-     * GET /track-record). 이름·순위는 선정 때 남긴 순위표({@code ranking})의 값이고, 순위표에 없는 CIK면 null. 선정이 없으면
-     * null — 선정은 1년에 몇 줄뿐이라 싸게 읽습니다.
+     * 가장 최근 기관 선정의 요지 {@code {asOfDate, groupA:[{cik, name, rank}], groupB:[{cik, name, rank}],
+     * pool:[{cik, name, groups, weight}]}}(D27 — 자세한 것은 GET /track-record). groupA·groupB는 그 그룹의 선정(순위 순), pool은
+     * 신호 풀(풀 순서, weight = 기관 가중 0~1). 이름·순위는 선정 때 남긴 순위표의 값이고 모르면 null. 섞기(D27) 전에 남긴
+     * 선정은 groupA만 있고 groupB는 빈 목록입니다({@link PaperSelectionService#signalPool}). 선정이 없으면 null — 선정은 1년에
+     * 몇 줄뿐이라 싸게 읽습니다.
      */
     private Map<String, Object> latestSelection() {
         return store.selections().stream().findFirst().map(selection -> {
-            Map<String, JsonNode> ranking = new HashMap<>();
-            if (selection.ranking() != null && selection.ranking().isArray()) {
-                for (JsonNode entry : selection.ranking()) {
-                    String cik = Json.asText(entry, "cik");
-                    if (cik != null) {
-                        ranking.putIfAbsent(cik, entry);
-                    }
-                }
-            }
-            List<Map<String, Object>> selected = new ArrayList<>();
-            for (String cik : selection.selectedCiks()) {
-                JsonNode entry = ranking.get(cik);
-                Double rank = entry == null ? null : Json.asDouble(entry, "rank");
+            PaperSelectionService.SignalPool pool = PaperSelectionService.signalPool(selection);
+            List<Map<String, Object>> pooled = new ArrayList<>();
+            for (PaperSelectionService.PoolMember m : pool.members()) {
                 Map<String, Object> row = new LinkedHashMap<>();
-                row.put("cik", cik);
-                row.put("name", entry == null ? null : Json.asText(entry, "name"));
-                row.put("rank", rank == null ? null : rank.intValue());
-                selected.add(row);
+                row.put("cik", m.cik());
+                row.put("name", m.name());
+                row.put("groups", m.groups());
+                row.put("weight", m.weight());
+                pooled.add(row);
             }
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("asOfDate", selection.asOfDate().toString());
-            out.put("selected", selected);
+            out.put("groupA", selectedView(pool.selectedA()));
+            out.put("groupB", selectedView(pool.selectedB()));
+            out.put("pool", pooled);
             return out;
         }).orElse(null);
+    }
+
+    private static List<Map<String, Object>> selectedView(List<PaperSelectionService.RankedFiler> filers) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (PaperSelectionService.RankedFiler f : filers) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("cik", f.cik());
+            row.put("name", f.name());
+            row.put("rank", f.rank());
+            out.add(row);
+        }
+        return out;
     }
 
     private List<Map<String, Object>> jobs(int limit) {
