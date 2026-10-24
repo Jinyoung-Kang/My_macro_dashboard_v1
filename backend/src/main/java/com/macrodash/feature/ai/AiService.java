@@ -3,7 +3,6 @@ package com.macrodash.feature.ai;
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.core.RequestOptions;
-import com.anthropic.errors.AnthropicIoException;
 import com.anthropic.errors.AnthropicServiceException;
 import com.anthropic.errors.NotFoundException;
 import com.anthropic.errors.PermissionDeniedException;
@@ -838,11 +837,7 @@ public class AiService {
             if (StopReason.REFUSAL.equals(stop)) {
                 // 안전 분류기가 거절한 경우(HTTP 200). Haiku 5.5에는 서버 쪽 대체 모델이 없어,
                 // 이유를 적고 자동 탐색이 다음 엔진으로 넘어가게 합니다.
-                String reason = message.stopDetails()
-                        .map(details -> details.category().map(String::valueOf).orElse("분류 없음")
-                                + details.explanation().map(text -> " — " + text).orElse(""))
-                        .orElse("사유 없음");
-                return chargedFailure(label, "Claude가 이 요청을 거절했습니다(refusal): " + reason, elapsed);
+                return chargedFailure(label, "Claude가 이 요청을 거절했습니다(refusal): " + refusalReason(message), elapsed);
             }
 
             String text = textOf(message);
@@ -859,30 +854,51 @@ public class AiService {
             usage.put("outputTokens", message.usage().outputTokens());
             out.put("usage", usage);
             return out;
-        } catch (UnauthorizedException e) {
-            return anthropicFailure(label, started, "인증이 거절됐습니다(401). .env의 ANTHROPIC_API_KEY를 확인하세요.", e);
-        } catch (PermissionDeniedException e) {
-            return anthropicFailure(label, started, "권한이 없습니다(403). 키의 워크스페이스·모델 접근 권한을 확인하세요.", e);
-        } catch (NotFoundException e) {
-            return anthropicFailure(label, started, "모델을 찾지 못했습니다(404): " + model, e);
-        } catch (RateLimitException e) {
-            return anthropicFailure(label, started, "호출 한도에 걸렸습니다(429). 잠시 후 다시 시도하거나 다른 엔진을 고르세요.", e);
-        } catch (AnthropicServiceException e) {
-            String type = e.errorType().map(String::valueOf).orElse("알 수 없음");
-            String hint = e.statusCode() == 402
-                    ? " — 크레딧이 부족합니다. platform.claude.com의 Billing을 확인하세요."
-                    : e.statusCode() == 529 ? " — Anthropic 서버가 과부하입니다. 잠시 후 다시 시도하세요." : "";
-            return anthropicFailure(label, started, "HTTP %d (%s)%s".formatted(e.statusCode(), type, hint), e);
-        } catch (AnthropicIoException e) {
-            return anthropicFailure(label, started, describe(e, attemptSeconds), e, reachedModel(e));
         } catch (RuntimeException e) {
-            return anthropicFailure(label, started, describe(e, attemptSeconds), e, reachedModel(e));
+            AnthropicError error = classifyAnthropic(e, model, attemptSeconds);
+            return anthropicFailure(label, started, error.message(), e, error.charged());
         }
     }
 
-    /** HTTP 오류 상태(401·403·404·429·5xx)로 끝난 호출 — 제공자가 요청을 받지 않았으므로 과금되지 않았습니다. */
-    private Map<String, Object> anthropicFailure(String label, long started, String message, Exception e) {
-        return anthropicFailure(label, started, message, e, false);
+    /** Claude 호출 예외를 나눈 결과 — 화면 문구와 과금 여부. SDK를 올릴 때 이 표 한 곳만 고칩니다. */
+    private record AnthropicError(String message, boolean charged) {
+    }
+
+    /**
+     * SDK 예외 → {@link AnthropicError}. 401·403·404·429·그 밖의 HTTP 오류 상태는 제공자가 요청을 받지 않았으므로 과금되지
+     * 않았고({@code charged=false}), 연결·시간 초과 등은 {@link #reachedModel}로 판단합니다(QA-021).
+     *
+     * <p>하위 예외(401·403·404·429)를 먼저 봅니다 — 모두 {@link AnthropicServiceException}의 하위 클래스입니다.
+     */
+    private AnthropicError classifyAnthropic(RuntimeException e, String model, int attemptSeconds) {
+        if (e instanceof UnauthorizedException) {
+            return new AnthropicError("인증이 거절됐습니다(401). .env의 ANTHROPIC_API_KEY를 확인하세요.", false);
+        }
+        if (e instanceof PermissionDeniedException) {
+            return new AnthropicError("권한이 없습니다(403). 키의 워크스페이스·모델 접근 권한을 확인하세요.", false);
+        }
+        if (e instanceof NotFoundException) {
+            return new AnthropicError("모델을 찾지 못했습니다(404): " + model, false);
+        }
+        if (e instanceof RateLimitException) {
+            return new AnthropicError("호출 한도에 걸렸습니다(429). 잠시 후 다시 시도하거나 다른 엔진을 고르세요.", false);
+        }
+        if (e instanceof AnthropicServiceException service) {
+            String type = service.errorType().map(String::valueOf).orElse("알 수 없음");
+            String hint = service.statusCode() == 402
+                    ? " — 크레딧이 부족합니다. platform.claude.com의 Billing을 확인하세요."
+                    : service.statusCode() == 529 ? " — Anthropic 서버가 과부하입니다. 잠시 후 다시 시도하세요." : "";
+            return new AnthropicError("HTTP %d (%s)%s".formatted(service.statusCode(), type, hint), false);
+        }
+        return new AnthropicError(describe(e, attemptSeconds), reachedModel(e));
+    }
+
+    /** 안전 분류기 거절(refusal)의 분류·설명. */
+    private static String refusalReason(Message message) {
+        return message.stopDetails()
+                .map(details -> details.category().map(String::valueOf).orElse("분류 없음")
+                        + details.explanation().map(text -> " — " + text).orElse(""))
+                .orElse("사유 없음");
     }
 
     private Map<String, Object> anthropicFailure(String label, long started, String message, Exception e,
