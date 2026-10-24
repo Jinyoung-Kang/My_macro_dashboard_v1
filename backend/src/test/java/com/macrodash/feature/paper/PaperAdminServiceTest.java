@@ -7,15 +7,18 @@ import com.macrodash.store.PaperStore.Fill;
 import com.macrodash.store.PaperStore.NavRow;
 import com.macrodash.store.PaperStore.Order;
 import com.macrodash.store.PaperStore.Position;
+import com.macrodash.store.PaperStore.StartPrice;
 import com.macrodash.support.InvalidRequestException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -27,6 +30,7 @@ import static com.macrodash.feature.paper.PaperFixtures.MON_INTRADAY;
 import static com.macrodash.feature.paper.PaperFixtures.bar;
 import static com.macrodash.feature.paper.PaperFixtures.quotes;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
@@ -34,6 +38,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -59,8 +64,12 @@ class PaperAdminServiceTest {
     }
 
     private PaperAdminService admin(Clock clock) {
+        return admin(clock, PaperFixtures.config());
+    }
+
+    private PaperAdminService admin(Clock clock, PaperConfig config) {
         return new PaperAdminService(store, marketData, PaperFixtures.quietReader(), PaperFixtures.settings(store),
-                ledger, PaperFixtures.config(), PaperFixtures.MAPPER, clock);
+                ledger, config, PaperFixtures.MAPPER, clock);
     }
 
     private void closes(double spy, double shy) {
@@ -332,5 +341,138 @@ class PaperAdminServiceTest {
         store.ready = false;
         assertThatThrownBy(() -> admin(AFTER_START).init()).isInstanceOf(IllegalStateException.class);
         assertThat(store.books).isEmpty();
+    }
+
+    // ------------------------------------------------------------------ 정기 출발일 종가 얼리기(30분마다)
+
+    /** 관측치 저장본에 AAA·SPY·SHY가 있고, 세 종목의 출발일 종가를 찾을 수 있는 상태. */
+    private void universeWithCloses() {
+        when(marketData.quotes()).thenReturn(Optional.of(quotes(MON_INTRADAY, bar("AAA", FRI, 100, MON, 101),
+                bar("SPY", FRI, 500, MON, 505), bar("SHY", FRI, 82.5, MON, 82.6))));
+        when(marketData.sourcedClosesOn(anyCollection(), eq(FRI))).thenReturn(Map.of(
+                "AAA", new SourcedClose(100, "paper.quotes"), "SPY", new SourcedClose(500, "equity_close"),
+                "SHY", new SourcedClose(82.5, "equity_close")));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ArgumentCaptor<Collection<String>> tickersCaptor() {
+        return ArgumentCaptor.forClass(Collection.class);
+    }
+
+    @Test
+    @DisplayName("정기 얼리기: 꺼져 있거나(PAPER_ENABLED=false) 테이블이 없으면 아무것도 읽지도 얼리지도 않는다")
+    void scheduledCaptureNoOpWhenDisabledOrNotReady() {
+        universeWithCloses();
+
+        admin(AFTER_START, new PaperConfig(false, FRI, 100_000)).scheduledCaptureStartPrices();
+        store.ready = false;
+        admin(AFTER_START).scheduledCaptureStartPrices();
+
+        assertThat(store.startPrices).isEmpty();
+        verify(marketData, never()).quotes();
+        verify(marketData, never()).sourcedClosesOn(anyCollection(), any());
+    }
+
+    @Test
+    @DisplayName("정기 얼리기: 출발일 마감 + 15분 전에는 묻지도 얼리지도 않고, 정확히 15분이 되면 얼린다")
+    void scheduledCaptureWaitsForFinalClose() {
+        universeWithCloses();
+
+        admin(Clock.fixed(FRI_CLOSE.plusSeconds(15 * 60 - 1), ZoneOffset.UTC)).scheduledCaptureStartPrices();
+        assertThat(store.startPrices).isEmpty();
+        verify(marketData, never()).sourcedClosesOn(anyCollection(), any());
+
+        admin(Clock.fixed(FRI_CLOSE.plusSeconds(15 * 60), ZoneOffset.UTC)).scheduledCaptureStartPrices();
+        assertThat(store.startPrices.keySet()).containsExactly("AAA", "SHY", "SPY");
+    }
+
+    @Test
+    @DisplayName("정기 얼리기: 마감 뒤에는 유니버스(관측치 종목 + 벤치마크 종목) 중 아직 없는 종목만 출발일 종가 출처에 묻고, 값·출처를 그대로 얼린다")
+    void scheduledCaptureFreezesMissingTickersWithSource() {
+        universeWithCloses();
+        // SPY는 이미 얼려 둠(초기화 때 등). 다른 출발일의 행(설정을 바꾸기 전 것)은 없는 것으로 봅니다.
+        store.insertStartPriceIfAbsent(new StartPrice("SPY", FRI, 499.5, "equity_close", null));
+        store.insertStartPriceIfAbsent(new StartPrice("SHY", FRI.minusDays(1), 80, "equity_close", null));
+        // 벤치마크 종목은 관측치에 없어도 유니버스에 들어갑니다.
+        when(marketData.quotes()).thenReturn(Optional.of(quotes(MON_INTRADAY, bar("AAA", FRI, 100, MON, 101))));
+
+        admin(AFTER_START).scheduledCaptureStartPrices();
+
+        ArgumentCaptor<Collection<String>> asked = tickersCaptor();
+        verify(marketData).sourcedClosesOn(asked.capture(), eq(FRI));
+        assertThat(asked.getValue()).containsExactlyInAnyOrder("AAA", "SHY");
+        assertThat(store.startPrices.get("SPY").close()).as("이미 얼린 값은 그대로").isEqualTo(499.5);
+        assertThat(store.startPrices.get("AAA")).satisfies(p -> {
+            assertThat(p.tradingDate()).isEqualTo(FRI);
+            assertThat(p.close()).isEqualTo(100);
+            assertThat(p.source()).isEqualTo("paper.quotes");
+        });
+        assertThat(store.startPrices.get("SHY")).satisfies(p -> {
+            assertThat(p.tradingDate()).as("다른 출발일 행은 출발일 값으로 바뀜").isEqualTo(FRI);
+            assertThat(p.close()).isEqualTo(82.5);
+            assertThat(p.source()).isEqualTo("equity_close");
+        });
+        assertThat(store.books).as("얼리기만 — 책을 만들거나 사후 체결하지 않음").isEmpty();
+        assertThat(store.fills).isEmpty();
+    }
+
+    @Test
+    @DisplayName("정기 얼리기는 멱등이다 — 다시 돌면 얼린 값은 바뀌지 않고(수정주가로 낮아져도), 다 얼렸으면 다시 묻지 않는다")
+    void scheduledCaptureIsIdempotent() {
+        universeWithCloses();
+        PaperAdminService admin = admin(AFTER_START);
+        admin.scheduledCaptureStartPrices();
+        // 몇 주 뒤: 배당락으로 수정 종가가 낮게 다시 쓰임
+        when(marketData.sourcedClosesOn(anyCollection(), eq(FRI))).thenReturn(Map.of(
+                "AAA", new SourcedClose(99, "equity_close"), "SPY", new SourcedClose(497, "equity_close"),
+                "SHY", new SourcedClose(82.0, "equity_close")));
+
+        admin.scheduledCaptureStartPrices();
+        admin.scheduledCaptureStartPrices();
+
+        verify(marketData, times(1)).sourcedClosesOn(anyCollection(), any());
+        assertThat(store.startPrices.values()).extracting(StartPrice::ticker, StartPrice::close, StartPrice::source)
+                .containsExactly(org.assertj.core.groups.Tuple.tuple("AAA", 100.0, "paper.quotes"),
+                        org.assertj.core.groups.Tuple.tuple("SHY", 82.5, "equity_close"),
+                        org.assertj.core.groups.Tuple.tuple("SPY", 500.0, "equity_close"));
+    }
+
+    @Test
+    @DisplayName("정기 얼리기: 종가를 못 찾은 종목이 있어도 찾은 종목은 얼리고, 다음 주기에는 못 찾은 종목만 다시 묻는다")
+    void scheduledCaptureSkipsMissingTickerAndRetriesIt() {
+        universeWithCloses();
+        when(marketData.sourcedClosesOn(anyCollection(), eq(FRI))).thenReturn(Map.of(
+                "AAA", new SourcedClose(100, "paper.quotes"), "SPY", new SourcedClose(500, "equity_close")));
+        PaperAdminService admin = admin(AFTER_START);
+
+        admin.scheduledCaptureStartPrices();
+        assertThat(store.startPrices.keySet()).containsExactly("AAA", "SPY");
+
+        when(marketData.sourcedClosesOn(anyCollection(), eq(FRI))).thenReturn(Map.of(
+                "SHY", new SourcedClose(82.5, "equity_close")));
+        admin.scheduledCaptureStartPrices();
+
+        ArgumentCaptor<Collection<String>> asked = tickersCaptor();
+        verify(marketData, times(2)).sourcedClosesOn(asked.capture(), eq(FRI));
+        assertThat(asked.getAllValues().get(1)).containsExactly("SHY");
+        assertThat(store.startPrices.keySet()).containsExactly("AAA", "SHY", "SPY");
+        assertThat(store.startPrices.get("SHY").close()).isEqualTo(82.5);
+    }
+
+    @Test
+    @DisplayName("정기 얼리기: 종가 조회가 통째로 실패하면 예외를 밖으로 내지 않고 아무것도 얼리지 않으며, 다음 주기에 다시 한다")
+    void scheduledCaptureSwallowsFailureAndRetries() {
+        universeWithCloses();
+        when(marketData.sourcedClosesOn(anyCollection(), eq(FRI)))
+                .thenThrow(new IllegalStateException("db down"))
+                .thenReturn(Map.of("AAA", new SourcedClose(100, "paper.quotes"),
+                        "SPY", new SourcedClose(500, "equity_close"), "SHY", new SourcedClose(82.5, "equity_close")));
+        PaperAdminService admin = admin(AFTER_START);
+
+        assertThatCode(admin::scheduledCaptureStartPrices).doesNotThrowAnyException();
+        assertThat(store.startPrices).isEmpty();
+
+        admin.scheduledCaptureStartPrices();
+        assertThat(store.startPrices.keySet()).containsExactly("AAA", "SHY", "SPY");
     }
 }
