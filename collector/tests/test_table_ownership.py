@@ -14,6 +14,11 @@ APP = Path(__file__).resolve().parents[1] / "app"
 BACKEND_TABLES = (
     "regime_log", "users", "user_sessions", "audit_log", "email_tokens", "usage_counters",
     "alert_rules", "alert_events", "alert_deliveries",
+    # 모의 알고리즘 매매(V8, 로컬 전용) — 장부·결정·설정은 백엔드 feature/paper만 씁니다. 수집기는 가격만 받습니다.
+    "paper_books", "paper_book_state", "paper_positions", "paper_lockouts", "paper_decisions", "paper_orders",
+    "paper_fills", "paper_nav_daily", "paper_gate_log", "paper_track_record", "paper_selection_log",
+    "paper_framework_versions", "paper_notes", "paper_framework_proposals", "paper_settings",
+    "paper_settings_history", "paper_job_runs", "paper_api_usage", "paper_start_prices",
 )
 WRITE = re.compile(
     r"(?i)(INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE)\s+(" + "|".join(BACKEND_TABLES) + r")\b"

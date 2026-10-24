@@ -405,7 +405,7 @@ ok=; for i in 1 2 3 4 5 6 7 8 9 10; do docker compose -f docker-compose.yml -f c
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 계층 구조, 데이터 흐름, 저장 스키마 |
 | [docs/API.md](docs/API.md) | REST 엔드포인트 전체 목록 |
 | [docs/adr/](docs/adr/README.md) | 설계 결정 기록 — 기능 단위 패키지·의존 규칙, Spring Boot 4 전환, 백업·복원, 프런트엔드 층 나누기 |
-| [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) | 수집 태스크 20종, 소스별 폴백 체인, 한계 |
+| [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) | 수집 태스크 22종, 소스별 폴백 체인, 한계 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 기여 절차, 브랜치·Git 문제 해결, 테스트 상세 |
 | [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) | 맥 설치·실행 상세, 포트 변경, launchd 상주 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code가 매 대화 시작 때 읽는 작업 규칙 요약 — 위 문서들의 핵심과 절대 규칙 |

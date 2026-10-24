@@ -10,6 +10,7 @@ from .filings import task_sec_13f
 from .korea_public import task_dart_fundamentals, task_fsc_prices, task_kr_holidays
 from .maintenance import task_run_log_retention
 from .markets import task_macro_collected, task_radar_rankings, task_scraper_markets
+from .paper import task_paper_price_history, task_paper_quotes
 from .series import (
     task_cot_history, task_daum_futures_trend, task_equity_history, task_fed_liquidity,
     task_fred_series, task_fx_history, task_krx_futures, task_sector_history, task_volatility_history,
@@ -32,6 +33,7 @@ ALL_TASKS: tuple[Task, ...] = (
     Task("sector_history", "slow", task_sector_history, "섹터·자산군 ETF 종가"),
     Task("fx_history", "slow", task_fx_history, "환율·달러인덱스 일별 종가"),
     Task("equity_history", "slow", task_equity_history, "13F 매핑 종목 일별 종가"),
+    Task("paper_quotes", "slow", task_paper_quotes, "모의 매매 유니버스 최근 3개월 일봉 (장부 관측치, 로컬 전용)"),
     Task("volatility_history", "slow", task_volatility_history, "VIX·MOVE 변동성 시계열"),
     Task("cot_history", "slow", task_cot_history, "CFTC COT (주 1회 발표)"),
     Task("daum_futures_trend", "slow", task_daum_futures_trend, "Daum 선물 투자주체별 수급"),
@@ -42,6 +44,7 @@ ALL_TASKS: tuple[Task, ...] = (
     Task("sec_13f", "weekly", task_sec_13f, "SEC 13F 기관 포트폴리오 (분기 공시)"),
     Task("kr_holidays", "weekly", task_kr_holidays, "한국 공휴일 (천문연 특일정보)"),
     Task("dart_fundamentals", "weekly", task_dart_fundamentals, "국내 종목 재무 (DART 사업보고서)"),
+    Task("paper_price_history", "weekly", task_paper_price_history, "모의 매매 유니버스 10년 일별 종가 (이력 누적, 로컬 전용)"),
     Task("run_log_retention", "weekly", task_run_log_retention, "수집 실행 기록 정리 (보존 기간이 지난 것만)"),
 )
 

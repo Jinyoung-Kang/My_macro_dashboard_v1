@@ -8,7 +8,7 @@
 
 ---
 
-## 1. 수집 태스크 (20개)
+## 1. 수집 태스크 (22개)
 
 수집기가 세 그룹으로 나눠 돌립니다. 주기는 `.env`로 바꿀 수 있습니다.
 
@@ -23,6 +23,7 @@
 | | | `sector_history` | 섹터·자산군 ETF 종가 |
 | | | `fx_history` | 환율·달러인덱스 일별 종가 |
 | | | `equity_history` | 13F 매핑 종목 일별 종가 + 이름→티커 매핑표 |
+| | | `paper_quotes` | 📒 모의 매매 유니버스(13F 매핑 티커 + ETF 19개) 최근 3개월 일봉 → 스냅샷 `paper.quotes`. 장중에는 마지막 봉이 지연 시세(장부 관측치) |
 | | | `volatility_history` | VIX·MOVE 시계열 |
 | | | `cot_history` | CFTC COT (주 1회 발표) |
 | | | `daum_futures_trend` | Daum 선물 투자주체별 수급 |
@@ -33,6 +34,7 @@
 | `weekly` | 12시간 | `sec_13f` | SEC 13F 기관 포트폴리오 (분기 공시) |
 | | | `kr_holidays` | 🔑 한국 공휴일 (천문연 특일정보, 올해·내년) |
 | | | `dart_fundamentals` | 🔑 수급 레이더 종목의 사업보고서 주요계정 (DART) |
+| | | `paper_price_history` | 📒 같은 유니버스의 10년 일별 종가(수정주가) → `timeseries` 데이터셋 `equity_close`(종목 = `series_id`, 이력 누적·지우지 않음) |
 | | | `run_log_retention` | 🧹 수집 실행 기록 중 보존 기간(`COLLECTOR_RUN_LOG_RETENTION_DAYS`, 기본 90일)이 지난 것 정리 — 외부 호출 없음, 수집한 데이터는 그대로 |
 
 🔑 = 국내 공공 API 키가 있어야 도는 태스크. 키가 없으면 "키 미설정"으로 기록되고
@@ -40,6 +42,8 @@
 🅣 = 토스증권 키(`TOSS_CLIENT_ID`/`SECRET`)가 있어야 도는 태스크. 아래 "8. 토스증권 Open API".
 🧹 = 데이터를 받지 않는 유지보수 태스크. 실행 기록은 하루 약 1,200행씩 쌓여(1년이면 43만 행)
 상태 화면 조회를 느리게 합니다. 태스크마다 가장 최근 1건과 최근 실행 50건은 기간과 무관하게 남깁니다.
+📒 = 모의 알고리즘 매매(로컬 전용 기능)의 가격. 수집기는 받아 저장만 하고 체결·평가는 백엔드가 합니다. 기존
+`equity.price_history`(5년·138종목)를 키우지 않고 따로 받는 이유는 [명세 D23](specs/2026-10-24-paper-trading-spec.md).
 
 ### 수동 실행
 
