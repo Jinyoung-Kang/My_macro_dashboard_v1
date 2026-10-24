@@ -76,6 +76,10 @@ pandas DataFrame을 JSON 문자열로 저장하면 **dtype을 따로 실어야**
 인덱스로 **요청한 종목만** 읽습니다(`StoreRepository.readObservationsFor`).
 날짜별로 쌓이므로 공식 종가 이력도 덤으로 남습니다(400일 보존).
 
+🧪 모의 매매 미국 종목 재무(`us.fundamentals`, D28)도 같은 표에 쌓습니다 — entity = 티커, **obs_date = 공시일**, payload = 그날 처음
+낸(또는 값이 바뀐) XBRL 사실 묶음이고 지우지 않습니다(티커의 CIK가 다른 회사로 바뀌면 옛 CIK만의 행은 수집기가 지움). 백엔드는 패킷의 종목만 `obs_date ≤ 기준일`로 읽어
+(`StoreRepository.readObservationsUntil`) 그날 몰랐던 정정값이 섞이지 않게 합니다.
+
 ### 3-2. 스키마 변경은 번호 붙은 파일로
 
 `db/migrations/V{번호}__{설명}.sql`을 **수집기가 기동할 때** 번호 순서로 한 번씩 적용하고
@@ -149,6 +153,7 @@ config/          설정 값(AppProperties) · 정기 작업 켜기 — 여러 �
 | `FxIndex` | 기준일 100 재기준화, 날짜 합집합 |
 | `SupplyConsensus` | 외국인·기관 상위 목록 교집합 |
 | `KrFundamentals` | 부채비율·증가율(적자 구간은 전환 여부)·영업이익률·ROE, 공식 시가총액과 합친 PER·PBR |
+| `Fundamentals` | 🧪 미국 종목 재무(SEC XBRL, D28) — 공시일 ≤ 기준일인 사실로 TTM(누계 차감)·성장률·마진·FCF·듀퐁 세 항·ROE, 필드마다 가장 최근 end의 개념(섞지 않음), USD가 아니면 금액 null |
 | `InvestorFlows` | 투자자별 매매 누적(null은 건너뛰고 일수 보고)·연속 순매수 일수·기관 세부·외국인 보유율 변화·현물/선물 방향 동조 |
 | `Verification` | 교차 검증 판정 |
 | `FlowIntegrity` | 토스 투자자별 매매대금 정합성 (매수 합계 = 매도 합계, 기관 = 세부 7개 합) |

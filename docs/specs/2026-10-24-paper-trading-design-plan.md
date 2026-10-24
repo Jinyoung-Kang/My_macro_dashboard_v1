@@ -33,7 +33,7 @@
 
 ### 0-6. 수집기 변경 — 후보 기관 13F 30분기, 모의 매매 유니버스의 시세·10년 이력 (D6·D23·D25)
 
-이 기능이 수집기를 바꾸는 유일한 곳이다. **기존 태스크·저장본(`equity.price_history` 5년·138종목, `sec.13f.{cik}.q8`)과 그 화면은
+이 기능이 수집기를 바꾸는 곳은 여기와 D28 재무(§4-5 ②, 아래 표 마지막 행)뿐이다. **기존 태스크·저장본(`equity.price_history` 5년·138종목, `sec.13f.{cik}.q8`)과 그 화면은
 그대로 둔다** — 단계 0에서 10년·550여 종목을 한 저장본에 넣으면 16MB 기준과 백엔드 메모리를 넘는다는 것을 쟀다(D23, §13).
 
 | 변경 | 내용 | 영향 범위 |
@@ -44,7 +44,8 @@
 | 새 태스크 `paper_quotes` (`slow`, 1시간) | 모의 매매 유니버스(`EQUITY_MAP` 티커 + `TRACK_RECORD_CUSIPS` 티커 + 유니버스 ETF 17 + SPY·QQQ) 최근 3개월 일봉 → 스냅샷 `paper.quotes`. 장중에는 마지막 봉이 지연 시세 | 장부 관측치의 유일한 출처(§3-1) |
 | 새 태스크 `paper_price_history` (`weekly`, 12시간) | 같은 유니버스 10년 일봉(수정주가) → `timeseries` 데이터셋 `equity_close`(종목 = `series_id`). `put_timeseries` upsert라 배당·분할로 바뀐 과거 값만 다시 쓴다 | 트랙레코드·모멘텀·분할 감지의 이력(백엔드는 필요한 종목만 범위로 읽음) |
 | `catalog.TRACK_RECORD_QUARTERS = 30`·`SNAP_PAPER_QUOTES`·`TS_EQUITY_CLOSE` + `Datasets` 같은 상수 | 이름 상수를 같이(`DatasetsParityTest`) | |
-| `registry.py` 등록, `docs/DATA_SOURCES.md` 태스크 23개 | | |
+| `registry.py` 등록, `docs/DATA_SOURCES.md` 태스크 23개(D28로 24개) | | |
+| 새 태스크 `sec_fundamentals` (`weekly`, D28) | 유니버스(ETF 제외)의 SEC XBRL companyfacts를 실행당 200 CIK(`FUNDAMENTALS_FETCH_BUDGET`) → `observations` `us.fundamentals`(obs_date = 공시일) + 상태 `us.fundamentals.status`. 지주회사 재편 CIK 별칭표 `FUNDAMENTALS_CIK_ALIASES`(XOM·BLK·FERG) | 13F 두 태스크와 SEC 토큰 버킷을 나눠 씀. 읽는 곳은 Claude 책 패킷 `8b`뿐(§4-5) |
 
 ---
 
@@ -93,6 +94,7 @@
 | | `TrailingStop` | 최고가 갱신, 스탑 판정, 재진입 금지 |
 | | `SplitDetector` | 분할 판정·수량 조정 |
 | | `GateIndicator` | OS 문자 그대로의 게이트 단계(L0/L1/L2)와 연속 일수 — **지표 전용**(D7) |
+| | `Fundamentals` | 미국 종목 재무(D28) — 공시일 ≤ 기준일 사실로 TTM·성장률·마진·FCF·듀퐁·ROE(§4-5 ④~⑥) |
 | | `TrackRecord13F` | 공시일 기준 복제 수익률·커버리지·창 통계·자격·순위(R7·R9·R10) |
 | | `Signal13F` | 선정 기관의 분기 비교 → 매수 후보·매도 신호(R2), 배분(R4) |
 | | `OrderValidator` | Claude 제안 주문의 하드 규칙(C4, §5-4) |
@@ -102,13 +104,13 @@
 | | `PaperSelectionService` | 후보 기관 전부의 트랙레코드 계산·캐시(`paper_track_record`)·선정(`paper_selection_log`)·수집 진행률. 기존 `feature/insight/TrackRecordService`(국면 판정 성과)와 빈 이름이 겹치지 않게 이름을 바꿈 |
 | | `PaperLedgerService` | 관측치 하나를 네 책에 적용. 멱등 |
 | | `RuleBookService` | 규칙 책 일일 결정(R1~R6) |
-| | `ClaudeBookService`, `PacketBuilder` | 패킷→호출→검증→주문→기록(C1~C11) |
+| | `ClaudeBookService`, `PacketBuilder`, `FundamentalsSection` | 패킷→호출→검증→주문→기록(C1~C11). 재무 섹션 `8b`의 변환·열 배열은 `FundamentalsSection`(D28) |
 | | `FrameworkService`, `NoteService`, `PaperSettingsService`, `PaperAdminService`, `PaperQueryService` | 프레임·메모·설정·관리·화면 응답 |
 | | `PaperDecisionJob`, `PaperRiskJob` | 정기 작업(§6) |
 | | `PaperController`, `PaperFrameworkController`, `PaperSettingsController` | HTTP 경계(§7) |
 | `feature/ai` | `AiService.structured(...)` 추가 | §5-1 |
 | `web`/`config` | `AccessPolicy`에 `owner(...)` 29개, `dashboard.paper.*` `@Value` | |
-| collector | `tasks/filings.py::task_sec_13f_track_record`, `tasks/paper.py::task_paper_quotes`·`task_paper_price_history`, `indicators.TRACK_RECORD_FILERS`·`PAPER_ETFS`, `equities_cusip.TRACK_RECORD_CUSIPS`, `catalog.TRACK_RECORD_QUARTERS`·`SNAP_PAPER_QUOTES`·`TS_EQUITY_CLOSE` | §0-6 |
+| collector | `tasks/filings.py::task_sec_13f_track_record`, `tasks/paper.py::task_paper_quotes`·`task_paper_price_history`, `tasks/fundamentals.py::task_sec_fundamentals`·`services/sec_fundamentals.py`(D28), `indicators.TRACK_RECORD_FILERS`·`PAPER_ETFS`, `equities_cusip.TRACK_RECORD_CUSIPS`, `catalog.TRACK_RECORD_QUARTERS`·`SNAP_PAPER_QUOTES`·`TS_EQUITY_CLOSE`·`OBS_US_FUNDAMENTALS`·`SNAP_US_FUNDAMENTALS_STATUS` | §0-6·§4-5 |
 
 `analytics` 하위 패키지도 `analyticsIsPure`는 통과하지만(같은 접두), 기존 관례대로 `analytics/`에 평평하게 둔다.
 
@@ -374,10 +376,10 @@ decideRules(asOf):
 | 항목 | 내용 |
 |---|---|
 | 속도군·예산 | `weekly`(12시간 주기, 상한 1,800초). 1회 **200 CIK**(`FUNDAMENTALS_FETCH_BUDGET`, 1~600, `.env.example`에는 이름만). 200 × 0.37~0.6초 = 75~120초, 최대 관측 1.13초여도 230초 — 같은 속도군의 `sec_13f`·`sec_13f_track_record`와 SEC 토큰 버킷을 나눠 쓴다. 약 3회(36시간)에 전체가 한 바퀴 |
-| 대상 | `paper_universe.tradable()` − `PAPER_ETFS` 중 SEC `company_tickers.json`으로 CIK가 잡히는 종목(측정 571/596). 목록 파일은 실행마다 한 번 받는다 |
+| 대상 | `paper_universe.tradable()` − ETF(`PAPER_ETFS` ∪ 13F CUSIP 매핑표의 ETP `equities_cusip.TRACK_RECORD_ETPS`) 중 SEC `company_tickers.json`으로 CIK가 잡히는 종목(측정 570/576 — 2026-10-25의 571/596에서 ETP 20개, 곧 CIK 없는 19개와 실물 신탁 SLV를 뺀 값). 목록 파일은 실행마다 한 번 받는다 |
 | CIK 별칭표 | `FUNDAMENTALS_CIK_ALIASES: dict[ticker, list[cik]]`(수동, 소량) — 지주회사 재편으로 이력이 옛 CIK에 있는 곳. XOM = [0002115436, 0000034088] 확인. CIK ≥ 1,990,000인 매핑 9곳(BLK·FERG 등)은 구현 때 SEC submissions(이름·`formerNames`)로 확인해 맞는 것만 넣는다. 여러 CIK의 사실은 합친다(같은 키면 ④ 규칙) |
 | 요청 | `data.sec.gov/api/xbrl/companyfacts/CIK##########.json` 회사당 1건. 기존 `app.http.get_sec_session()`·`sec_rate_limit()`(13F와 같은 토큰 버킷). 404는 그 종목 `error:"no companyfacts"` |
-| 순서 | ① 한 번도 받지 않은 종목 ② 새 공시가 나왔을 때 — 마지막으로 받은 뒤 (최신 기간 end + 40일, 10-K면 + 75일)을 지났고 그 뒤로 아직 받지 않음 ③ 가장 오래전에 받은 종목. 같은 순위는 티커 순(결정적) |
+| 순서 | ① 한 번도 받지 않은 종목 ② 새 공시가 나왔을 때 — 마지막으로 받은 뒤 (최신 기간 end + 40일, 10-K면 + 75일)을 지났고 그 뒤로 아직 받지 않음 ③ 가장 오래전에 받은 종목. 같은 순위는 티커 순(결정적). 연속 실패 5회면 멈추되, 직전에 이미 실패한 회사는 세지 않고 한 곳도 못 받은 채 걸리면 가장 최근에 받은 정상 회사 하나로 SEC를 확인한 뒤에만 멈춘다(계속 실패하는 회사 몇 곳이 맨 앞에 서서 태스크를 영영 멈추지 않게) |
 | 추출 | §4-5 ⑤의 개념 후보 전부(`us-gaap`·`ifrs-full`·`dei`), 서식 10-Q·10-K·20-F·40-F와 /A. 기간·시점 사실은 `end ≥ 2023-07-01`, 연간(350~380일) 사실은 `end ≥ 2020-01-01` |
 | 중복 | 같은 (taxonomy, concept, unit, start, end)는 **처음 낸 값**과 **그 뒤 값이 바뀐 행**만 남긴다(같은 값의 재게재·다음 해 비교 열은 버림 — 측정상 사실 수가 서로 다른 기간 수의 평균 2.07배) |
 
@@ -387,6 +389,7 @@ decideRules(asOf):
 - payload: `{"cik": [...], "facts": [{"t","c","u","s","e","v","f","a","fy","fp"}]}` — taxonomy·concept·unit·start(시점 사실은 null)·end·값·서식·accn·공시의 fy·fp.
   그날 처음 낸(또는 값이 바뀐) 사실 묶음이고, 같은 날 공시가 둘이면 한 행에 합친다.
 - 쓰기: 받은 회사마다 그 회사 행을 (obs_date, entity) 단위로 upsert한다. 지우지 않는다(사실은 공시로 쌓이기만 함). 실패한 회사는 이전 행 그대로.
+  예외: 받은 회사의 지금 CIK 목록과 payload `cik`가 하나도 겹치지 않는 행은 같은 트랜잭션에서 지운다 — 티커가 다른 회사로 바뀌거나 잘못 넣은 별칭을 빼면 옛 회사의 행이 남아 '가장 늦게 낸 값' 규칙으로 섞이기 때문이다. 같은 실체의 CIK가 바뀐 곳(지주회사 재편)은 별칭표에 옛 CIK를 넣어야 이력이 남는다.
 - 상태 스냅샷 `us.fundamentals.status`(catalog `SNAP_US_FUNDAMENTALS_STATUS`): `{companies: {TICKER: {ciks, fetchedAt, latestFiled, latestEnd, taxonomy, currency, facts, error}}, universe, mapped, fetchedThisRun, failedThisRun}`.
   부분 실패는 항목별 이전 값 이어받기 + `isStale`(기존 규약), 전부 실패면 `EmptyResult`.
 
@@ -395,9 +398,10 @@ decideRules(asOf):
 - **시점 규칙**: 기준 거래일 d의 결정에는 `filed ≤ d`인 행만 쓴다(13F `filingDate ≤ asOf`와 같음 — EDGAR 공시일 d는 동부 17:30 전 접수라 KST 다음 날 아침 결정 전에 공개된다).
   초기 결정은 `filed ≤ 2026-10-23`. 같은 (t, c, u, s, e)가 여럿이면 그 범위 안에서 **가장 늦게 낸 값**(정정 /A 반영 — 측정상 /A 사실의 5%는 값이 다름).
 - 기간은 `s`/`e`로만 판단한다. `fy`·`fp`(공시의 회계연도·분기)와 `frame`(가장 늦게 낸 값에만 붙음)은 쓰지 않는다.
-- 기간 분류(52/53주 감안): 3개월 80~100일, 6개월 170~190일, 9개월 245~285일, 연간 350~380일, 시점(start 없음).
+- 기간 분류(52/53주 감안): 3개월 80~120일(12~17주), 6개월 160~200일(24~28주), 9개월 240~290일(36~40주), 연간 350~380일, 시점(start 없음). 처음 정한 폭(80~100·170~190·245~285)은 12-12-12-16주(COST: 24주 누계 167일·16주 4분기 111일)·16-12-12-12주(KR: 16주 1분기 111일·28주 누계 195일) 회계 달력을 놓쳐 그 회사들의 흐름 지표가 해마다 반년 가까이 비었다.
 - 분기 값: 손익은 3개월 사실이 있으면 그것, 없으면 누계 차감(Q2 = 6M − Q1, Q3 = 9M − 6M, Q4 = FY − 9M — 10-K에는 4분기 3개월 사실이 없다). 현금흐름은 10-Q가 누계라 차감이 기본.
 - **TTM** = 직전 연간 + 당해 누계 − 전년 같은 누계(또는 최근 4개 분기 합 — 둘 다 되면 같아야 하고, 다르면 연간 기준).
+- 전년 같은 누계(또는 누계 차감의 짧은 쪽)가 연간(긴 쪽)을 낸 **뒤에** 재작성됐으면(중단영업 재분류 — 10-Q가 비교 열을 먼저 고치고 연간은 다음 10-K에서야 고침) 기준이 섞인 값이라 TTM은 `null` + 사유, 그 분기는 버린다. 두 방법이 같은 섞인 값을 내 대조로는 잡히지 않는다. 다만 그 연간 공시가 그 전 연간도 같은 날 고쳤으면(연말 재분류) 연간이 이미 새 기준이라 계산한다.
 
 #### ⑤ 개념 후보 — 가장 최근 end를 가진 후보
 
@@ -423,18 +427,20 @@ decideRules(asOf):
 - 머리: `latestPeriodEnd`·`filed`·`form`·`currency`·`taxonomy`.
 - 손익·현금흐름: `revenueTtm`·`revenueYoY`(TTM 대비 1년 전 TTM), `netIncomeTtm`·`netMargin`, `ocfTtm`·`capexTtm`·`fcfTtm`(= OCF − capex, capex 없으면 null)·`fcfConversion`(FCF/순이익, 순이익 ≤ 0이면 null + 사유).
 - 듀퐁: `assetTurnover`(TTM 매출/평균 자산)·`leverage`(평균 자산/평균 자본)·`roe`(TTM 순이익/평균 자본 — 세 항의 곱과 같게). 평균 = (최신 시점 값 + 1년 전 시점 값)/2, 1년 전 값이 없으면 최신 값만 쓰고 표시.
-- 운전자본·주주환원·부채: `receivablesYoY`·`inventoryYoY`(시점 값 1년 전 대비), `sharesYoY`(주식수 1년 변화 — 자사주 소각 확인용), `buybacksTtm`·`dividendsTtm`, `longTermDebt`·`debtToEquity`.
+- 운전자본·주주환원·부채: `receivablesYoY`·`inventoryYoY`(시점 값 1년 전 대비), `sharesYoY`(주식수 1년 변화 — 자사주 소각 확인용. 1.4배 이상·1/1.4 이하면 분할·병합으로 보고 `null` + 사유 — 표지 주식수는 분할을 소급하지 않음), `buybacksTtm`·`dividendsTtm`, `longTermDebt`·`debtToEquity`.
 - **통화**: USD가 아니면 금액(…Ttm·`longTermDebt` 등 절대값)은 null, 비율·성장률만 낸다 — 환율·ADS 비율 없이 금액을 비교하지 않게.
 - `isStale` = 최신 기간 end가 asOf보다 15개월 넘게 앞섬(측정 시점에 IFRS 2026 연보가 companyfacts에 없는 13곳 등).
 - 단위: 패킷에는 **백만 달러**(소수 1자리), 비율은 %(소수 1자리).
 
 #### ⑦ 패킷 섹션 `8b_fundamentals` (§5-2, `8_prices` 뒤)
 
-- 대상: 보유 종목 ∪ 섹션 7 후보(교집합 후보·신호 후보) ∪ 직전 결정의 watchlist 티커, 최대 **25종목**(보유 → 후보 순, 자르면 `omitted` 수). ETF·현금성은 뺀다(재무 없음 — `note`에 적음).
+- 대상: 보유 종목 ∪ 섹션 7 후보(교집합 후보·신호 후보) ∪ 직전 결정의 watchlist 티커, 최대 **25종목**(보유 → 후보 순, 자르면 `omitted` 수). ETF·현금성은 뺀다(재무 없음 — `note`에 적음). ETF = 설정 ETF·SPY·QQQ ∪ 13F 매핑표의 ETP(`FundamentalsSection.TRACK_RECORD_ETPS` ↔ 수집기 `equities_cusip.TRACK_RECORD_ETPS`, `FundamentalsEtpParityTest`). watchlist는 모델 판단이 남은(검증된 응답의 `schemaVersion`이 있는) 가장 최근 결정의 것 — 실패·건너뛴 결정은 건너뛴다.
+- 배수(`assetTurnoverX`·`leverageX`)는 소수 2자리, 1배 미만은 유효숫자 3자리(은행 회전율 0.038배가 0.04배가 되어 보이는 세 항의 곱이 ROE와 어긋나지 않게). 계산 메모는 뜻이 큰 것부터(값의 뜻이 바뀐 것 → 일부러 비운 값 → 자료가 없어 빈 값), 개념 이름은 범례 코드로 줄여 한 줄 80자에 담는다.
 - 형식은 `8_prices`와 같은 열 배열(`columns` + `rows`). 종목마다 `conceptsUsed`(필드 → 개념 이름, 축약 표) 한 줄, `isStale`·`isProxy`·`currency`.
 - `note`: "SEC XBRL 공시 원자료로 기계 계산(공시일 ≤ 기준일). 빈 값은 자료 없음 — [확인 필요]. 회사마다 태그가 달라 개념 이름을 함께 적음. 실적 보도자료(8-K)는 들어오지 않아 10-Q 전까지 직전 분기 값".
 - 크기: 25종목 × 약 30칸 ≈ 3,000토큰 → §5-2 패킷 목표를 25,000에서 30,000토큰으로 올린다.
 - 시스템 프롬프트 고정 문단(`ClaudePrompts.FIXED_RULES`)에 한 줄: "재무(8b_fundamentals)는 공시 원자료로 계산한 값이다. 빈 값은 자료 없음이며 [확인 필요]로 둔다."
+- 임시 v0 프레임(`FrameworkService.interimBody`)의 E3 둘째 문장 "재무 자료가 없으므로 질에 대한 판단은 [가설]로 표시한다"를 "재무는 8b_fundamentals의 공시 값만 쓰고, 빈 값은 [확인 필요]로 둔다"로 고쳤다(새로 시드하는 v0만 — 이미 시드된 v0 행은 DB 본문이라 그대로이고, 운영의 지금 판은 v1 USER).
 
 #### ⑧ 백엔드 읽기·상태 API
 
@@ -582,9 +588,9 @@ decideRules(asOf):
   더하고(V11), 추정한 호출 수(`est_cost_calls`)를 함께 보여 단가 도입 전·토큰 모름 호출이 빠진 것을 드러낸다(`isEstimated`). 결정 호출과 프레임 제안 호출이
   같은 상한·사용량을 쓴다(`PaperApiCalls`, F7). 버튼의 확인 문구는 아래 표의 1회 어림(약 $0.1)을 쓴다.
 
-| 모델 | 1회(입력 25K·출력 4K 추정) | 월(결정 1회/일 + 제안 4회) |
+| 모델 | 1회(입력 최대 30K·출력 4K 추정 — D28로 재무 8b를 더하기 전 25K) | 월(결정 1회/일 + 제안 4회) |
 |---|---|---|
-| Sonnet 5.5 | 약 $0.09 | 약 $3 |
+| Sonnet 5.5 | 약 $0.10(25K면 $0.09) | 약 $3 |
 | Haiku 5.5 | 약 $0.005 | 약 $0.2 |
 
 ---
@@ -704,8 +710,8 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 |---|---|
 | 장중 마지막 봉 | **[확인 필요]** 10-26(월) KST 22:30 뒤 — §13 첫 행 |
 | 벤치마크 추이 대조 | 두 벤치마크 책 순자산을 SPY·SHY 종가 변화와 대조 — 출발일 뒤 첫 세션(10-26)의 확정 순자산이 생긴 뒤 **[확인 필요]** |
-| 재무제표 | 패킷에 없음. 사용자 OS 엔진 E3·E4·E5·E8-R4가 재무 수치를 요구 — 모델은 '확인 필요'로 다룰 것으로 봄(추정). §14-1 |
-| 패킷 크기 | 실제 호출의 캐시 안 된 입력 26,866토큰이 §5-2 목표(25,000)보다 큼. `PacketBuilderTest.fitsTokenBudget`은 어림 토큰으로 잰다 — 패킷만의 실제 토큰 수는 **[확인 필요]** |
+| 재무제표 | **D28로 해결** — Claude 책 패킷에 `8b_fundamentals`(SEC XBRL, 공시일 ≤ 기준일, 25종목까지, §4-5). 사용자 OS 엔진 E3·E4·E5·E8-R4가 묻는 TTM·성장률·마진·FCF·ROE를 싣는다. 남은 한계: 실적 보도자료(8-K) 없음(10-Q 전까지 직전 분기 값), IFRS 2026 연보 공백 13곳, 복수 주식 종류의 표지 주식수 없음(DATA_SOURCES §5). 규칙 책·검증기의 재무 필터는 §14-1 그대로 |
+| 패킷 크기 | 실제 호출의 캐시 안 된 입력 26,866토큰이 그때의 §5-2 목표(25,000 — D28로 30,000)보다 큼. `PacketBuilderTest.fitsTokenBudget`은 어림 토큰으로 잰다 — 패킷만의 실제 토큰 수는 **[확인 필요]** |
 | 순자산 차트 | 하루 범위가 $1 미만이면 y축 눈금 글자가 같은 값으로 되풀이됨(화면만) |
 | `AI_ENGINES` | [ADR 0014](../adr/0014-aws-demo-ai-report.md) 허용 목록이 `AiService.structured`를 거르지 않음. 로컬 전용이라 지금은 상관없음 — main·AWS로 옮기기 전에 고친다 |
 
