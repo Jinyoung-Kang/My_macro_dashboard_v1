@@ -39,7 +39,7 @@
 |---|---|---|
 | 새 태스크 `sec_13f_track_record` (`weekly`) | `indicators.TRACK_RECORD_FILERS`(후보 27곳, 선행 CIK 포함)의 13F를 기관당 **30분기**까지 받아 `sec.13f.{cik}.q30`에 저장. 실행마다 **예산**(기본 400건, 공시 하나 약 0.4초) 안에서 아직 없는 공시만 채우고 나머지는 다음 실행에. 선행 CIK가 있으면 선행 CIK의 마지막 분기까지 + 현재 CIK의 그 뒤 분기를 잇는다 | 기존 `sec_13f`(12곳·q8)와 13F 화면은 그대로. 같은 서비스(`services/sec13f.collect_13f`)를 쓴다 |
 | `collect_13f`에 `reuse_stored=True`·`list_count` 옵션 | 저장본에 있는 `filingDate`는 다시 받지 않는다. 목록은 `count=100`(단계 0: 27곳 모두 한 페이지에 원본 30건), 모자라면 `start=` 다음 페이지(최대 3쪽). 기존 호출은 기본값으로 동작 변화 없음 | 서비스 한 곳 |
-| 새 매핑표 `equities_cusip.TRACK_RECORD_CUSIPS` (CUSIP → 야후 티커, D25) | 후보 기관 보유 상위 600개 CUSIP을 OpenFIGI·SEC `company_tickers.json`·야후 이력으로 대조해 채택한 445개(§4-0 ③). **`q30` 저장본에만** 붙인다(`attach_tickers(…, cusip_map=…)`) | 기존 `EQUITY_MAP`·`q8` 티커는 그대로 |
+| 새 매핑표 `equities_cusip.TRACK_RECORD_CUSIPS` (CUSIP → 야후 티커, D25) | 후보 기관 보유 상위 600개 CUSIP을 OpenFIGI·SEC `company_tickers.json`·야후 이력으로 대조해 채택한 498개(§4-0 ③). **`q30` 저장본에만** 붙인다(`attach_tickers(…, cusip_map=…)`) | 기존 `EQUITY_MAP`·`q8` 티커는 그대로 |
 | 새 태스크 `paper_quotes` (`slow`, 1시간) | 모의 매매 유니버스(`EQUITY_MAP` 티커 + `TRACK_RECORD_CUSIPS` 티커 + 유니버스 ETF 17 + SPY·QQQ) 최근 3개월 일봉 → 스냅샷 `paper.quotes`. 장중에는 마지막 봉이 지연 시세 | 장부 관측치의 유일한 출처(§3-1) |
 | 새 태스크 `paper_price_history` (`weekly`, 12시간) | 같은 유니버스 10년 일봉(수정주가) → `timeseries` 데이터셋 `equity_close`(종목 = `series_id`). `put_timeseries` upsert라 배당·분할로 바뀐 과거 값만 다시 쓴다 | 트랙레코드·모멘텀·분할 감지의 이력(백엔드는 필요한 종목만 범위로 읽음) |
 | `catalog.TRACK_RECORD_QUARTERS = 30`·`SNAP_PAPER_QUOTES`·`TS_EQUITY_CLOSE` + `Datasets` 같은 상수 | 이름 상수를 같이(`DatasetsParityTest`) | |
@@ -223,7 +223,7 @@ STOP: 생성과 동시에 FILLED      일시정지·리셋: PENDING → CANCELLE
 | 선행 CIK | Greenlight Capital = DME Capital Management(0001489933, 2024-03-31 분기부터) ← Greenlight Capital Inc(0001079114, 2023-12-31까지). Pershing Square = Pershing Square Inc.(0002026053, 2026-06-30 분기부터) ← Pershing Square Capital Management(0001336528, 2026-03-31까지) | 선행 CIK의 마지막 보고 분기까지 + 현재 CIK의 그 뒤 분기. 겹치는 분기는 선행 CIK(퍼싱의 2025-06-30~2026-03-31 PSI 공시는 하워드 휴스 지분 한 종목뿐) |
 | **제외** | 뱅가드·블랙록·스테이트스트리트·노르웨이·국민연금·CPPIB·APG(인덱스·준인덱스), 시타델·밀레니엄·르네상스·투시그마·DE쇼·서스쿼해나·제인스트리트(퀀트·멀티전략·마켓메이커) | 13F 롱온리가 실체를 왜곡 |
 
-기존 12곳 중 액티브 5곳은 후보에 포함되므로 `sec.13f.{cik}.q8`(기존)과 `q30`(새)이 함께 존재한다. 백엔드는 트랙레코드·신호에 `q30`을, 기존 13F 화면은 `q8`을 읽는다. 커버리지 미달 5곳(단계 0 표 C)도 후보 목록에 남겨, 기관 선정 탭에 미달 사유와 함께 보인다(R9) — 자격이 없으니 선정되지 않는다.
+기존 12곳 중 액티브 5곳은 후보에 포함되므로 `sec.13f.{cik}.q8`(기존)과 `q30`(새)이 함께 존재한다. 백엔드는 트랙레코드·신호에 `q30`을, 기존 13F 화면은 `q8`을 읽는다. 커버리지 미달 4곳(단계 0 표 C)도 후보 목록에 남겨, 기관 선정 탭에 미달 사유와 함께 보인다(R9) — 자격이 없으니 선정되지 않는다.
 
 #### ② 수집 (`task_sec_13f_track_record`, §0-6)
 
@@ -243,7 +243,7 @@ for filer in TRACK_RECORD_FILERS (저장본이 가장 적은 기관부터):
 
 #### ③ 티커 매핑 확장 (R9, ADR 0015)
 
-단계 0에서 바꿨다(D25). 이름(`EQUITY_MAP`)으로는 같은 증권의 표기가 너무 많고('FACEBOOK INC'·'META PLATFORMS, INC., CLASS A' — 같은 CUSIP 30303M102), 'ISHARES TR' 한 이름 아래 ETF가 수백 개라 **CUSIP으로 붙인다**. 절차: ① 7년 창 분기에서 지금 매핑표로 덮이지 않는 지분 증권을 CUSIP별로 모아 기관 내 비중 합으로 순위 → ② 상위 600개를 OpenFIGI `v3/mapping`(CUSIP → US 합성 티커·이름·종류)으로 조회 → ③ SEC `company_tickers.json` 등록 이름과 야후 10년 이력(첫·마지막 날짜)을 붙여 이름 토큰을 대조 → ④ 사람(에이전트 검토 포함)이 "다른 증권인 행"을 찾아 뺀다 → `equities_cusip.TRACK_RECORD_CUSIPS`(CUSIP → 야후 티커)에 적는다. OpenFIGI가 US 티커를 주지 않는 CUSIP(상장폐지·인수·외국 원주 154개)은 붙이지 않는다 — 가격도 구할 수 없다. 이 표는 `q30`에만 쓰고, 채권·우선주·워런트 배제(`classify_holding`)를 먼저 적용한다. 결과: 600개 중 445개 채택, 커버리지 기준(D22) 통과 27곳 중 22곳(단계 0 표 C·E).
+단계 0에서 바꿨다(D25). 이름(`EQUITY_MAP`)으로는 같은 증권의 표기가 너무 많고('FACEBOOK INC'·'META PLATFORMS, INC., CLASS A' — 같은 CUSIP 30303M102), 'ISHARES TR' 한 이름 아래 ETF가 수백 개라 **CUSIP으로 붙인다**. 절차: ① 7년 창 분기에서 지금 매핑표로 덮이지 않는 지분 증권을 CUSIP별로 모아 기관 내 비중 합으로 순위 → ② 상위 600개를 OpenFIGI `v3/mapping`(CUSIP → US 합성 티커·이름·종류)으로 조회 → ③ SEC `company_tickers.json` 등록 이름과 야후 10년 이력(첫·마지막 날짜)을 붙여 이름 토큰을 대조 → ④ 사람(에이전트 검토 포함)이 "다른 증권인 행"을 찾아 뺀다 → `equities_cusip.TRACK_RECORD_CUSIPS`(CUSIP → 야후 티커)에 적는다. 외국 발행사 CUSIP(CINS)은 `ID_CINS`로 묻는다. OpenFIGI가 US 티커를 주지 않는 CUSIP(상장폐지·인수, 역분할·합병 전의 옛 CUSIP 101개)은 붙이지 않는다 — 가격도 구할 수 없다. 이 표는 `q30`에만 쓰고, 채권·우선주·워런트 배제(`classify_holding`)를 먼저 적용한다. 결과: 600개 중 498개 채택, 커버리지 기준(D22) 통과 27곳 중 23곳(단계 0 표 C·E).
 
 #### ④ 계산 (`TrackRecord13F`, R7)
 
@@ -538,7 +538,7 @@ run():
 | EDGAR 30분기 수집이 느림(750건) | 실행당 예산·증분 저장. `make collect-all` 반복으로 하루 안에. 진행률 표시. 끝나기 전 재선정일이 오면 그 후보는 제외하고 기록 |
 | `browse-edgar` 목록 100행으로도 30분기가 안 잡힘 | 단계 0에서 확인. 모자라면 `start=` 페이지(같은 방법 안) |
 | 10년 가격 저장본이 커져 화면이 느려짐 | 단계 0 측정. 16MB 넘으면 `timeseries` 테이블로 옮기는 설계 변경(ARCHITECTURE 3-1) |
-| 트랙레코드 재계산 비용(25곳 × 30구간 × 수백 종목) | 재선정일(연 4회)과 수동 때만. 결과는 `paper_track_record`에 캐시 |
+| 트랙레코드 재계산 비용(27곳 × 30구간 × 수백 종목) | 재선정일(연 4회)과 수동 때만. 결과는 `paper_track_record`에 캐시 |
 | 주말 재저장 룩어헤드 | 체결 조건 2. 테스트 고정 |
 | Claude가 노출을 과격하게 바꿈(0%↔100% 반복) | 하드 규칙으로 막지 않는다(D7). 월 주문 상한·최소 보유일·최소 금액이 간접 제동. 노출 추이를 개요에 그려 사용자가 본다 |
 | Claude 비용 폭주 | 일일 상한 6회(DB로 셈) |
@@ -586,12 +586,12 @@ run():
 | 미국 장중 저장본의 마지막 봉 | 토요일이라 직접 비교 불가, 지난 장중 저장본도 남아 있지 않음. 같은 수집 함수로 열린 시장(BTC-USD)을 75초 간격으로 받으면 마지막 봉이 오늘 날짜이고 값이 바뀜 | 설계 그대로(D3). 장중 봉이 없어도 체결 조건 2로 `NEXT_OBSERVATION`이 다음 확정 종가 체결이 됨. **[확인 필요]** 10-26(월) KST 22:30 뒤 `PaperRiskJob` 기록으로 확인 |
 | 후보 기관 CIK (27곳) | 27곳 모두 13F-HR 이력 있음. 선행 CIK가 필요한 곳 2(Greenlight → DME Capital Management, Pershing PSCM → Pershing Square Inc.). Scion은 2025-09-30 분기가 마지막 | 후보 27곳 그대로(D21). `TRACK_RECORD_FILERS`에 선행 CIK(§4-0 ①·②) |
 | EDGAR 목록 깊이·기관당 30분기 수집 시간 | `count=100` 한 페이지에서 27곳 모두 원본 30건. 기관당 10.0~17.5초, 27곳 약 6분 | 예산 기본 400건/실행(§4-0 ②). 다음 페이지(`start=`)는 안전장치로만 |
-| 후보 기관 티커 커버리지 (기관별 %) | 지금 매핑표로는 D22 자격 1곳(버크셔). CUSIP 매핑 445개를 더하면 22곳 자격, 미달 5곳(Baupost·Greenlight·Scion·Soros·Tudor) | **D22 그대로.** 매핑은 이름이 아니라 CUSIP으로(D25, §4-0 ③). 미달 5곳은 목록에 남기고 사유를 보임 |
+| 후보 기관 티커 커버리지 (기관별 %) | 지금 매핑표로는 D22 자격 1곳(버크셔). CUSIP 매핑 498개를 더하면 23곳 자격, 미달 4곳(Baupost·Scion·Soros·Tudor) | **D22 그대로.** 매핑은 이름이 아니라 CUSIP으로(D25, §4-0 ③). 미달 4곳은 목록에 남기고 사유를 보임 |
 | 10년 가격 저장본 크기·개요 응답 시간 | 138종목 10년 JSONB 4.49MB, 응답 시간 비슷, 백엔드 메모리 +130MiB. 550여 종목이면 약 18MB·힙 초과 예상 | **D23 변경**: `equity.price_history`는 그대로(5년·138종목), 10년 이력은 `timeseries` `equity_close`, 관측치는 `paper.quotes`(§0-6·§3-1) |
 | Sonnet 5.5 호출 | `claude-sonnet-5-5`·`claude-haiku-5-5` 모두 구조화 출력으로 정상(4.6초·2.4초) | 모델 ID 그대로(D5) |
 | SDK 스키마 주입 | Jackson 3 `Map` → `Schema.putAdditionalProperty` + `JsonValue.from` 동작. 단 `minimum`·`maximum`은 400, 길이·개수 제약도 미지원 | 스키마 제약을 API용·검증용으로 나눔(§5-1) |
 | 10-23 FRED·환율 값 | `DGS10` 10-23 값 아직 없음(10-22 = 4.96%), `T10Y3M`·`T10YIE`는 10-23까지, USD/JPY 10-23 = 156.814 | 초기 패킷은 `asKnownOn`으로 10-22 관측치(10-23에 알려진 최신)를 씀(§5-6) |
-| 2026-10-23 기준 예상 상위 5(원형 계산) | Duquesne(CAGR 28.8%)·Appaloosa(21.8%)·Viking(18.0%)·Coatue(17.0%)·Himalaya(16.8%). 같은 창 SPY 누적 180% | 단계 1b의 자바 계산과 대조(단계 0 표 D) |
+| 2026-10-23 기준 예상 상위 5(원형 계산) | Duquesne(CAGR 27.5%)·Appaloosa(21.9%)·Greenlight(19.1%)·Viking(18.0%)·Himalaya(16.8%). 같은 창 SPY 누적 180%. 매핑을 445개에서 498개로 늘리자 Coatue(6위)와 Greenlight(3위)가 자리를 바꿈 — 순위가 커버리지에 민감 | 단계 1b의 자바 계산과 대조(단계 0 표 D) |
 
 ---
 
