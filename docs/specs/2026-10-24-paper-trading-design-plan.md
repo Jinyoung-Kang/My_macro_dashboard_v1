@@ -148,6 +148,7 @@
 | `paper_notes` | `id`, `kind` CHECK(MARKET·INSIGHT), `as_of_date`, `expires_on NULL`, `title`, `body`, `created_at`, `archived` | |
 | `paper_settings` / `paper_settings_history` | 한 행 JSONB + 버전 이력(`changed_keys TEXT[]`) | |
 | `paper_job_runs` | `id`, `job`, `started_at`, `finished_at`, `outcome`, `detail JSONB` | 최근 200건 유지 |
+| `paper_start_prices` | `ticker PK`, `trading_date`, `close`, `source`, `captured_at` | 출발일 종가를 처음 초기화 때 유니버스 전체로 한 번 얼림. 사후 체결·리셋은 이 값만 씀 — 수정주가 이력은 배당락 뒤 출발일 종가가 낮게 다시 쓰여 배당이 장부에 섞이기 때문 |
 | `paper_api_usage` | `day PK`, `calls`, `input_tokens`, `output_tokens`, `cache_read_tokens` | 일일 상한·월 비용 |
 
 ---
@@ -168,9 +169,9 @@
 
 **만료**: 기준 거래일 + 3거래일 → `EXPIRED`.
 
-**관측치 처리 순서**(책마다 한 트랜잭션): 매도 체결 → 매수 체결 → 최고가 갱신·스탑 생성·즉시 체결 → 분할 감지 → 평가 → 확정 종가면 `paper_nav_daily` upsert → `last_processed_collected_at` 갱신.
+**관측치 처리 순서**(책마다 한 트랜잭션): 만료·지난 재진입 금지 정리 → 분할 감지(가격 갱신) → 매도 체결 → 최고가 갱신·스탑 생성·즉시 체결(+ 재진입 금지) → 매수 체결 → 평가 → 그 세션의 마감 뒤 관측치면 `paper_nav_daily` upsert → `last_processed_collected_at` 갱신. 분할 감지를 먼저 하는 것은 분할 뒤 반값 관측가가 분할 전 최고가와 비교돼 가짜 스탑이 나지 않게, 스탑을 매수 앞에 두는 것은 이번 관측치에서 스탑에 걸린 종목의 대기 매수가 재진입 금지로 취소되게(사자마자 같은 관측치의 스탑으로 팔리지 않게) 하려는 것이다. 순자산 줄은 관측 시각의 세션(`currentOrLastSession`)이 다수 티커의 봉 날짜와 같을 때만 쓰고(다음 날 개장 직후 관측치가 전날 줄을 덮지 않게), 보유가 모두 그 세션의 확정 봉으로 평가됐을 때만 `prices_final = true`다.
 
-**BACKFILL 체결**은 `PaperAdminService`가 10-23 종가 시계열 값으로 직접 만든다(`observed_at = 10-23 16:00 ET`).
+**BACKFILL 체결**은 `PaperAdminService`가 10-23 종가로 직접 만든다(`observed_at = 10-23 16:00 ET`). 종가는 `paper_start_prices`에 얼린 값이다(§2).
 
 ### 3-2. 주문 상태
 
