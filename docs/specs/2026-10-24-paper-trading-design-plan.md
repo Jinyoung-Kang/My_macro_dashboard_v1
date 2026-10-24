@@ -2,7 +2,7 @@
 
 > 명세: [2026-10-24-paper-trading-spec.md](2026-10-24-paper-trading-spec.md). 결정에 따라 정해진 곳은 "(D#)"로 표시했습니다.
 >
-> - 상태: **구현 중**(2026-10-25, 5차 — **D28** 미국 종목 재무(SEC XBRL)를 Claude 책 패킷에: **단계 5 구현 중**, 설계 §4-5·§5-2 `8b`, 근거는 단계 0-b 측정 §13) · 이전: 구현 완료(2026-10-25 — 단계 0~4, 결과는 §9-1~§9-3) · 그 이전: 구현 중(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
+> - 상태: **구현 완료**(2026-10-25, 단계 0~5 — 결과는 §9-1~§9-3) · 5차 — **D28** 미국 종목 재무(SEC XBRL)를 Claude 책 패킷에: 단계 5, 설계 §4-5·§5-2 `8b`, 근거는 단계 0-b 측정 §13) · 이전: 구현 완료(2026-10-25 — 단계 0~4, 결과는 §9-1~§9-3) · 그 이전: 구현 중(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
 > - 단계 0 근거 표: [2026-10-24-paper-trading-step0.md](2026-10-24-paper-trading-step0.md). 요약은 §13.
 > - 구현 결과(단계별 결과·운영 상태·남은 확인, 2026-10-25): §9-1~§9-3. 설계 결정과 지키는 시험: [ADR 0018](../adr/0018-paper-trading-guardrails.md).
 > - 이 문서는 **어떻게, 어떤 순서로** 만들지 정합니다. 파일·클래스 이름은 구현 때 바뀔 수 있지만 배치 규칙(§1)은 바뀌지 않습니다.
@@ -590,7 +590,7 @@ decideRules(asOf):
 
 | 모델 | 1회(입력 최대 30K·출력 4K 추정 — D28로 재무 8b를 더하기 전 25K) | 월(결정 1회/일 + 제안 4회) |
 |---|---|---|
-| Sonnet 5.5 | 약 $0.10(25K면 $0.09) | 약 $3 |
+| Sonnet 5.5 | 약 $0.12(실측 — 입력 31.9K·캐시 쓰기 6.4K·출력 4.5K; 재무 전 25K면 $0.09) | 약 $3 |
 | Haiku 5.5 | 약 $0.005 | 약 $0.2 |
 
 ---
@@ -675,7 +675,7 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | **3a. Claude 책 — 결정** | `AiService.structured`, 스키마 2개, `PacketBuilder`(게이트 참고·트랙레코드 섹션 포함), `OrderValidator`(예산 규칙 없음), `ClaudeBookService`, `paper_api_usage`, 설정 테이블·API·탭, 결정 로그 탭(패킷·응답·검증·노출), `run/decision`·`run/initial-decision` | L | 가짜 서버 4종. 검증기 규칙별 테스트 + "노출 0%·100% 모두 통과" 테스트. 초기 결정 패킷에 10-23 이후 값 없음. 실제 키로 10-23 초기 결정 미리보기 1회(장부를 바꾸지 않음 — 책 시작은 사용자가 누름, L2) |
 | **3b. 프레임·메모** | `paper_framework_*`·`paper_notes`, `FrameworkService`(v1 시드 — 매크로 축은 지침 문장으로)·`NoteService`, API, 탭 | M | 승인 전후 테스트. 만료 메모 제외. v1 규칙 목록 사람이 검토 |
 | **4. 마무리** | ADR 0018, ARCHITECTURE·API.md·DATA_SOURCES·README·`.env.example`·compose(`PAPER_ENABLED`), 이 문서 구현 결과 표 | S | `make test` 통과, `/paper` 여섯 탭 동작(구현은 일곱 탭 — 단계 3b에서 '프레임·메모'를 '프레임'·'메모'로 나눔, §9-1), `git branch -r --contains HEAD` 빈 결과 |
-| **5. 재무(D28)** — 구현 중 | 수집기: `sec_fundamentals`(weekly, 1회 200 CIK, `FUNDAMENTALS_FETCH_BUDGET`)·`FUNDAMENTALS_CIK_ALIASES`(XOM은 확인됨, CIK ≥ 1,990,000 9곳은 구현 때 submissions로 확인)·catalog `OBS_US_FUNDAMENTALS`·`SNAP_US_FUNDAMENTALS_STATUS` + `Datasets` 상수. 백엔드: `analytics.Fundamentals`(시점·기간 분류·누계 차감·TTM·개념 선택·지표), `store` 읽기(`obs_date ≤ asOf`), `PacketBuilder` 섹션 `8b_fundamentals`·목표 30,000토큰, `ClaudePrompts.FIXED_RULES` 한 줄, `/api/paper/status`의 `fundamentals`, 개요 데이터 상태 줄. 문서: DATA_SOURCES(태스크 24개·재무 행·한계), README·CLAUDE.md·ARCHITECTURE의 태스크 수 23 → 24, `.env.example`(§4-5) | M | 수집기 실행(1회 200 CIK, 약 3회)으로 매핑된 회사의 **90% 이상**이 채워짐(상태 스냅샷의 `mapped` 대비). 시점(PIT) 단위 테스트 — `filed ≤ asOf`·같은 기간은 가장 늦게 낸 값·누계 차감(Q2~Q4)·TTM·`null`(0 아님)·USD 아닌 금액 `null`. 10-23 초기 결정 **미리보기 패킷에 `8b_fundamentals` 섹션**이 있음. `make test` 통과 |
+| **5. 재무(D28)** — 완료(2026-10-25) | 수집기: `sec_fundamentals`(weekly, 1회 200 CIK, `FUNDAMENTALS_FETCH_BUDGET`)·`FUNDAMENTALS_CIK_ALIASES`(XOM은 확인됨, CIK ≥ 1,990,000 9곳은 구현 때 submissions로 확인)·catalog `OBS_US_FUNDAMENTALS`·`SNAP_US_FUNDAMENTALS_STATUS` + `Datasets` 상수. 백엔드: `analytics.Fundamentals`(시점·기간 분류·누계 차감·TTM·개념 선택·지표), `store` 읽기(`obs_date ≤ asOf`), `PacketBuilder` 섹션 `8b_fundamentals`·목표 30,000토큰, `ClaudePrompts.FIXED_RULES` 한 줄, `/api/paper/status`의 `fundamentals`, 개요 데이터 상태 줄. 문서: DATA_SOURCES(태스크 24개·재무 행·한계), README·CLAUDE.md·ARCHITECTURE의 태스크 수 23 → 24, `.env.example`(§4-5) | M | 수집기 실행(1회 200 CIK, 약 3회)으로 매핑된 회사의 **90% 이상**이 채워짐(상태 스냅샷의 `mapped` 대비). 시점(PIT) 단위 테스트 — `filed ≤ asOf`·같은 기간은 가장 늦게 낸 값·누계 차감(Q2~Q4)·TTM·`null`(0 아님)·USD 아닌 금액 `null`. 10-23 초기 결정 **미리보기 패킷에 `8b_fundamentals` 섹션**이 있음. `make test` 통과 |
 
 ### 9-1. 구현 결과 (2026-10-25)
 
@@ -692,6 +692,7 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | 3a | `AiService.structured`(먼저 `cfaa402`로 예외 분류를 떼어 냄), `StructuredSchema`·`decision.schema.json`, `OrderValidator`, `PacketBuilder`, `ClaudeBookService`, 설정 API 3개·설정 탭, Claude 결정 상세·노출 추이·호출 사용량, V10 | `cfaa402` · `7feca27` · `d17d16f` · `ad5555f` | **충족.** 가짜 서버 4종(`ClaudeBookServiceTest` 정상·형식 오류·거절·429), 검증기 규칙별·노출 0%·100%(`OrderValidatorTest`), 초기 패킷에 10-23 뒤 값 없음(`PacketBuilderTest.initialPacketHasNothingAfterAsOf`), 실제 키 미리보기 1회(§9-2) | V10 `packet_text`, `BELOW_ONE_SHARE`, 체결 시점을 나눈 `OVER_ALLOCATED`·`MAX_POSITIONS`, 그룹별 기관 상한, 호출은 장부 잠금 밖 + 일시정지·초기화 재확인, 응답 뒤 실패는 다시 부르지 않음(`AFTER_RESPONSE`), 스케줄러 스레드 4개 + `tryLock`(§5-2·§5-4·§5-5·§6-2 구현 메모) |
 | 3b | `FrameworkService`(v0 시드·렌더링·제안→승인·수동 편집)·`NoteService`·`PaperApiCalls`, V11, API 10개, 프레임·메모 탭 | `99059dc` · `941cceb` · `b6f7016` · 결함 `d38eda8` → `0e07824` · 리뷰 수정 `515c524` | **시험으로 충족** — 승인 전후(`FrameworkServiceTest`), 만료 메모 제외(`NoteServiceTest.packetNotes`). 'v1 규칙 목록 사람 검토'는 v1이 사용자 원문을 그대로 옮긴 판이 되면서 성격이 바뀜 — 사용자 확인 여부 **[확인 필요]** | v0 임시·v1 사용자 OS(F1), 결정 시점 설정으로 렌더링, 추정 비용 단가 설정(V11, C8), 메모 기준일 기본값, 탭을 '프레임'·'메모' 둘로. 메모 빈 줄 결함 — 재현 `d38eda8`, 수정 `0e07824`. 리뷰 수정(§5-7 구현 메모 ①~⑥) |
 | 4 | ADR 0018·ADR 목록, `docs/ARCHITECTURE.md`(§3 표·§4-1·§4-2·§8), `README.md`(메뉴·환경변수·폴더), `docs/DATA_SOURCES.md`(저장본 표의 기존 저장본 행·미국 재무 없음), `.env.example`·`docker-compose.yml`(`PAPER_ENABLED`가 끄는 정기 작업 셋), 이 절, §12-2의 낡은 수치(태스크 수·예산 기본값). 앞 단계에서 함께 고친 것: `docs/API.md`(29행), `docs/DATA_SOURCES.md`(태스크 3개·후보 기관·저장본과 한계), `.env.example`·`docker-compose.yml`(`PAPER_ENABLED`·`TRACK_RECORD_FETCH_BUDGET`) | (문서 정리) | **충족.** `make test` 통과(위 — 단계 4는 문서만 고침), `/paper` 일곱 탭 동작(QA 스택·헤드리스 Chrome, §9-2), `git branch -r --contains HEAD` 빈 결과(2026-10-25) | 탭 여섯 → 일곱(명세 U2·§1 그림은 여섯 탭 그대로) |
+| 5 | D28: 수집기 `sec_fundamentals`(weekly·1회 200 CIK·별칭 XOM·BLK·FERG — SEC submissions로 확인, 13F ETP 제외), `observations` `us.fundamentals`(공시일 단위), `analytics.Fundamentals`·`FundamentalsSection`, 패킷 `8b_fundamentals`(목표 30,000, `PACKET_VERSION` 2), 상태 응답 `fundamentals`, 개요 한 줄, 태스크 24 | `02df478`(D28 문서) · `73374c2` · `307a6be` · `ed57d62` · `a9b7f36` | **충족.** 세 번 실행(83~90초씩)으로 매핑 570곳 중 **568곳(99.6%)** 채움(companyfacts 없음 2), 8,244행·약 8MB. 저장값이 단계 0-b와 같음(AAPL 07-31·JPM 08-06·XOM 08-03 공시). 시점·누계·TTM·null·통화 단위 시험. 미리보기 패킷에 8b 20종목, 10-23 뒤 공시일 없음. `make test` 통과 | 패킷 실제 입력이 31,883토큰으로 목표 30,000을 조금 넘음(어림 토큰보다 실제 토크나이저가 큼 — 경고 로그만, 회당 약 $0.12) |
 
 ### 9-2. 운영 상태 (2026-10-25, `515c524`에서 `make up`)
 
@@ -702,6 +703,8 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | 규칙 책 결정 | 1번 INITIAL(체결 11건). 2번 SCHEDULED 10-23 NO_TRADE는 수정 전 결함(출발일 당일 정기 결정, `79294e6`·`6ff9f58`)이 남긴 행 — 이력으로 둔다 |
 | 프레임 | v0 INTERIM(시드), v1 USER = 사용자 OS 원문 "빠방이 투자 운영체계"(원칙 5·엔진 8·규칙 29, 문구 그대로). 원문 전체는 INSIGHT 메모 #2. 메모 #1은 보관 — 수정 전 정규화가 빈 줄을 지운 본문(`d38eda8`·`0e07824`) |
 | 실제 키 호출 | 10-23 초기 결정 미리보기 1회(장부 변화 없음): 24.8초, 입력 26,866 + 캐시 쓰기 2,714 + 출력 2,632토큰 ≈ $0.09(§5-9 단가), 목표 노출 42%, 주문 6건 모두 통과. 패킷 시점 검사에서 10-23 뒤 값은 매크로 카드(`asOfMismatch`, C6이 허용)와 달력의 `nextSession`뿐 |
+| 재무(D28) | `a9b7f36`에서 `make up`, `sec_fundamentals` 세 번 실행 → 568/570곳. 10-23 초기 결정 미리보기 2회째(v1 프레임·8b 포함): 37.6초, 입력 31,883 + 캐시 쓰기 6,404 + 출력 4,548토큰 ≈ $0.12, 목표 노출 53%, 주문 7건 모두 통과 — 응답이 FCF·ROE로 후보를 거름(AMZN FCF 적자, PANW·MRK 낮은 ROE 제외) |
+| 설정 | v2(2026-10-25 04:51 KST): `apiDailyCallCap` 6 → 10 — 화면 설정 탭에서 바뀐 것으로 봄(작업 기록에 운영 설정 호출 없음) |
 | 화면 확인 | QA 스택(`QA_NO_LOGIN=1`, `backups/macrodash-20261025-033109.sql` 복원)에서 헤드리스 Chrome으로 일곱 탭 모두 그려짐, 콘솔 오류·HTTP ≥ 400 없음 |
 
 ### 9-3. 남은 확인과 알려진 한계
@@ -711,7 +714,7 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | 장중 마지막 봉 | **[확인 필요]** 10-26(월) KST 22:30 뒤 — §13 첫 행 |
 | 벤치마크 추이 대조 | 두 벤치마크 책 순자산을 SPY·SHY 종가 변화와 대조 — 출발일 뒤 첫 세션(10-26)의 확정 순자산이 생긴 뒤 **[확인 필요]** |
 | 재무제표 | **D28로 해결** — Claude 책 패킷에 `8b_fundamentals`(SEC XBRL, 공시일 ≤ 기준일, 25종목까지, §4-5). 사용자 OS 엔진 E3·E4·E5·E8-R4가 묻는 TTM·성장률·마진·FCF·ROE를 싣는다. 남은 한계: 실적 보도자료(8-K) 없음(10-Q 전까지 직전 분기 값), IFRS 2026 연보 공백 13곳, 복수 주식 종류의 표지 주식수 없음(DATA_SOURCES §5). 규칙 책·검증기의 재무 필터는 §14-1 그대로 |
-| 패킷 크기 | 실제 호출의 캐시 안 된 입력 26,866토큰이 그때의 §5-2 목표(25,000 — D28로 30,000)보다 큼. `PacketBuilderTest.fitsTokenBudget`은 어림 토큰으로 잰다 — 패킷만의 실제 토큰 수는 **[확인 필요]** |
+| 패킷 크기 | 실제 호출의 캐시 안 된 입력(= 패킷): D28 전 26,866토큰, D28 뒤 31,883토큰(메모 없음) — 목표 30,000을 조금 넘음. `PacketBuilderTest.fitsTokenBudget`의 어림 토큰(약 29,100)이 실제 토크나이저보다 작다. 넘으면 경고 로그만이고 회당 비용 차이는 약 $0.01 |
 | 순자산 차트 | 하루 범위가 $1 미만이면 y축 눈금 글자가 같은 값으로 되풀이됨(화면만) |
 | `AI_ENGINES` | [ADR 0014](../adr/0014-aws-demo-ai-report.md) 허용 목록이 `AiService.structured`를 거르지 않음. 로컬 전용이라 지금은 상관없음 — main·AWS로 옮기기 전에 고친다 |
 
