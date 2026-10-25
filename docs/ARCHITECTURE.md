@@ -85,6 +85,11 @@ pandas DataFrame을 JSON 문자열로 저장하면 **dtype을 따로 실어야**
 `feeds`에 피드 키만 더함 — 이 표를 쓰는 것은 수집기뿐). entity로 고를 수 없어 백엔드는
 결정 창이 덮는 날짜부터 읽고(`StoreRepository.readObservationsBetween`) 거르기는 `analytics.NewsEvents`가 합니다.
 
+🧪 모의 매매 어닝 서프라이즈(`us.earnings_surprise`, 2단계 C)도 같은 표입니다 — entity = 티커, **obs_date = 실제 발표 시각의 미국 동부
+날짜**, payload = 분기 말·EPS 실제치·컨센서스·서프라이즈율·통화·작은 추정치 표시·발표 시각이고, 수집기가 (날짜, 티커)마다 덮어쓰며 지우지
+않습니다(출처가 최근 4분기만 줘 쌓아야 8분기가 됨). 백엔드는 재무와 같이 패킷의 종목만 `obs_date ≤ 기준일`로 읽고
+(`readObservationsUntil`), 결정 시각 전 발표만 고르는 것은 `analytics.EarningsHistory`가 합니다.
+
 ### 3-2. 스키마 변경은 번호 붙은 파일로
 
 `db/migrations/V{번호}__{설명}.sql`을 **수집기가 기동할 때** 번호 순서로 한 번씩 적용하고
@@ -166,6 +171,7 @@ config/          설정 값(AppProperties) · 정기 작업 켜기 — 여러 �
 | `AlertRules` | 알림 사건 판정(ADR 0011) — 국면 전환 확정(3번 연속 기록)·연속 순매수 N일 도달·13F 신규 편입 |
 | `UsMarketCalendar` | 🧪 미국 거래일·세션 날짜(휴장일 규칙은 화면 `lib/marketCalendar.ts`와 같음)·13F 공시 기한 다음 거래일 |
 | `CalendarWindow` | 🧪 Claude 패킷 일정 섹션 `1b_calendar`의 창(기준일 다음 세션 … 10거래일)과 줄 고르기 — 창 밖·대상 밖 제외, '다음 일정 미정'·'자료 없음'·'일정 미공개' 구분(없는 일정을 만들지 않음) |
+| `EarningsHistory` | 🧪 Claude 패킷 재무 섹션 `8b_fundamentals` 줄마다의 어닝 서프라이즈 — 발표일(미국 동부) ≤ 기준일이고 결정 시각 전에 나온 최근 4분기(같은 분기는 가장 늦은 발표 하나), 추정치 없거나 0이면 서프라이즈율 null, 작은 추정치(\|추정치\| < 0.05) 표시, 자료 없음(null)과 0건([]) 구분 |
 | `NewsEvents` | 🧪 Claude 패킷 사건 섹션 `11b_events`의 창(직전 결정 이후 — 평일 24시간, 주말·휴장 뒤는 그 사이 전부)과 헤드라인 거르기 — 대상 티커(대문자 낱말)·매크로 키워드(낱말·구절), 최신순 상한, 줄마다 걸린 이유, '꺼짐'·'자료 없음'·'해당 사건 없음'·수집 전·창 끝 수집 공백(`STALE`) 구분 |
 | `DailySeries` | 🧪 일별 값 계열(원시 배열 + 이진 탐색 — 10년 × 수백 종목을 힙에 들기 위해). 기준일 뒤 값은 `until`로 자름 |
 | `PaperLedger` | 🧪 체결(수량 십진 내림·슬리피지)·평가·노출 |
