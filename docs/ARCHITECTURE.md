@@ -183,7 +183,7 @@ config/          설정 값(AppProperties) · 정기 작업 켜기 — 여러 �
 | `Signal13F` | 🧪 신호 풀 기관의 분기 비교 → 매수 후보·매도 신호, 두 기관 그룹 섞기·배분 |
 | `OrderValidator` | 🧪 Claude가 제안한 주문의 하드 규칙 — 제안은 모델, 집행 여부는 이 검사 |
 
-🧪 = 모의 알고리즘 매매(운영자 전용, 이 Private 저장소에만 — Local_macro_dashboard_v3에는 없음). 규칙의 근거는
+🧪 = 모의 알고리즘 매매(운영자 전용, 이 저장소에만 — Local_macro_dashboard_v3에는 없음). 규칙의 근거는
 [명세](specs/2026-10-24-paper-trading-spec.md)·[설계](specs/2026-10-24-paper-trading-design-plan.md)·[ADR 0018](adr/0018-paper-trading-guardrails.md)입니다.
 
 `analytics`는 `java.*`만 씁니다. 저장본 JSON을 읽는 일(`support.Json`)과 계산 입력 타입으로
@@ -350,7 +350,8 @@ UTC라서 `LocalDate.now()`를 그대로 쓰면 한국 시각 00:00~09:00 사이
 
 ## 9. 배포 (AWS 개인용 서버)
 
-🧪 모의 매매가 24시간 돌아야 해서 운영본은 AWS 서울의 EC2 한 대에 둡니다([ADR 0019](adr/0019-aws-personal-deployment.md)).
+🧪 모의 매매가 미국 장·결정 시각에 돌아야 해서 운영본은 AWS 서울의 EC2 한 대에 둡니다([ADR 0019](adr/0019-aws-personal-deployment.md)).
+서버는 매일 KST 21:55에 켜지고 08:00(토 10:00)에 꺼집니다 — EventBridge Scheduler가 EC2 API를 바로 부릅니다.
 로컬과 같은 compose 스택에 덧붙임 `compose.aws.yml`(앞단 caddy 추가, 로그인·쿠키·출처 고정)을 얹은 것입니다.
 
 ```
@@ -365,6 +366,8 @@ UTC라서 `LocalDate.now()`를 그대로 쓰면 한국 시각 00:00~09:00 사이
                                        └─ 나머지 ──▶ frontend:3000
  나가는 통신(공인 IPv4): collector ──▶ 외부 시장 데이터 · backend ──▶ Anthropic API
  cron 06:10 KST: make backup ──▶ S3 my-macro-backups-…/db/ (60일 만료)
+
+[EventBridge Scheduler, Asia/Seoul] 21:55 ec2:StartInstances · 08:00(일~금)·10:00(토) ec2:StopInstances
 ```
 
 - **들어오는 길은 SSM 하나**입니다. 보안 그룹에 인바운드 규칙이 없고, 서버의 모든 포트(caddy 8201 · 화면 3000 · API 8080 · 수집기 8000 · DB 5432)는

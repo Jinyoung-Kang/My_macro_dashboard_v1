@@ -241,7 +241,7 @@ git remote prune origin
 
 | 증상 | 원인 / 해결 |
 |---|---|
-| `git push`가 `Permission to … denied` (403) | 저장소 권한이 아니라 **맥에 저장된 GitHub 토큰**이 만료됐거나 쓰기 권한이 없습니다. 이 저장소는 Private이라 받기(`make update`)에도 같은 토큰을 씁니다 — 받기까지 실패하면 토큰 만료, 받기는 되는데 push만 403이면 쓰기 권한(Contents: Read and write) 문제입니다. 아래 순서로 해결 |
+| `git push`가 `Permission to … denied` (403) | 저장소 권한이 아니라 **맥에 저장된 GitHub 토큰**이 만료됐거나 쓰기 권한이 없습니다. 이 저장소는 공개라 받기(`make update`)는 토큰 없이도 되고 push만 이 토큰을 씁니다 — 토큰 만료이거나 쓰기 권한(Contents: Read and write) 문제입니다. 아래 순서로 해결 |
 | `refusing to allow a Personal Access Token to … workflow` | `.github/workflows/`를 고친 경우입니다. 토큰 설정에서 `workflow` 권한만 체크하면 됩니다 |
 | `Permission denied (publickey)` | 원격이 SSH인데 키가 없습니다. `git remote -v` 확인 후 HTTPS로 변경 |
 | `make update`가 `수정 중인 파일이 있어 당기지 않았습니다` | `git status` 확인 후 `git restore <파일>`(버리기) 또는 `git stash`(보관) |
@@ -281,7 +281,7 @@ git config credential.https://github.com.username <아이디>
 
 ## 7. AWS 개인용 서버
 
-운영본(🧪 모의 매매가 24시간 도는 곳)은 AWS 서울의 EC2 `my-macro-app` 한 대입니다. 구성과 이유는
+운영본(🧪 모의 매매가 도는 곳)은 AWS 서울의 EC2 `my-macro-app` 한 대이고, 매일 KST 21:55~08:00(토 ~10:00)만 켜집니다. 구성과 이유는
 [ADR 0019](adr/0019-aws-personal-deployment.md), 그림은 [ARCHITECTURE §9](ARCHITECTURE.md#9-배포-aws-개인용-서버)에 있습니다.
 서버에는 인바운드 포트가 없어 화면도 셸도 SSM으로만 엽니다. 아래 명령의 `<AWS_INSTANCE_ID>`·`<버킷>`은 PC `.env`의
 `AWS_INSTANCE_ID`·서버 `.env`의 `AWS_BACKUP_BUCKET` 값입니다.
@@ -314,7 +314,32 @@ git config credential.https://github.com.username <아이디>
    ```
 
    `gh`로 등록한 배포 키는 그때의 `gh` 인증 토큰에 묶여, 그 토큰을 끊으면 함께 지워집니다 — 서버의 `git fetch`가 `Permission denied`면 다시 등록합니다.
-7. 아래 '서버 .env 전달' → '배포' → '화면 열기'로 확인 → '데이터 전환' → '백업(cron)' 순서로 이어 갑니다.
+7. 켜기·끄기 일정(ADR 0019 결정 14): 실행 역할 `my-macro-scheduler`(신뢰 `scheduler.amazonaws.com` + 같은 계정 조건, 그 인스턴스 하나에만
+   `ec2:StartInstances`·`ec2:StopInstances`)와 EventBridge Scheduler 세 개 — 시간대 `Asia/Seoul`, 범용 타깃 `arn:aws:scheduler:::aws-sdk:ec2:startInstances`
+   (끄기는 `…:stopInstances`), 입력 `{"InstanceIds":["<AWS_INSTANCE_ID>"]}`, 재시도 1시간·3번.
+
+   | 이름 | 식 | 하는 일 |
+   |---|---|---|
+   | `my-macro-start` | `cron(55 21 * * ? *)` | 매일 21:55 켬 |
+   | `my-macro-stop` | `cron(0 8 ? * SUN-FRI *)` | 일~금 08:00 끔 |
+   | `my-macro-stop-sat` | `cron(0 10 ? * SAT *)` | 토 10:00 끔(주간 복기 09:00 뒤) |
+
+   데이터 전환을 마칠 때까지는 `DISABLED`로 만들어 두고(08:00 정지가 빌드·전환을 끊지 않게), 전환을 확인한 뒤 켭니다.
+8. 아래 '서버 .env 전달' → '배포' → '화면 열기'로 확인 → '데이터 전환' → '백업(cron)' → 일정 켜기 순서로 이어 갑니다.
+
+### 가동 시간 (켜기·끄기)
+
+서버는 **매일 KST 21:55에 켜지고 08:00(토요일은 10:00)에 꺼집니다** — 미국 장·마지막 지연 봉·06:10 백업·07:30 결정·토요일 09:00 복기가 그 안에 있습니다.
+**08:00 뒤에 보려면 손으로 켜고, 다음 정지 일정에 다시 꺼집니다**(낮에 켜 두면 그날 밤 창이 끝나는 08:00까지 켜져 있음).
+
+```bash
+bash scripts/aws/instance.sh status   # 지금 켜져 있나 — 한 줄
+bash scripts/aws/instance.sh start    # 켜고 running까지 기다림(컨테이너는 그 뒤 1~2분)
+bash scripts/aws/instance.sh stop     # 끔 — 정기 가동 시간 안에는 --force 없이는 끄지 않음(모의 매매가 빠짐)
+```
+
+`instance.sh` 없이 한 줄로 보려면: `aws ec2 describe-instances --region ap-northeast-2 --instance-ids <AWS_INSTANCE_ID> --query 'Reservations[0].Instances[0].State.Name' --output text`.
+꺼져 있을 때 `tunnel.sh`를 치면 켜는 방법을 알리고 멈춥니다.
 
 ### 화면 열기 (PC)
 
@@ -375,6 +400,8 @@ tmp="$(mktemp)" && grep -Ev '^[[:space:]]*(DATABASE_PORT|BACKEND_PORT|COLLECTOR_
 
 ### 데이터 전환 (로컬 v1 → 서버, 한 번)
 
+낮에 하므로 서버는 손으로 켜 둡니다(`instance.sh start`). 일정은 아직 `DISABLED`입니다.
+
 모의 매매 정기 작업이 **두 곳에서 동시에 돌면 안 됩니다**(같은 계좌를 두 장부가 따로 결정·체결). 07:30 KST 정기 결정이 끝난 뒤 그날 22:30 KST
 전에 합니다(미국 장 밖 — 장중은 서머타임 22:30~05:00, 11월~3월 23:30~06:00 KST).
 
@@ -391,6 +418,16 @@ tmp="$(mktemp)" && grep -Ev '^[[:space:]]*(DATABASE_PORT|BACKEND_PORT|COLLECTOR_
 그대로입니다. 컨테이너만 멈추면(`docker compose stop backend`) 다음 `deploy.sh`가 다시 켜므로 `.env`로 끕니다(`deploy.sh`도 그 줄을 보고 알림).
 다시 전환할 때는 1단계부터 하고, 서버 `.env`의 그 줄은 3단계 복원 뒤에 지우고 `docker compose up -d backend`.
 
+확인이 끝나면 서버를 끄고(`instance.sh stop` — 낮이라 창 밖) 일정 세 개를 `ENABLED`로 바꿉니다. **첫 사이클**(그날 21:55 → 다음 날 08:00)에서 차례로 봅니다 —
+하나라도 빠지면 원인을 찾을 때까지 일정을 그대로 두고 보고합니다.
+
+1. 21:55 자동 기동(인스턴스 running, EventBridge 일정 실행 기록)
+2. 컨테이너 다섯 개 healthy(`docker compose ps`) — 정지 뒤 다시 뜬 것이므로 postgres 복구 로그가 없어야 함(30초 안에 깨끗이 꺼졌다는 뜻)
+3. 미국 장 시작 뒤 리스크 작업 기록(`/api/paper/status`의 `jobs`에 새 `risk` 행)
+4. 06:10 백업이 S3 `db/`에 도착(`journalctl -t my-macro-backup`)
+5. 07:30 결정 기록(`jobs`의 `decision` 행)
+6. 08:00 자동 정지(인스턴스 stopped)
+
 ### 백업 (cron)
 
 ```bash
@@ -403,6 +440,6 @@ S3 백업으로 되돌리기: `aws s3 ls s3://<버킷>/db/` → 받을 파일을
 
 ### 날마다·달마다 볼 것
 
-- 예산 `my-macro-monthly-45usd`(80%·100% 알림). 월 약 $37이 정상입니다.
+- 예산 `my-macro-monthly-45usd`(80%·100% 알림, 계정 전체). 이 서버는 월 약 $17(하루 10시간)입니다.
 - CloudWatch `CPUSurplusCreditsCharged`가 0인지 — t4g 무제한 크레딧은 기준선(vCPU당 20%)을 오래 넘기면 요금이 붙습니다.
 - 디스크: `deploy.sh` 끝에 사용률을 찍습니다(30 GB, 오래된 이미지·빌드 캐시는 배포 때 정리).

@@ -21,6 +21,8 @@ PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너
 - 코드 받기는 `make update`. `git pull`은 쓰지 않는다(다른 브랜치의 작업을 조용히 놓침).
 - AWS 개인용 서버(ADR 0019, [docs/DEVELOPMENT.md §7](docs/DEVELOPMENT.md)): 화면은 PC에서 `bash scripts/aws/tunnel.sh` → http://localhost:8201,
   셸은 SSM(`aws ssm start-session` 뒤 `sudo -iu ubuntu`). **서버에서는 `make up` 대신 `bash scripts/aws/deploy.sh`**(4 GiB — 이미지를 하나씩 빌드).
+  서버는 매일 KST 21:55~08:00(토 ~10:00)만 켜진다(EventBridge Scheduler) — 창 밖에 보려면 `bash scripts/aws/instance.sh start`(다음 정지 일정에 꺼짐), 상태는 `instance.sh status`.
+  계정 고유 값(인스턴스 ID·버킷 이름)은 공개 저장소에 적지 않고 로컬 `.env`·메모리에만 둔다.
   서버에 인바운드 규칙·공인 IP 앱 포트·Tailscale을 두지 않는다. v3의 데모 스택(portfolio-*)은 건드리지 않는다.
 - QA·실험용 별도 스택: `bash scripts/qa/qa-stack.sh up|restore F=…|down` (compose 프로젝트 `my_macrodash_qa`,
   포트 13001/18081/18001/15433 — v3 QA(`macrodash_qa`, 13000…)와 겹치지 않음, 새 비밀값 `.env.qa`, 외부 호출은 차단 프록시). 성능 측정: `ENV_FILE=.env.qa bash scripts/bench-api.sh`(QA 스택), `scripts/qa/k6/`.
@@ -29,7 +31,7 @@ PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너
 - **운영 DB(`macrodash`)로 테스트하지 않는다.** 테스트는 `macrodash_test`만 쓴다
   (`make test-*`가 맞춰 줌). 백엔드 통합 테스트는 시작할 때 `snapshots`를 비운다.
   부하·장애·브라우저 시험도 운영 스택(3001/8081/8001/5433)이 아니라 QA 스택에서 한다.
-- **비밀값은 `.env`에만.** 이 저장소는 공개하지 않는다(모의매매 프롬프트·투자 OS 원문 포함). 그래도 비밀값은 `.env`에만 —
+- **비밀값은 `.env`에만.** 이 저장소는 GitHub 공개 저장소다(2026-10-26 사용자 확인 — 모의매매 프롬프트·투자 OS 원문도 공개). 비밀값은 `.env`에만 —
   키·토큰·비밀번호를 코드·문서·로그·커밋에 넣지 않는다. 예시 이메일 같은 자리표시 값도 코드 기본값으로 두지 않는다.
 - **없는 숫자를 만들지 않는다.** 표본 부족·수집 실패는 `null`→화면 `—`. 0으로 채우지 않는다.
   추정치는 `isEstimated`/`isProxy`를 함께 내려보낸다.

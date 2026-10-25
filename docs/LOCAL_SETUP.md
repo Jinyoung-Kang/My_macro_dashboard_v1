@@ -499,7 +499,7 @@ make db-test           # 테스트 전용 DB 준비 (위 명령들이 자동으�
 | 사유가 `CSV HTTP 403` | FRED 웹 CSV가 차단됐습니다. `.env`에 `FRED_API_KEY`를 넣으면 공식 API 경로로 우회합니다(무료 발급) |
 | 사유가 `yfinance(…)가 빈 응답을 받았습니다` | yfinance가 오래된 버전이면 Yahoo 응답 변경에 대응하지 못합니다. `make update` 후 `make up`으로 **이미지를 다시 빌드**하세요 |
 | **고쳤다는 기능이 화면에 없음** | 그 코드로 빌드되지 않았습니다. 화면 왼쪽 아래 버전과 `make version`을 확인하세요. 새 작업이 다른 브랜치에 있으면 `git pull`은 아무것도 받지 않습니다 — `make update`를 쓰세요 |
-| `git push`가 `Permission to … denied to <본인 아이디>` (403) | 맥 키체인의 GitHub 토큰이 만료됐거나 쓰기 권한이 없습니다. 이 저장소는 Private이라 **받기(`make update`)에도 같은 토큰을 씁니다** — 받기까지 실패하면 토큰 만료, 받기는 되는데 push만 403이면 쓰기 권한 문제입니다. `gh auth login && gh auth setup-git`, 또는 `printf "protocol=https\nhost=github.com\n\n" \| git credential-osxkeychain erase` 후 `repo` 권한 토큰으로 다시 push ([DEVELOPMENT.md §5](DEVELOPMENT.md)에 자세히) |
+| `git push`가 `Permission to … denied to <본인 아이디>` (403) | 맥 키체인의 GitHub 토큰이 만료됐거나 쓰기 권한이 없습니다. 이 저장소는 공개라 **받기(`make update`)는 토큰 없이도 되고** push만 이 토큰을 씁니다 — 토큰 만료이거나 쓰기 권한 문제입니다. `gh auth login && gh auth setup-git`, 또는 `printf "protocol=https\nhost=github.com\n\n" \| git credential-osxkeychain erase` 후 `repo` 권한 토큰으로 다시 push ([DEVELOPMENT.md §5](DEVELOPMENT.md)에 자세히) |
 | 13F만 비어 있음 | SEC가 연락처 없는 요청을 막습니다. `.env`에 `SEC_USER_AGENT=본인이메일`을 넣고 `make up` |
 | Docker Desktop이 프록시(`http.docker.internal:3128`)를 쓰는 환경 | 회사망·보안 프로그램이 외부 금융 사이트를 막으면 수집이 전부 실패합니다. Docker Desktop → Settings → Resources → Proxies에서 확인하세요 |
 

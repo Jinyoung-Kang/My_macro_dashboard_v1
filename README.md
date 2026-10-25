@@ -3,10 +3,10 @@
 글로벌 매크로 지표 · 연준 순유동성 · 섹터 로테이션 · CFTC COT · KRX 파생 ·
 SEC 13F · 국내 수급을 **한 화면에서** 보는 개인용 대시보드입니다. 운영자 전용
 🧪 모의 알고리즘 매매(규칙·Claude·SPY·60/40 네 계좌, $100k씩)도 들어 있습니다.
-맥에서 Docker 한 줄로 띄우고, 모의 매매가 24시간 도는 운영본은 AWS의 개인용 서버(EC2 한 대)에 둡니다.
+맥에서 Docker 한 줄로 띄우고, 모의 매매가 도는 운영본은 AWS의 개인용 서버(EC2 한 대, 매일 밤 KST 21:55~08:00)에 둡니다.
 
 > 이 저장소(`My_macro_dashboard_v1`)는 2026-10-25에 `Local_macro_dashboard_v3`에서 갈라져 나온
-> **Private 저장소이고 공개하지 않습니다**(모의 매매 프롬프트·투자 OS 원문 포함). 모의 매매는 이 저장소에만 있습니다.
+> **공개 저장소입니다**(2026-10-26 사용자 확인 — 모의 매매 프롬프트·투자 OS 원문도 공개). 비밀값은 `.env`에만 둡니다. 모의 매매는 이 저장소에만 있습니다.
 > 같은 맥에서 v3(3000/8080/8000/5432)와 함께 띄울 수 있게 이 저장소는 **3001/8081/8001/5433**을 씁니다(`.env`의 포트 값).
 
 만든 사람: **강진영** · <kangjy5235@gmail.com>
@@ -222,7 +222,7 @@ make down            # 정지
 ├── deploy/aws/         AWS 개인용 서버의 앞단 설정(Caddyfile)
 ├── docs/               문서
 └── scripts/            setup · update · version · doctor
-    └── aws/             AWS 개인용 서버: bootstrap(첫 기동) · deploy(배포) · backup-s3(cron) · tunnel(PC의 SSM 터널)
+    └── aws/             AWS 개인용 서버: bootstrap(첫 기동) · deploy(배포) · backup-s3(cron) · tunnel(PC의 SSM 터널) · instance(손으로 켜고 끄기)
 ```
 
 ### Docker 없이 개발하기
@@ -317,13 +317,15 @@ make test-frontend     # 자가검증 + 훅 테스트(vitest) + 린트 + 빌드(
 
 ### AWS 개인용 서버
 
-🧪 모의 매매까지 24시간 돌리려고 AWS 서울의 EC2 한 대(`my-macro-app`, t4g.medium ARM · 4 GiB)에 올립니다. DB는 로컬과 같은
-Postgres 컨테이너입니다. 사용자는 1명(운영자)이고 공인 주소로는 아무 포트도 열지 않습니다(보안 그룹 인바운드 0) — 화면은 PC에서
+🧪 모의 매매를 돌리려고 AWS 서울의 EC2 한 대(`my-macro-app`, t4g.medium ARM · 4 GiB)에 올립니다. DB는 로컬과 같은
+Postgres 컨테이너입니다. 서버는 **매일 KST 21:55에 켜지고 08:00(토요일은 10:00)에 꺼집니다**(EventBridge Scheduler) — 미국 장·마지막 지연 봉·
+06:10 백업·07:30 결정이 모두 이 안에 있습니다. 사용자는 1명(운영자)이고 공인 주소로는 아무 포트도 열지 않습니다(보안 그룹 인바운드 0) — 화면은 PC에서
 SSM 포트 포워딩으로만 엽니다. 로컬과 다른 점은 덧붙임 [compose.aws.yml](compose.aws.yml)과 [scripts/aws/](scripts/aws/)에 있고,
-이유는 [ADR 0019](docs/adr/0019-aws-personal-deployment.md)에 있습니다. 월 약 $37.
+이유는 [ADR 0019](docs/adr/0019-aws-personal-deployment.md)에 있습니다. 월 약 $17(하루 10시간 기준).
 
 ```bash
-bash scripts/aws/tunnel.sh   # PC: 서버 화면을 http://localhost:8201 로 엽니다(로그인: OWNER_EMAIL · 닫기: Ctrl-C)
+bash scripts/aws/tunnel.sh             # PC: 서버 화면을 http://localhost:8201 로 엽니다(로그인: OWNER_EMAIL · 닫기: Ctrl-C)
+bash scripts/aws/instance.sh status    # 지금 켜져 있나 — 08:00 뒤에 보려면 instance.sh start(다음 정지 일정에 다시 꺼짐)
 ```
 
 새 코드를 서버에 올릴 때는 PC에서 서버 셸에 붙어(`aws ssm start-session --region ap-northeast-2 --target <AWS_INSTANCE_ID>`) 이렇게 합니다.
@@ -447,7 +449,7 @@ bash ~/My_macro_dashboard_v1/scripts/aws/deploy.sh   # main 받기 → 이미지
 | AI | Claude API (Haiku 5.5, 공식 Java SDK) · NVIDIA · Cerebras · Cloudflare | 수집 원본으로 리포트 생성. 엔진이 실패하면 다음 엔진으로 자동 전환. 모의 매매 Claude 계좌는 같은 SDK의 구조화 출력으로 Sonnet 5.5(설정에서 Haiku 5.5) 한 모델만 부름(전환 없음) |
 | Store | PostgreSQL 16 | 수집기와 API가 다른 프로세스라 파일 공유 불가. JSONB로 저장해 SQL로 질의 |
 | Collector | Python 3.11 · FastAPI · pandas · yfinance · pykrx · feedparser(RSS 읽기만) | 금융 데이터 수집·파싱 라이브러리 생태계 |
-| DevOps | Docker Compose · GitHub Actions · AWS(EC2 t4g · SSM Session Manager · S3) · Caddy | 네 프로세스를 한 명령으로, 세 언어 테스트를 매 푸시마다. 운영본은 인바운드 포트 없이 SSM 터널로만 여는 EC2 한 대([ADR 0019](docs/adr/0019-aws-personal-deployment.md)) |
+| DevOps | Docker Compose · GitHub Actions · AWS(EC2 t4g · SSM Session Manager · S3 · EventBridge Scheduler) · Caddy | 네 프로세스를 한 명령으로, 세 언어 테스트를 매 푸시마다. 운영본은 인바운드 포트 없이 SSM 터널로만 여는 EC2 한 대, 밤 10시간만 켬([ADR 0019](docs/adr/0019-aws-personal-deployment.md)) |
 
 **의도적으로 쓰지 않은 것** — Kafka/CDC(하루 수천 건 규모라 브로커가 처리할
 트래픽이 없음), BigQuery/ClickHouse(전체 수십 MB), 네이티브 앱(같은 기능을 두 벌
