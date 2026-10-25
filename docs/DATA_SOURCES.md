@@ -25,7 +25,7 @@
 | | | `equity_history` | 13F 매핑 종목 일별 종가 + 이름→티커 매핑표 |
 | | | `paper_quotes` | 📒 모의 매매 유니버스(13F 이름 매핑 티커 + 후보 기관 CUSIP 매핑 티커 + ETF 19개, `paper_universe.tradable()`) 최근 3개월 일봉 → 스냅샷 `paper.quotes`. 장중에는 마지막 봉이 지연 시세(장부 관측치) |
 | | | `us_calendar` | 📒 발표·실적 일정 → 스냅샷 `calendar.us_events`. 거시: FRED `release/dates`(CPI 10·PCE 54·고용 50·GDP 53, 앞으로 45일) + FOMC 연간 일정표 상수. 실적: 같은 유니버스(ETF 제외)의 다음 실적일 — yfinance quoteSummary `calendarEvents`, 실행당 120종목(`US_CALENDAR_EARNINGS_BUDGET`)·종목당 24시간 캐시(§5 '모의 매매가 쓰는 저장본과 한계') |
-| | | `news_headlines` | 📒 사건 뉴스 RSS 7개 피드(인베스팅닷컴 셋·연준·BLS 둘·SEC) → `observations` `news_headline`(제목·링크·출처·시각만 — entity = 정규화한 제목의 해시, obs_date = 발행 시각의 UTC 날짜, 7일 보관) + 수집 상태 `news.headlines.status`. 키 없음(§5 '사건 뉴스 RSS') |
+| | | `news_headlines` | 📒 사건 뉴스 RSS 8개 피드(인베스팅닷컴 넷·연준·BLS 둘·SEC) → `observations` `news_headline`(제목·링크·출처·시각만 — entity = 정규화한 제목의 해시, obs_date = 발행 시각의 UTC 날짜, 7일 보관) + 수집 상태 `news.headlines.status`. 키 없음(§5 '사건 뉴스 RSS') |
 | | | `volatility_history` | VIX·MOVE 시계열 |
 | | | `cot_history` | CFTC COT (주 1회 발표) |
 | | | `daum_futures_trend` | Daum 선물 투자주체별 수급 |
@@ -351,6 +351,7 @@ EQUITY_MAP = {
 | `investing_stock` | Investing.com 주식 | https://www.investing.com/rss/news_25.rss | RSS 2.0, 최근 10항목, 시각에 시간대 없음 — UTC로 읽음(단계 0에서 미국 지표 발표 시각과 대조한 해석). 공용 세션 |
 | `investing_ind` | Investing.com 경제 지표 | https://www.investing.com/rss/news_95.rss | 위와 같음 |
 | `investing_economy` | Investing.com 경제 | https://www.investing.com/rss/news_14.rss | 위와 같음 |
+| `investing_forex` | Investing.com 외환 | https://www.investing.com/rss/news_1.rss | 위와 같음(2026-10-25 추가) |
 | `fed_monetary` | Federal Reserve 통화정책 보도자료 | https://www.federalreserve.gov/feeds/press_monetary.xml | RSS 2.0, RFC 822 GMT. 공용 세션 |
 | `bls_cpi` | BLS CPI | https://www.bls.gov/feed/cpi.rss | 주소는 .rss지만 Atom 1.0. 브라우저 UA는 403(Akamai)이라 BLS 세션(설명형 UA `LocalMacroDashboard/2.0`, **연락처 없음**, 403 재시도 없음) |
 | `bls_empsit` | BLS 고용보고서 | https://www.bls.gov/feed/empsit.rss | 위와 같음 |
@@ -359,6 +360,7 @@ EQUITY_MAP = {
 | 한계 | 내용 |
 |---|---|
 | 뺀 출처 | **야후 파이낸스**: 404·429이고 robots.txt가 전체를 막음(`Disallow: /`) — 넣지 않습니다. 인베스팅닷컴 `news.rss`(전체)는 자동 생성 내부자 거래 항목이 대부분, 연준 `press_all`은 제재·인가 공지가 많아 뺐습니다 |
+| HTML 뉴스 페이지 | 인베스팅닷컴 `/news/…` 페이지는 Cloudflare가 자동 요청을 모두 403으로 막습니다(브라우저·설명형·기본 UA, robots.txt도 403 — 2026-10-25 확인). 봇 차단을 우회하지 않고 같은 분류의 RSS를 씁니다(D29) |
 | 이용 조건 | 인베스팅닷컴 RSS의 이용 조건은 **[확인 필요]** — 사용자가 브라우저로 확인 권장(단계 0). 로컬 전용·제목만·시간당 한 번이지만 조건을 확인하기 전까지는 공개 배포에 쓰지 않습니다. 연준·BLS·SEC는 미국 정부 공개 자료 |
 | `feedparser` (새 의존성, D34) | `feedparser==6.0.14`(PyPI GA 2026-07-30, BSD-2-Clause, Python ≥ 3.10, 간접 의존성 `feedparser-sgmllib` 2.1.0) — RSS·Atom의 날짜 형식(RFC 822·ISO 8601·시간대 없음)과 인코딩 변형을 직접 다루지 않기 위해 넣었습니다. HTTP는 수집기 세션이 받고 feedparser는 받은 바이트를 **읽기만** 합니다(URL을 넘기지 않음 — feedparser가 직접 받지 않게, bytes도 `BytesIO`로 감싸 파일 이름으로 열리지 않게) |
 | 최근 항목만 | 인베스팅닷컴은 피드당 최근 10항목만 줍니다. 1시간 사이 10건 넘게 나오면 그 사이 항목은 받지 못합니다 — 받은 항목이 모두 처음 보는 것이면 실행 기록·상태에 '누락 가능'(`maybeMissed`) |
