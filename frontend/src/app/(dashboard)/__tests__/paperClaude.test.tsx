@@ -452,6 +452,39 @@ describe("개요 — 발표·실적 일정(2단계 A)", () => {
   });
 });
 
+describe("개요 — 사건 뉴스 RSS(2단계 B)", () => {
+  it("상태 응답의 news를 장부 관측치 카드에 한 줄로 — 실패한 피드 키, 출처에 RSS 피드와 저장본 이름", async () => {
+    reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_ACTIVE));
+    reads["/api/paper/status"] = () => Promise.resolve({
+      available: true, schemaReady: true, initialized: true, enabled: true, jobs: [],
+      news: {
+        available: true, stored7d: 61, lastFetchKst: "2026-10-25 15:00 KST", feedsOk: 6, feedsTotal: 7,
+        failedFeeds: [{ feed: "sec_press", source: "SEC", reason: "SEC_USER_AGENT 미설정" }],
+      },
+    });
+    render(<PaperPage />);
+
+    expect(await screen.findByText("사건 뉴스(RSS): 7일 61건 · 피드 6/7 · 갱신 2026-10-25 15:00 · 실패 sec_press")).toBeTruthy();
+    expect(screen.getByText(/news\.headlines\.status/)).toBeTruthy();
+  });
+
+  it("저장본이 아직 없으면 숫자는 —, 응답에 news가 없으면(이전 백엔드) 줄을 그리지 않는다", async () => {
+    reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_ACTIVE));
+    reads["/api/paper/status"] = () => Promise.resolve({
+      available: true, schemaReady: true, initialized: true, enabled: true, jobs: [],
+      news: { available: false, stored7d: null, lastFetchKst: null, feedsOk: null, feedsTotal: null, failedFeeds: null },
+    });
+    const { unmount } = render(<PaperPage />);
+    expect(await screen.findByText("사건 뉴스(RSS): 7일 —건 · 피드 —/— · 갱신 —")).toBeTruthy();
+    unmount();
+
+    reads["/api/paper/status"] = () => Promise.resolve({ available: true, schemaReady: true, initialized: true, enabled: true, jobs: [] });
+    render(<PaperPage />);
+    expect(await screen.findByText("Claude 노출 추이")).toBeTruthy();
+    expect(screen.queryByText(/사건 뉴스\(RSS\)/)).toBeNull();
+  });
+});
+
 /** 지금 판(GET /api/paper/framework) — 임시 v0. */
 const FRAMEWORK_INTERIM = {
   available: true,

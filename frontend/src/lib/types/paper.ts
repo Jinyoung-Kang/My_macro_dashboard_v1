@@ -258,6 +258,33 @@ export interface PaperStatusResponse {
   fundamentals?: PaperFundamentalsStatus | null;
   /** 발표·실적 일정(2단계 A)의 수집 범위 — Claude 계좌 패킷 1b_calendar의 자료. 이 필드를 아직 보내지 않는 백엔드에서는 없습니다. */
   calendar?: PaperCalendarStatus | null;
+  /** 사건 뉴스 RSS(2단계 B)의 수집 상태 — Claude 계좌 패킷 11b_events의 자료. 이 필드를 아직 보내지 않는 백엔드에서는 없습니다. */
+  news?: PaperNewsStatus | null;
+}
+
+/**
+ * 사건 뉴스 수집 상태(2단계 B) — 수집기 상태 저장본(news.headlines.status)의 요약. 저장본이 없으면 available:false이고 나머지는 모두
+ * null입니다(0·빈 목록으로 채우지 않음 — 화면 —). 피드가 모두 실패한 수집은 저장본을 쓰지 않아 그때는 시각이 멈춰 보입니다.
+ */
+export interface PaperNewsStatus {
+  available: boolean;
+  /** 보존 7일 안의 헤드라인 수(건, 거르기 전 — 패킷에는 그중 대상 종목·키워드에 걸린 것만). */
+  stored7d: number | null;
+  /** 피드를 하나라도 받은 마지막 수집 시각("2026-10-25 15:00 KST"). */
+  lastFetchKst: string | null;
+  /** 그 수집에서 받은 피드 수(개). */
+  feedsOk: number | null;
+  /** 피드 전체 수(개, 지금 7). */
+  feedsTotal: number | null;
+  /** 그 수집에서 실패한 피드와 사유. */
+  failedFeeds: PaperNewsFailedFeed[] | null;
+}
+
+export interface PaperNewsFailedFeed {
+  /** 피드 키(예: "bls_cpi") — 설정 news.feeds의 값. */
+  feed: string | null;
+  source: string | null;
+  reason: string | null;
 }
 
 /**
@@ -1036,7 +1063,7 @@ export interface PaperInitialDecisionResult {
  */
 export interface PaperSettingKey {
   key: string;
-  /** 값의 형(서버 표기 그대로 — number · integer · string · boolean · list 등). */
+  /** 값의 형(서버 표기 그대로 — number · integer · string · boolean · list · phrases(공백이 든 구절 목록 — 사건 뉴스 키워드) 등). */
   type: string;
   /** 서버가 검사하는 범위(숫자 키). 없으면 null. */
   min: number | null;

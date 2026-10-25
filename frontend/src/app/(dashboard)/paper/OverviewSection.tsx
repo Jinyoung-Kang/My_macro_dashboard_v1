@@ -26,6 +26,7 @@ import {
   jsonTitle,
   navAxis,
   navChart,
+  newsLine,
   PAPER_SOURCES,
   type PoolRow,
   quotesLine,
@@ -163,10 +164,13 @@ export function OverviewSection({
   const fundamentals = status.data?.available ? fundamentalsLine(status.data.fundamentals) : null;
   // 발표·실적 일정(2단계 A, 패킷 1b_calendar) — 재무 줄과 같은 규칙(필드가 없는 백엔드면 그리지 않음).
   const calendar = status.data?.available ? calendarLine(status.data.calendar) : null;
+  // 사건 뉴스 RSS(2단계 B, 패킷 11b_events) — 같은 규칙(필드가 없는 백엔드면 그리지 않음).
+  const news = status.data?.available ? newsLine(status.data.news) : null;
   const observationSource = [
     PAPER_SOURCES.quotes,
     fundamentals ? `재무: ${PAPER_SOURCES.fundamentals}` : null,
     calendar ? `일정: ${PAPER_SOURCES.calendar}` : null,
+    news ? `사건 뉴스: ${PAPER_SOURCES.news}` : null,
   ].filter(Boolean).join(" · ");
   // 판 경계는 Claude 책에만 뜻이 있습니다(프레임은 규칙 책에 영향 없음, 명세 F5) — 그래도 네 책 곡선 위에 그려 같은 날 무엇이 바뀌었는지 봅니다.
   const boundaries = frameworkBoundaryView(overview.frameworkBoundaries, overview.navSeries?.dates ?? []);
@@ -392,6 +396,7 @@ export function OverviewSection({
         )}
         {fundamentals && <p className="mt-1 text-xs text-muted">{fundamentals}</p>}
         {calendar && <p className="mt-1 text-xs text-muted">{calendar}</p>}
+        {news && <p className="mt-1 text-xs text-muted">{news}</p>}
       </Card>
 
       <Card title="작업 기록" subtitle="정기·수동 작업이 일했을 때·오류일 때만 남깁니다(최근 10건). 상세에는 처리한 관측치의 수집 시각·봉 날짜·티커 수가 있습니다." source={PAPER_SOURCES.jobs}>

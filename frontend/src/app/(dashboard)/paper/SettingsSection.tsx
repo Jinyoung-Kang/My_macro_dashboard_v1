@@ -210,7 +210,12 @@ function SettingField({
 }) {
   const id = `paper-setting-${row.key}`;
   const descriptionId = row.description ? `${id}-description` : undefined;
-  const meta = [`기본 ${row.defaultText}`, row.range ? `범위 ${row.range}` : null, row.isDefault === false ? "기본값과 다름" : null]
+  const meta = [
+    row.missing ? "설정 행에 없음 — 기본값으로 읽음" : null,
+    `기본 ${row.defaultText}`,
+    row.range ? `범위 ${row.range}` : null,
+    row.isDefault === false ? "기본값과 다름" : null,
+  ]
     .filter(Boolean)
     .join(" · ");
 
@@ -286,6 +291,7 @@ function SettingInput({
         </select>
       );
     case "list":
+    case "phrases":
       return (
         <>
           <textarea
@@ -297,7 +303,9 @@ function SettingInput({
             onChange={(event) => onChange(event.target.value)}
             className={`${INPUT} font-mono text-xs`}
           />
-          <p className="text-[11px] text-muted">쉼표·공백으로 나눕니다.</p>
+          <p className="text-[11px] text-muted">
+            {row.kind === "phrases" ? "쉼표·줄바꿈으로 나눕니다(항목 안의 공백은 그대로 — 예: rate decision)." : "쉼표·공백으로 나눕니다."}
+          </p>
         </>
       );
     case "json":

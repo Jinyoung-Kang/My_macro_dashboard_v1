@@ -22,6 +22,7 @@ import type {
   PaperFrameworkVersion,
   PaperFrameworkVersionSummary,
   PaperFundamentalsStatus,
+  PaperNewsStatus,
   PaperGateIndicator,
   PaperGateThresholds,
   PaperInitialDecisionResult,
@@ -69,6 +70,8 @@ export const PAPER_SOURCES = {
     + "8b_fundamentals의 자료",
   calendar: "FRED release/dates(CPI·PCE·고용·GDP 발표일) · 연준 FOMC 연간 일정표(상수) · Yahoo Finance quoteSummary calendarEvents"
     + "(yfinance, 실적일) — 저장본 calendar.us_events, Claude 계좌 패킷 일정 1b_calendar의 자료",
+  news: "RSS 헤드라인(제목·출처·시각만) — Investing.com news_25·news_95·news_14 · 연준 press_monetary · BLS cpi·empsit · SEC "
+    + "pressreleases (수집 상태 저장본 news.headlines.status, 보존 7일) — Claude 계좌 패킷 사건 11b_events의 자료",
   jobs: "대시보드 작업 기록 (PostgreSQL paper_job_runs)",
   trackRecord: "SEC EDGAR 13F-HR(후보 기관 분기 공시, 저장본 sec.13f.{cik}.q30) · 수정주가 Yahoo Finance(yfinance, equity_close) — "
     + "공시일 기준 복제 수익률은 대시보드 백엔드 계산(PostgreSQL paper_track_record)",
@@ -843,6 +846,25 @@ export function calendarLine(calendar: PaperCalendarStatus | null | undefined): 
   ];
   if (calendar.fredStatus && calendar.fredStatus !== "ok") {
     parts.push(`FRED ${calendar.fredStatus}`);
+  }
+  return parts.join(" · ");
+}
+
+/**
+ * 사건 뉴스 수집 한 줄(2단계 B) — "사건 뉴스(RSS): 7일 n건 · 피드 받은 수/전체 · 갱신 …". 모르는 값은 —이고, 실패한 피드가 있으면
+ * 그 키를 덧붙입니다(사유는 상태 화면·작업 기록에). 상태 응답에 이 필드가 없으면(이전 백엔드) null — 줄을 그리지 않습니다.
+ */
+export function newsLine(news: PaperNewsStatus | null | undefined): string | null {
+  if (!news) return null;
+  const count = (value: number | null | undefined) => formatNumber(value, 0);
+  const parts = [
+    `사건 뉴스(RSS): 7일 ${count(news.stored7d)}건`,
+    `피드 ${count(news.feedsOk)}/${count(news.feedsTotal)}`,
+    `갱신 ${formatKst(news.lastFetchKst)}`,
+  ];
+  const failed = (news.failedFeeds ?? []).map((feed) => feed?.feed).filter((key): key is string => Boolean(key));
+  if (failed.length > 0) {
+    parts.push(`실패 ${failed.join("·")}`);
   }
   return parts.join(" · ");
 }
@@ -2952,7 +2974,7 @@ export function apiUsageView(usage: unknown): ApiUsageView | null {
  * 설정 입력의 종류. json은 이 화면에서 바꾸지 않는 값입니다(서버 형 이름도 값 모양도 알 수 없음 — 원문만 보임).
  * 서버가 보낸 형 이름(keys[].type)을 먼저 보고, 모르는 이름이면 지금 값의 모양으로 정합니다.
  */
-export type SettingKind = "number" | "integer" | "boolean" | "list" | "text" | "choice" | "json";
+export type SettingKind = "number" | "integer" | "boolean" | "list" | "phrases" | "text" | "choice" | "json";
 
 /** 설정 키 묶음(점 경로의 첫 마디) 이름. 모르는 묶음은 이름 그대로. */
 const SETTING_GROUP: Record<string, string> = {
@@ -2961,6 +2983,7 @@ const SETTING_GROUP: Record<string, string> = {
   blend: "두 기관 그룹 섞기(D27)",
   rules: "규칙 계좌",
   gate: "OS 게이트 지표 — 참고 임계치(구속하지 않음)",
+  news: "사건 뉴스 — Claude 계좌 패킷 11b(2단계 B, 규칙 계좌 영향 없음)",
 };
 
 /** 설정 한 줄(표시·입력용). */
@@ -2969,8 +2992,14 @@ export interface SettingRow {
   /** 묶음 키(점 경로의 첫 마디, 점이 없으면 ""). */
   group: string;
   kind: SettingKind;
-  /** 지금 값(설정 본문 그대로) — 입력이 바뀌었는지 이 값과 맞춰 봅니다. */
+  /**
+   * 지금 값 — 입력이 바뀌었는지 이 값과 맞춰 봅니다. 설정 본문에 키가 없으면(missing) 서버가 읽는 기본값입니다.
+   */
   value: unknown;
+  /**
+   * 설정 본문에 이 키가 없어 서버가 기본값으로 읽는 중(2단계 B 전에 만든 설정 행의 news.* 등). 입력 상자·지금 값 표기는 그 기본값입니다.
+   */
+  missing: boolean;
   /** 입력 상자의 처음 글자. */
   initial: string;
   /** 지금 값 표기. */
@@ -3035,6 +3064,8 @@ function settingKind(type: unknown, options: readonly string[], value: unknown):
   if (["integer", "int", "long", "short"].includes(name)) return "integer";
   if (["number", "double", "float", "decimal"].includes(name)) return "number";
   if (["boolean", "bool"].includes(name)) return "boolean";
+  // 구절 목록(사건 뉴스 키워드) — 항목 안에 공백이 있어("rate decision") 공백으로 나누면 안 됩니다.
+  if (name === "phrases") return "phrases";
   if (name.startsWith("list") || name.startsWith("array") || name.endsWith("[]")) return "list";
   if (["string", "text", "time", "enum"].includes(name)) return "text";
   // 서버 형 이름을 모르면 지금 값의 모양으로 — 정수인지 소수인지는 값 하나로 알 수 없어 숫자는 모두 number입니다.
@@ -3067,8 +3098,12 @@ export function settingGroups(response: PaperSettingsResponse | null | undefined
     if (!isRecord(meta)) continue;
     const key = textOf(meta.key);
     if (!key) continue;
-    const value = settingValueAt(response?.body, key);
+    const stored = settingValueAt(response?.body, key);
     const fallback = settingValueAt(response?.defaults, key);
+    // 본문에 없는 키는 서버가 기본값으로 읽습니다 — 빈 칸·'아니오'로 그리면 실제로 쓰는 값과 반대로 보이고(켜진 news.enabled가 꺼짐으로),
+    // 빈 칸으로 보이는 목록에 하나만 넣어 저장하면 보이지 않던 기본값(키워드 사전 등)이 통째로 바뀝니다. 그래서 기본값을 지금 값으로 둡니다.
+    const missing = stored === undefined && fallback !== undefined;
+    const value = missing ? fallback : stored;
     const options = listOf(meta.options).filter((option): option is string => typeof option === "string" && option.length > 0);
     const kind = settingKind(meta.type, options, value);
     const choices = typeof value === "string" && kind === "choice" && value && !options.includes(value) ? [...options, value] : options;
@@ -3078,8 +3113,9 @@ export function settingGroups(response: PaperSettingsResponse | null | undefined
       group: groupKey,
       kind,
       value,
+      missing,
       initial: settingInputText(value, kind),
-      current: settingText(value),
+      current: missing ? `${settingText(value)} (설정 행에 없음 — 기본값으로 읽음)` : settingText(value),
       defaultText: settingText(fallback),
       isDefault: fallback === undefined ? null : sameSettingValue(value, fallback),
       range: settingRangeText(numberOf(meta.min), numberOf(meta.max)),
@@ -3101,7 +3137,8 @@ export type SettingParse = { ok: true; value: unknown } | { ok: false; error: st
 
 /**
  * 입력 글자를 그 키의 형으로 읽습니다 — 숫자는 숫자로(정수 키는 정수만), 참·거짓은 그대로, 목록은 쉼표·공백·줄바꿈으로 나눠
- * 빈 칸을 뺍니다. 범위는 검사하지 않습니다(서버 몫 — 같은 규칙을 두 곳에 두면 갈라집니다). 형으로 읽을 수 없으면 오류 문구.
+ * 빈 칸을 빼고, 구절 목록(phrases)은 쉼표·줄바꿈으로만 나눕니다. 범위는 검사하지 않습니다(서버 몫 — 같은 규칙을 두 곳에 두면
+ * 갈라집니다). 형으로 읽을 수 없으면 오류 문구.
  */
 export function parseSettingInput(row: Pick<SettingRow, "kind">, text: string): SettingParse {
   const trimmed = text.trim();
@@ -3120,6 +3157,9 @@ export function parseSettingInput(row: Pick<SettingRow, "kind">, text: string): 
         : { ok: false, error: "예·아니오를 고르세요." };
     case "list":
       return { ok: true, value: trimmed.split(/[\s,]+/).filter(Boolean) };
+    case "phrases":
+      // 쉼표·줄바꿈으로만 나누고 항목 안의 공백은 한 칸으로 — 정규화·중복 제거는 서버가 다시 합니다(같은 규칙을 두 곳에 두지 않음).
+      return { ok: true, value: trimmed.split(/[,\n]+/).map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean) };
     case "choice":
     case "text":
       return trimmed ? { ok: true, value: trimmed } : { ok: false, error: "값을 넣으세요." };

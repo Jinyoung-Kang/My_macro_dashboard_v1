@@ -133,6 +133,37 @@ describe("설정 줄", () => {
     expect(odd[0].rows[0].options).toEqual(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-old"]);
   });
 
+  it("회귀(B-SET-UI-1): 본문에 없는 키(2단계 B 전 설정 행의 news.*)는 서버가 읽는 기본값으로 — 켜짐이 꺼짐으로, 사전이 빈 칸으로 보이지 않음", () => {
+    const old = settingGroups({
+      available: true,
+      version: 7,
+      body: { slippageBp: 5 },
+      defaults: { slippageBp: 5, news: { enabled: true, keywords: ["Fed", "rate decision"], feeds: ["sec_press", "bls_cpi"] } },
+      keys: [
+        key("slippageBp"),
+        key("news.enabled", { type: "boolean" }),
+        key("news.keywords", { type: "phrases" }),
+        key("news.feeds", { type: "list", options: null }),
+      ],
+    });
+    const at = (name: string) => old.flatMap((group) => group.rows).find((entry) => entry.key === name)!;
+    expect(at("news.enabled")).toMatchObject({
+      kind: "boolean", value: true, missing: true, initial: "true", isDefault: true,
+      current: "예 (설정 행에 없음 — 기본값으로 읽음)",
+    });
+    expect(at("news.keywords")).toMatchObject({ initial: "Fed, rate decision", isDefault: true, missing: true });
+    expect(at("news.feeds").initial).toBe("sec_press, bls_cpi");
+    expect(at("slippageBp").missing).toBe(false);
+
+    // 손대지 않았거나 기본값 그대로 두면 바뀐 값이 아니고, 끄면 false가 저장되며, 키워드를 더하면 사전을 지우지 않고 더한 목록이 저장됩니다.
+    expect(settingsDraftView(old, { "news.enabled": "true", "news.keywords": "Fed, rate decision" }).changes).toEqual([]);
+    const off = settingsDraftView(old, { "news.enabled": "false", "news.keywords": "Fed, rate decision, tariff" });
+    expect(off.changes.map((change) => [change.key, change.value])).toEqual([
+      ["news.enabled", false], ["news.keywords", ["Fed", "rate decision", "tariff"]],
+    ]);
+    expect(off.changes[0].from).toBe("예 (설정 행에 없음 — 기본값으로 읽음)");
+  });
+
   it("응답이 없거나 키가 없으면 빈 목록", () => {
     expect(settingGroups(null)).toEqual([]);
     expect(settingGroups({ available: true, version: null, body: {}, keys: [] })).toEqual([]);
@@ -224,5 +255,36 @@ describe("저장 결과·이력", () => {
     expect(PAPER_TABS.find((tab) => tab.key === "settings")?.opensIn).toBeNull();
     expect(PAPER_TABS.find((tab) => tab.key === "framework")?.opensIn).toBeNull();
     expect(PAPER_TABS.find((tab) => tab.key === "notes")?.opensIn).toBeNull();
+  });
+});
+
+describe("구절 목록(사건 뉴스 키워드, 2단계 B)", () => {
+  const NEWS = {
+    available: true,
+    version: 3,
+    body: { news: { keywords: ["Fed", "rate decision"], feeds: ["sec_press"] } },
+    defaults: { news: { keywords: ["Fed", "rate decision"], feeds: ["sec_press", "bls_cpi"] } },
+    keys: [
+      key("news.keywords", { type: "phrases", description: "매크로 키워드" }),
+      key("news.feeds", { type: "list", options: null, description: "피드 키" }),
+    ],
+  };
+  const groups = settingGroups(NEWS);
+  const row = (name: string) => groups.flatMap((group) => group.rows).find((entry) => entry.key === name)!;
+
+  it("서버 형 phrases는 공백으로 나누지 않는 목록, 피드는 목록 — 묶음 이름표는 사건 뉴스", () => {
+    expect(groups.map((group) => group.title)).toEqual(["사건 뉴스 — Claude 계좌 패킷 11b(2단계 B, 규칙 계좌 영향 없음)"]);
+    expect(row("news.keywords")).toMatchObject({ kind: "phrases", initial: "Fed, rate decision", isDefault: true });
+    expect(row("news.feeds")).toMatchObject({ kind: "list", initial: "sec_press", isDefault: false });
+  });
+
+  it("쉼표·줄바꿈으로만 나누고 항목 안의 공백은 한 칸으로 — 'rate decision'이 두 낱말로 갈라지지 않음", () => {
+    expect(parseSettingInput({ kind: "phrases" }, " rate   decision, Fed\nMiddle East ,, ")).toEqual({
+      ok: true, value: ["rate decision", "Fed", "Middle East"],
+    });
+    expect(parseSettingInput({ kind: "phrases" }, "")).toEqual({ ok: true, value: [] });
+    const view = settingsDraftView(groups, { "news.keywords": "Fed, rate decision", "news.feeds": "sec_press, bls_cpi" });
+    expect(view.changes.map((change) => change.key)).toEqual(["news.feeds"]);
+    expect(view.changes[0].value).toEqual(["sec_press", "bls_cpi"]);
   });
 });

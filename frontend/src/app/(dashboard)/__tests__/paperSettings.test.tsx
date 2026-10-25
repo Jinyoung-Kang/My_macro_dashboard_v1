@@ -108,6 +108,31 @@ const changes = () => within(screen.getByRole("region", { name: "바꿀 값" }))
 const saveButton = () => screen.getByRole("button", { name: "설정 저장" }) as HTMLButtonElement;
 
 describe("설정 탭", () => {
+  it("회귀(B-SET-UI-1): 설정 행에 없는 news.* 키는 기본값으로 그린다 — 켜진 체크 상자, 기본 사전이 든 입력, '설정 행에 없음' 표기", async () => {
+    reads["/api/paper/settings"] = () => Promise.resolve({
+      ...SETTINGS,
+      defaults: { ...SETTINGS.defaults, news: { enabled: true, keywords: ["Fed", "rate decision"] } },
+      keys: [
+        ...SETTINGS.keys,
+        { key: "news.enabled", type: "boolean", min: null, max: null, affectsRules: false, description: "사건 섹션" },
+        { key: "news.keywords", type: "phrases", min: null, max: null, affectsRules: false, description: "키워드" },
+      ],
+    });
+    await openSettingsTab();
+
+    const enabled = screen.getByLabelText("news.enabled") as HTMLInputElement;
+    expect(enabled.checked).toBe(true);
+    const field = enabled.closest("div.grid") as HTMLElement;
+    expect(within(field).getByText("설정 행에 없음 — 기본값으로 읽음 · 기본 예")).toBeTruthy();
+    expect(within(field).queryByText(/기본값과 다름/)).toBeNull();
+    expect((screen.getByLabelText("news.keywords") as HTMLTextAreaElement).value).toBe("Fed, rate decision");
+    expect(saveButton().disabled).toBe(true);
+
+    // 끄려고 한 번 누르면 false가 바뀐 값으로 잡힙니다(예전에는 체크가 풀린 채로 보여 오히려 true가 저장됨).
+    fireEvent.click(enabled);
+    expect(changes()).toEqual(["news.enabled: 예 (설정 행에 없음 — 기본값으로 읽음) → 아니오"]);
+  });
+
   it("키마다 지금 값·기본값·범위·설명·규칙 책 영향 배지, 바꾼 기록 표 — 자리 문구는 없다", async () => {
     await openSettingsTab();
 

@@ -20,6 +20,7 @@ import {
   jsonSummary,
   navAxis,
   navChart,
+  newsLine,
   notStartedNote,
   orderSizeText,
   PAPER_TABS,
@@ -281,6 +282,34 @@ describe("발표·실적 일정 수집 범위(2단계 A)", () => {
     })).toBe("일정(FRED·FOMC·실적): 거시 —건 · 실적 —/—종목 · 갱신 —");
     expect(calendarLine(undefined)).toBeNull();
     expect(calendarLine(null)).toBeNull();
+  });
+});
+
+describe("사건 뉴스 수집(2단계 B)", () => {
+  const NEWS = {
+    available: true, stored7d: 61, lastFetchKst: "2026-10-25 15:00 KST", feedsOk: 7, feedsTotal: 7, failedFeeds: [],
+  };
+
+  it("7일 보관 건수·받은 피드/전체·갱신 시각(KST) — 실패한 피드가 없으면 덧붙이지 않는다", () => {
+    expect(newsLine(NEWS)).toBe("사건 뉴스(RSS): 7일 61건 · 피드 7/7 · 갱신 2026-10-25 15:00");
+  });
+
+  it("실패한 피드는 키를 덧붙인다(사유는 상태 화면)", () => {
+    expect(newsLine({
+      ...NEWS, feedsOk: 5,
+      failedFeeds: [
+        { feed: "bls_cpi", source: "BLS", reason: "HTTP 403 — BLS 차단(UA)" },
+        { feed: "bls_empsit", source: "BLS", reason: "HTTP 403 — BLS 차단(UA)" },
+      ],
+    })).toBe("사건 뉴스(RSS): 7일 61건 · 피드 5/7 · 갱신 2026-10-25 15:00 · 실패 bls_cpi·bls_empsit");
+  });
+
+  it("저장본이 없으면 숫자·시각은 —(0으로 채우지 않음), 필드가 없는 백엔드면 줄을 그리지 않는다(null)", () => {
+    expect(newsLine({
+      available: false, stored7d: null, lastFetchKst: null, feedsOk: null, feedsTotal: null, failedFeeds: null,
+    })).toBe("사건 뉴스(RSS): 7일 —건 · 피드 —/— · 갱신 —");
+    expect(newsLine(undefined)).toBeNull();
+    expect(newsLine(null)).toBeNull();
   });
 });
 
