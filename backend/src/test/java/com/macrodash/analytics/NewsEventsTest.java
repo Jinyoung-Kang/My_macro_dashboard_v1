@@ -7,7 +7,6 @@ import com.macrodash.analytics.NewsEvents.Result;
 import com.macrodash.analytics.NewsEvents.Settings;
 import com.macrodash.analytics.NewsEvents.Targets;
 import com.macrodash.analytics.NewsEvents.Window;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -404,7 +403,6 @@ class NewsEventsTest {
     // ------------------------------------------------------------------ 수집 범위(초기 결정)
 
     @Test
-    @Disabled("재현 — 다음 커밋에서 고침: 수집 전 창의 '걸린 것 없음'이 측정 0으로 남음")
     @DisplayName("창 전체가 수집 전이면 걸린 것이 없어도 측정 hasEvents는 0이 아니라 null(없었는지 모름) — 실은 줄이 있으면 그 건수")
     void beforeCollectionEmptyIsUnknown() {
         Instant fetched = at("2026-10-25T06:39:17Z");

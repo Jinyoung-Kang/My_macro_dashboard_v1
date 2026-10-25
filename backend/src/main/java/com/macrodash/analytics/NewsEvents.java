@@ -375,11 +375,11 @@ public final class NewsEvents {
 
         /**
          * 측정 태그 {@code hasEvents}(명세 §6·B6) — 실은 건수. 섹션이 사건을 고르지 않았으면(끔·저장본 없음·피드 없음) null —
-         * 0이면 '골랐는데 없었다'로 읽힙니다. 걸린 것이 없는데 창 끝 쪽을 받지 못했으면({@link #STALE}) 0이 아니라 null입니다(없었는지
-         * 모름). 실은 줄이 있으면 {@link #STALE}여도 그 건수입니다.
+         * 0이면 '골랐는데 없었다'로 읽힙니다. 걸린 것이 없는데 창 끝 쪽을 받지 못했거나({@link #STALE}) 창 전체가 수집 전이면
+         * ({@link #BEFORE_COLLECTION}) 0이 아니라 null입니다(없었는지 모름). 실은 줄이 있으면 그래도 그 건수입니다.
          */
         public Integer eventCount() {
-            if (NONE.equals(status) && STALE.equals(coverage)) {
+            if (NONE.equals(status) && (STALE.equals(coverage) || BEFORE_COLLECTION.equals(coverage))) {
                 return null;
             }
             return OK.equals(status) || NONE.equals(status) ? items.size() : null;
