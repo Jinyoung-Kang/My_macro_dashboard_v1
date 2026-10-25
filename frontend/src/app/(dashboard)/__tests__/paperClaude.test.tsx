@@ -485,6 +485,36 @@ describe("개요 — 사건 뉴스 RSS(2단계 B)", () => {
   });
 });
 
+describe("개요 — 어닝 서프라이즈(2단계 C)", () => {
+  it("상태 응답의 earnings를 장부 관측치 카드에 한 줄로 — 출처에 yfinance quoteSummary와 저장본 이름", async () => {
+    reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_ACTIVE));
+    reads["/api/paper/status"] = () => Promise.resolve({
+      available: true, schemaReady: true, initialized: true, enabled: true, jobs: [],
+      earnings: { available: true, covered: 98, universe: 576, withEstimate4: 91, generatedAtKst: "2026-10-25 21:30 KST" },
+    });
+    render(<PaperPage />);
+
+    expect(await screen.findByText("어닝 서프라이즈(yfinance): 98/576종목 · 4분기 91 · 갱신 2026-10-25 21:30")).toBeTruthy();
+    expect(screen.getByText(/us\.earnings_surprise\.status/)).toBeTruthy();
+  });
+
+  it("저장본이 아직 없으면 숫자는 —, 응답에 earnings가 없으면(이전 백엔드) 줄을 그리지 않는다", async () => {
+    reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_ACTIVE));
+    reads["/api/paper/status"] = () => Promise.resolve({
+      available: true, schemaReady: true, initialized: true, enabled: true, jobs: [],
+      earnings: { available: false, covered: null, universe: null, withEstimate4: null, generatedAtKst: null },
+    });
+    const { unmount } = render(<PaperPage />);
+    expect(await screen.findByText("어닝 서프라이즈(yfinance): —/—종목 · 4분기 — · 갱신 —")).toBeTruthy();
+    unmount();
+
+    reads["/api/paper/status"] = () => Promise.resolve({ available: true, schemaReady: true, initialized: true, enabled: true, jobs: [] });
+    render(<PaperPage />);
+    expect(await screen.findByText("Claude 노출 추이")).toBeTruthy();
+    expect(screen.queryByText(/어닝 서프라이즈\(yfinance\)/)).toBeNull();
+  });
+});
+
 /** 지금 판(GET /api/paper/framework) — 임시 v0. */
 const FRAMEWORK_INTERIM = {
   available: true,

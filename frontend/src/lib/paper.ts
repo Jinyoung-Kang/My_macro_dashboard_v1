@@ -14,6 +14,7 @@ import type {
   PaperClaudePreviewResult,
   PaperDecisionDetail,
   PaperDecisionSummary,
+  PaperEarningsStatus,
   PaperFrameworkEngine,
   PaperFrameworkMaxIds,
   PaperFrameworkPrinciple,
@@ -72,6 +73,8 @@ export const PAPER_SOURCES = {
     + "(yfinance, 실적일) — 저장본 calendar.us_events, Claude 계좌 패킷 일정 1b_calendar의 자료",
   news: "RSS 헤드라인(제목·출처·시각만) — Investing.com news_25·news_95·news_14 · 연준 press_monetary · BLS cpi·empsit · SEC "
     + "pressreleases (수집 상태 저장본 news.headlines.status, 보존 7일) — Claude 계좌 패킷 사건 11b_events의 자료",
+  earnings: "Yahoo Finance quoteSummary earnings.earningsChart(yfinance 내부 호출, 최근 4분기 EPS 실제치·컨센서스, 수집 상태 저장본 "
+    + "us.earnings_surprise.status) — Claude 계좌 패킷 재무 8b_fundamentals의 eps 자료",
   jobs: "대시보드 작업 기록 (PostgreSQL paper_job_runs)",
   trackRecord: "SEC EDGAR 13F-HR(후보 기관 분기 공시, 저장본 sec.13f.{cik}.q30) · 수정주가 Yahoo Finance(yfinance, equity_close) — "
     + "공시일 기준 복제 수익률은 대시보드 백엔드 계산(PostgreSQL paper_track_record)",
@@ -867,6 +870,20 @@ export function newsLine(news: PaperNewsStatus | null | undefined): string | nul
     parts.push(`실패 ${failed.join("·")}`);
   }
   return parts.join(" · ");
+}
+
+/**
+ * 어닝 서프라이즈 수집 한 줄(2단계 C) — "어닝 서프라이즈(yfinance): 행이 있는 종목/대상종목 · 4분기 추정치 4분기 이상 종목 수 · 갱신 …".
+ * 모르는 값은 —입니다. 상태 응답에 이 필드가 없으면(이전 백엔드) null — 줄을 그리지 않습니다.
+ */
+export function earningsLine(earnings: PaperEarningsStatus | null | undefined): string | null {
+  if (!earnings) return null;
+  const count = (value: number | null | undefined) => formatNumber(value, 0);
+  return [
+    `어닝 서프라이즈(yfinance): ${count(earnings.covered)}/${count(earnings.universe)}종목`,
+    `4분기 ${count(earnings.withEstimate4)}`,
+    `갱신 ${formatKst(earnings.generatedAtKst)}`,
+  ].join(" · ");
 }
 
 /**

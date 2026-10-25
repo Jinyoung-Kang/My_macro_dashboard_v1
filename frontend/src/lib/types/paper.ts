@@ -260,6 +260,27 @@ export interface PaperStatusResponse {
   calendar?: PaperCalendarStatus | null;
   /** 사건 뉴스 RSS(2단계 B)의 수집 상태 — Claude 계좌 패킷 11b_events의 자료. 이 필드를 아직 보내지 않는 백엔드에서는 없습니다. */
   news?: PaperNewsStatus | null;
+  /**
+   * 어닝 서프라이즈(2단계 C)의 수집 범위 — Claude 계좌 패킷 8b_fundamentals 줄마다의 최근 4분기 EPS(eps)의 자료. 이 필드를 아직
+   * 보내지 않는 백엔드에서는 없습니다.
+   */
+  earnings?: PaperEarningsStatus | null;
+}
+
+/**
+ * 어닝 서프라이즈 수집 범위(2단계 C) — 수집기 상태 저장본(us.earnings_surprise.status)의 요약. 저장본이 없으면 available:false이고
+ * 나머지는 모두 null입니다(0으로 채우지 않음 — 화면 —). 숫자는 수집기가 저장된 분기 행으로 셉니다(이번 응답이 아님).
+ */
+export interface PaperEarningsStatus {
+  available: boolean;
+  /** 저장된 분기 행이 하나라도 있는 종목 수(개수). */
+  covered: number | null;
+  /** 대상 — 모의 매매 유니버스에서 ETF를 뺀 종목 수(개수, 실적 일정과 같은 범위). */
+  universe: number | null;
+  /** 추정치가 있는 분기가 4개 이상 저장된 종목 수(개수). */
+  withEstimate4: number | null;
+  /** 저장본을 마지막으로 쓴 수집 시각("2026-10-25 21:30 KST"). */
+  generatedAtKst: string | null;
 }
 
 /**

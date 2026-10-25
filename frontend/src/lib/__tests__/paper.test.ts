@@ -13,6 +13,7 @@ import {
   formatExcessPoints,
   formatSharePrice,
   calendarLine,
+  earningsLine,
   fundamentalsLine,
   heldText,
   initPrompt,
@@ -310,6 +311,23 @@ describe("사건 뉴스 수집(2단계 B)", () => {
     })).toBe("사건 뉴스(RSS): 7일 —건 · 피드 —/— · 갱신 —");
     expect(newsLine(undefined)).toBeNull();
     expect(newsLine(null)).toBeNull();
+  });
+});
+
+describe("어닝 서프라이즈 수집(2단계 C)", () => {
+  const EARNINGS = {
+    available: true, covered: 98, universe: 576, withEstimate4: 91, generatedAtKst: "2026-10-25 21:30 KST",
+  };
+
+  it("행이 있는 종목/대상·추정치 4분기 이상 종목·갱신 시각(KST)", () => {
+    expect(earningsLine(EARNINGS)).toBe("어닝 서프라이즈(yfinance): 98/576종목 · 4분기 91 · 갱신 2026-10-25 21:30");
+  });
+
+  it("저장본이 없으면 숫자·시각은 —(0으로 채우지 않음), 필드가 없는 백엔드면 줄을 그리지 않는다(null)", () => {
+    expect(earningsLine({ available: false, covered: null, universe: null, withEstimate4: null, generatedAtKst: null }))
+      .toBe("어닝 서프라이즈(yfinance): —/—종목 · 4분기 — · 갱신 —");
+    expect(earningsLine(undefined)).toBeNull();
+    expect(earningsLine(null)).toBeNull();
   });
 });
 
