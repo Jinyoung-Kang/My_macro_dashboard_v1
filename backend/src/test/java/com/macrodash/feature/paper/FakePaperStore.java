@@ -741,6 +741,102 @@ class FakePaperStore extends PaperStore {
         return true;
     }
 
+    // ------------------------------------------------------------------ 주간 복기(V12)
+    TreeMap<LocalDate, Review> reviews = new TreeMap<>();
+
+    /** 그 주가 이미 있으면 false(ON CONFLICT DO NOTHING). 입력 문자열이 JSON이 아니면 실제 저장소처럼 거절합니다. */
+    @Override
+    public boolean insertReviewIfAbsent(Review r) {
+        requireJson(r.inputText());
+        requireProposal(r.proposalId());
+        if (reviews.containsKey(r.weekEnding())) {
+            return false;
+        }
+        reviews.put(r.weekEnding(), withCreatedAt(r, r.retryCount(), r.createdAt() == null ? dbNow : r.createdAt()));
+        return true;
+    }
+
+    @Override
+    public Optional<Review> review(LocalDate weekEnding) {
+        return Optional.ofNullable(reviews.get(weekEnding));
+    }
+
+    /** 주 최근 순. 판정 수는 OK 행의 verdicts 배열만 세고 그 밖은 null(실제 저장소의 SQL과 같음). */
+    @Override
+    public List<ReviewSummary> reviews(int limit) {
+        return reviews.descendingMap().values().stream().limit(limit).map(r -> {
+            FrameworkProposal p = r.proposalId() == null ? null : proposals.get(r.proposalId());
+            JsonNode verdicts = r.response() == null ? null : r.response().get("verdicts");
+            boolean counted = Review.OK.equals(r.status()) && verdicts != null && verdicts.isArray();
+            return new ReviewSummary(r.weekEnding(), r.windowWeeks(), r.status(), r.model(), r.error(), r.proposalId(),
+                    p == null ? null : p.status(), r.frameworkVersion(), r.retryCount(),
+                    counted ? count(verdicts, ReviewSummary.HELD) : null,
+                    counted ? count(verdicts, ReviewSummary.REFUTED) : null,
+                    counted ? count(verdicts, ReviewSummary.UNDETERMINED) : null, r.createdAt());
+        }).toList();
+    }
+
+    /** API 오류이고 아직 재시도하지 않은 행만 통째로 바꾸고 재시도 수 +1(실제 저장소의 조건과 같음). */
+    @Override
+    public boolean updateReviewRetry(Review r) {
+        requireJson(r.inputText());
+        requireProposal(r.proposalId());
+        Review old = reviews.get(r.weekEnding());
+        if (old == null || !Review.API_ERROR.equals(old.status()) || old.retryCount() != 0) {
+            return false;
+        }
+        reviews.put(r.weekEnding(), withCreatedAt(r, old.retryCount() + 1, r.createdAt() == null ? dbNow : r.createdAt()));
+        return true;
+    }
+
+    /** 이은 제안이 아직 없을 때만. 없는 제안 번호는 외래키처럼 거절합니다. */
+    @Override
+    public boolean linkReviewProposal(LocalDate weekEnding, long proposalId) {
+        Review r = reviews.get(weekEnding);
+        if (r == null || r.proposalId() != null) {
+            return false;
+        }
+        requireProposal(proposalId);
+        reviews.put(weekEnding, new Review(r.weekEnding(), r.windowWeeks(), r.input(), r.inputText(), r.response(),
+                r.responseRaw(), r.model(), r.usage(), r.status(), r.error(), proposalId, r.frameworkVersion(),
+                r.retryCount(), r.createdAt()));
+        return true;
+    }
+
+    private static Review withCreatedAt(Review r, int retryCount, Instant createdAt) {
+        return new Review(r.weekEnding(), r.windowWeeks(), r.input(), r.inputText(), r.response(), r.responseRaw(),
+                r.model(), r.usage(), r.status(), r.error(), r.proposalId(), r.frameworkVersion(), retryCount, createdAt);
+    }
+
+    /** 없는 제안 번호는 외래키(paper_reviews_proposal_id_fkey)처럼 거절합니다. */
+    private void requireProposal(Long proposalId) {
+        if (proposalId != null && !proposals.containsKey(proposalId)) {
+            throw new org.springframework.dao.DataIntegrityViolationException(
+                    "paper_reviews_proposal_id_fkey: " + proposalId);
+        }
+    }
+
+    private static Integer count(JsonNode verdicts, String value) {
+        int n = 0;
+        for (JsonNode v : verdicts) {
+            if (value.equals(text(v, "thesisHeld"))) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    private static void requireJson(String text) {
+        if (text == null) {
+            return;
+        }
+        try {
+            new ObjectMapper().readTree(text);
+        } catch (tools.jackson.core.JacksonException e) {
+            throw new IllegalArgumentException("input_text는 입력 JSON 문자열이어야 합니다: " + e.getOriginalMessage());
+        }
+    }
+
     private static String text(JsonNode node, String field) {
         JsonNode value = node == null ? null : node.get(field);
         return value == null || value.isNull() ? null : value.asString("");
@@ -767,13 +863,14 @@ class FakePaperStore extends PaperStore {
                             TreeMap<LocalDate, Selection> selections, TreeMap<Long, Decision> decisions,
                             TreeMap<LocalDate, GateRow> gates, TreeMap<Integer, FrameworkVersion> frameworks,
                             TreeMap<Long, FrameworkProposal> proposals, TreeMap<Long, Note> notes,
-                            TreeMap<LocalDate, ApiUsage> apiUsage) {
+                            TreeMap<LocalDate, ApiUsage> apiUsage, TreeMap<LocalDate, Review> reviews) {
         Snapshot(FakePaperStore s) {
             this(new TreeMap<>(s.books), new TreeMap<>(s.states), deep(s.positions), deep(s.lockouts),
                     new TreeMap<>(s.orders), new TreeMap<>(s.fills), deep(s.nav), new ArrayList<>(s.jobRuns),
                     new TreeMap<>(s.startPrices), s.settings, deepDates(s.trackRecords), new TreeMap<>(s.selections),
                     new TreeMap<>(s.decisions), new TreeMap<>(s.gates), new TreeMap<>(s.frameworks),
-                    new TreeMap<>(s.proposals), new TreeMap<>(s.notes), new TreeMap<>(s.apiUsage));
+                    new TreeMap<>(s.proposals), new TreeMap<>(s.notes), new TreeMap<>(s.apiUsage),
+                    new TreeMap<>(s.reviews));
         }
 
         void restore(FakePaperStore s) {
@@ -795,6 +892,7 @@ class FakePaperStore extends PaperStore {
             s.proposals = proposals;
             s.notes = notes;
             s.apiUsage = apiUsage;
+            s.reviews = reviews;
         }
 
         private static TreeMap<LocalDate, TreeMap<String, TrackRecordRow>> deepDates(

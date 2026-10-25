@@ -1243,14 +1243,139 @@ class ApiIntegrationTest {
         }
     }
 
+    @Test
+    @DisplayName("🧪 주간 복기: 회원은 403, 운영자는 목록·한 건·수동 실행 — 조건이 안 되면 400, 결정이 없으면 SKIPPED, 키가 없으면 외부 호출 없이 "
+            + "NO_KEY(API_ERROR, 한 번 재시도) — 한 주 한 행")
+    void paperWeeklyReviews() {
+        HttpHeaders member = new HttpHeaders();
+        member.add(HttpHeaders.COOKIE, login(MEMBER, "test-password"));
+        member.setContentType(MediaType.APPLICATION_JSON);
+        for (String path : List.of("/api/paper/reviews", "/api/paper/reviews/2026-10-30")) {
+            ResponseEntity<JsonNode> denied = rest.exchange(url(path), HttpMethod.GET, new HttpEntity<>(null, member),
+                    JsonNode.class);
+            assertThat(denied.getStatusCode()).as("회원 GET " + path).isEqualTo(HttpStatus.FORBIDDEN);
+            assertThat(denied.getBody().path("required").asString()).isEqualTo("OWNER");
+        }
+        assertThat(rest.exchange(url("/api/paper/reviews/run"), HttpMethod.POST, new HttpEntity<>(Map.of(), member),
+                String.class).getStatusCode()).as("회원 POST 수동 복기").isEqualTo(HttpStatus.FORBIDDEN);
+
+        assumePaperSchema();
+        java.time.LocalDate week = com.macrodash.analytics.ReviewFacts.latestCompletedWeekEnding(java.time.Instant.now());
+        org.junit.jupiter.api.Assumptions.assumeTrue(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM paper_reviews WHERE week_ending = ?", Long.class, java.sql.Date.valueOf(week)) == 0,
+                "테스트 DB에 이번 주 복기 행이 이미 있습니다");
+        deletePaperBooks();
+        // 테스트 DB만 — 시험 전 상태를 기억해 끝에 되돌립니다(설정 행·판 v0 시드·오늘(KST) 사용량 행·제안).
+        boolean settingsExisted = jdbc.queryForObject("SELECT COUNT(*) FROM paper_settings", Long.class) > 0;
+        Map<String, Object> settingsBefore = settingsExisted ? jdbc.queryForMap(
+                "SELECT version, body::text AS body FROM paper_settings WHERE id = 1") : null;
+        boolean frameworkExisted = jdbc.queryForObject("SELECT COUNT(*) FROM paper_framework_versions", Long.class) > 0;
+        java.time.LocalDate today = com.macrodash.Kst.today();
+        boolean usageExisted = jdbc.queryForObject("SELECT COUNT(*) FROM paper_api_usage WHERE day = ?", Long.class,
+                java.sql.Date.valueOf(today)) > 0;
+        long maxProposal = jdbc.queryForObject("SELECT COALESCE(MAX(id), 0) FROM paper_framework_proposals", Long.class);
+        HttpHeaders owner = new HttpHeaders();
+        owner.add(HttpHeaders.COOKIE, sessionCookie);
+        owner.setContentType(MediaType.APPLICATION_JSON);
+        try {
+            JsonNode list = authorizedGet("/api/paper/reviews");
+            assertThat(list.path("available").asBoolean()).isTrue();
+            assertThat(list.path("latestWeekEnding").asString()).isEqualTo(week.toString());
+            assertThat(list.path("latestOpensAtKst").asString()).isNotBlank();
+            assertThat(authorizedExchange("/api/paper/reviews/2026-13-01", HttpMethod.GET).getStatusCode())
+                    .as("날짜 형식").isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(authorizedExchange("/api/paper/reviews/" + week, HttpMethod.GET).getStatusCode())
+                    .as("없는 주").isEqualTo(HttpStatus.BAD_REQUEST);
+
+            ResponseEntity<JsonNode> noBook = authorizedExchange("/api/paper/reviews/run", HttpMethod.POST);
+            assertThat(noBook.getStatusCode()).as("계좌 없음 — 부르지 않음").isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(noBook.getBody().path("message").asString()).contains("Claude 계좌");
+            assertThat(authorizedExchange("/api/paper/init", HttpMethod.POST).getStatusCode()).isEqualTo(HttpStatus.OK);
+            ResponseEntity<JsonNode> notStarted = authorizedExchange("/api/paper/reviews/run", HttpMethod.POST);
+            assertThat(notStarted.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(notStarted.getBody().path("message").asString()).contains("시작 전");
+
+            jdbc.update("UPDATE paper_books SET status = 'ACTIVE', started_on = ? WHERE code = 'claude'",
+                    java.sql.Date.valueOf(week.minusWeeks(2)));
+            ResponseEntity<JsonNode> waiting = authorizedExchange("/api/paper/reviews/run", HttpMethod.POST);
+            assertThat(waiting.getStatusCode()).as("확정 종가 없음(setUp이 snapshots를 비움)").isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(waiting.getBody().path("message").asString()).contains("확정 종가");
+            jdbc.update("INSERT INTO paper_nav_daily (book_code, trading_date, nav, cash, equity_value, exposure_pct, "
+                    + "prices_final) VALUES ('claude', ?, 100000, 100000, 0, 0, true)", java.sql.Date.valueOf(week));
+
+            // 창 안에 Claude 결정이 없음 → 부르지 않고 SKIPPED, 두 번 눌러도 한 행.
+            ResponseEntity<JsonNode> skipped = authorizedExchange("/api/paper/reviews/run", HttpMethod.POST);
+            assertThat(skipped.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(skipped.getBody().path("ok").asBoolean()).isTrue();
+            assertThat(skipped.getBody().path("outcome").asString()).isEqualTo("SKIPPED");
+            assertThat(skipped.getBody().path("review").path("status").asString()).isEqualTo("SKIPPED");
+            assertThat(skipped.getBody().path("review").path("input").path("window").path("weeks").asInt()).isEqualTo(4);
+            ResponseEntity<JsonNode> again = authorizedExchange("/api/paper/reviews/run", HttpMethod.POST);
+            assertThat(again.getBody().path("outcome").asString()).isEqualTo("ALREADY_REVIEWED");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM paper_reviews WHERE week_ending = ?", Long.class,
+                    java.sql.Date.valueOf(week))).isEqualTo(1L);
+            JsonNode listed = authorizedGet("/api/paper/reviews").path("reviews").get(0);
+            assertThat(listed.path("weekEnding").asString()).isEqualTo(week.toString());
+            assertThat(listed.path("verdictCounts").isNull()).as("OK가 아닌 행의 판정 수는 null").isTrue();
+            assertThat(authorizedGet("/api/paper/reviews/" + week).path("review").path("status").asString())
+                    .isEqualTo("SKIPPED");
+
+            // 창 안에 관망 결정 하나 — 테스트 설정은 Anthropic 키가 비어 있어 요청을 보내지 않고 NO_KEY(잡은 호출은 되돌림).
+            jdbc.update("DELETE FROM paper_reviews WHERE week_ending = ?", java.sql.Date.valueOf(week));
+            jdbc.update("INSERT INTO paper_decisions (book_code, as_of_trading_date, kind, status, model, framework_version, "
+                    + "settings_version, target_exposure_pct, response) VALUES ('claude', ?, 'SCHEDULED', 'NO_TRADE', "
+                    + "'claude-sonnet-5-5', 0, 1, 40, CAST(? AS jsonb))", java.sql.Date.valueOf(week.minusDays(3)),
+                    "{\"stance\":\"NEUTRAL\",\"summary\":\"관망\",\"noTradeReason\":\"일정 대기\"}");
+            long callsBefore = jdbc.queryForObject("SELECT COALESCE(SUM(calls), 0) FROM paper_api_usage WHERE day = ?",
+                    Long.class, java.sql.Date.valueOf(today));
+            JsonNode first = authorizedExchange("/api/paper/reviews/run", HttpMethod.POST).getBody();
+            assertThat(first.path("outcome").asString()).isEqualTo("REVIEWED");
+            assertThat(first.path("review").path("status").asString()).isEqualTo("API_ERROR");
+            assertThat(first.path("review").path("error").asString()).startsWith("[NO_KEY]");
+            assertThat(first.path("review").path("retryable").asBoolean()).isTrue();
+            assertThat(first.path("review").path("input").path("decisions").size()).isEqualTo(1);
+            JsonNode retried = authorizedExchange("/api/paper/reviews/run", HttpMethod.POST).getBody();
+            assertThat(retried.path("review").path("retryCount").asInt()).as("API 오류는 같은 행에서 한 번 더").isEqualTo(1);
+            assertThat(retried.path("review").path("retryable").asBoolean(true)).isFalse();
+            assertThat(authorizedExchange("/api/paper/reviews/run", HttpMethod.POST).getBody().path("outcome").asString())
+                    .isEqualTo("ALREADY_REVIEWED");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM paper_reviews WHERE week_ending = ?", Long.class,
+                    java.sql.Date.valueOf(week))).isEqualTo(1L);
+            assertThat(jdbc.queryForObject("SELECT COALESCE(SUM(calls), 0) FROM paper_api_usage WHERE day = ?",
+                    Long.class, java.sql.Date.valueOf(today))).as("보내지 않은 호출은 세지 않음").isEqualTo(callsBefore);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM paper_framework_proposals WHERE id > ?", Long.class,
+                    maxProposal)).as("제안 없음").isZero();
+        } finally {
+            jdbc.update("DELETE FROM paper_reviews WHERE week_ending = ?", java.sql.Date.valueOf(week));
+            jdbc.update("DELETE FROM paper_job_runs WHERE job = 'review'");
+            jdbc.update("DELETE FROM paper_framework_proposals WHERE id > ?", maxProposal);
+            deletePaperBooks();
+            if (!settingsExisted) {
+                jdbc.update("DELETE FROM paper_settings");
+                jdbc.update("DELETE FROM paper_settings_history");
+            } else {
+                int before = ((Number) settingsBefore.get("version")).intValue();
+                jdbc.update("UPDATE paper_settings SET version = ?, body = CAST(? AS jsonb) WHERE id = 1", before,
+                        settingsBefore.get("body"));
+                jdbc.update("DELETE FROM paper_settings_history WHERE version > ?", before);
+            }
+            if (!frameworkExisted) {
+                jdbc.update("DELETE FROM paper_framework_versions");
+            }
+            if (!usageExisted) {
+                jdbc.update("DELETE FROM paper_api_usage WHERE day = ?", java.sql.Date.valueOf(today));
+            }
+        }
+    }
+
     private void assumePaperSchema() {
         org.junit.jupiter.api.Assumptions.assumeTrue(Boolean.TRUE.equals(jdbc.queryForObject(
                 "SELECT to_regclass('paper_api_usage') IS NOT NULL AND EXISTS (SELECT 1 FROM pg_attribute "
                         + "WHERE attrelid = to_regclass('paper_track_record') AND attname = 'data_source' "
                         + "AND NOT attisdropped) AND EXISTS (SELECT 1 FROM pg_attribute "
                         + "WHERE attrelid = to_regclass('paper_api_usage') AND attname = 'est_cost_calls' "
-                        + "AND NOT attisdropped)", Boolean.class)),
-                "테스트 DB에 V8~V11(paper_*)이 없습니다 — make db-test");
+                        + "AND NOT attisdropped) AND to_regclass('paper_reviews') IS NOT NULL", Boolean.class)),
+                "테스트 DB에 V8~V12(paper_*)가 없습니다 — make db-test");
     }
 
     @Test

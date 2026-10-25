@@ -100,6 +100,8 @@ public final class AccessPolicy {
                 "GET /api/paper/framework/proposals", "POST /api/paper/framework/proposals",
                 "POST /api/paper/framework/proposals/{id}/approve", "POST /api/paper/framework/proposals/{id}/reject",
                 "GET /api/paper/notes", "POST /api/paper/notes", "DELETE /api/paper/notes/{id}");
+        //    주간 복기(2단계 D) — 지난 결정과 그 뒤 가격의 대조, 수동 실행은 Claude를 부름(비용)·프레임 제안을 낼 수 있음(승인은 위 경로)
+        owner("GET /api/paper/reviews", "GET /api/paper/reviews/{weekEnding}", "POST /api/paper/reviews/run");
     }
 
     private static final List<Rule> RULES = new ArrayList<>();

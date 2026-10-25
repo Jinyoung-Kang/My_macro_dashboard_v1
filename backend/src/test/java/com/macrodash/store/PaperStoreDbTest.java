@@ -67,6 +67,8 @@ class PaperStoreDbTest {
         jdbc.update("DELETE FROM timeseries WHERE dataset = ?", TS_DATASET);
         // Claude 호출 사용량은 날짜가 키라, 시험은 쓰일 일이 없는 1999년 날짜만 씁니다.
         jdbc.update("DELETE FROM paper_api_usage WHERE day < DATE '2000-01-01'");
+        // 주간 복기도 주가 키라 1999년 주만 씁니다(목록 시험은 되돌리는 트랜잭션 안에서만).
+        jdbc.update("DELETE FROM paper_reviews WHERE week_ending < DATE '2000-01-01'");
     }
 
     private static PaperStore.Book book(String code, String label) {
@@ -88,10 +90,11 @@ class PaperStoreDbTest {
     }
 
     @Test
-    @DisplayName("테이블이 있다 — V8이 마지막에 만드는 paper_api_usage와 V9·V10이 더하는 열로 준비 여부를 본다")
+    @DisplayName("테이블이 있다 — V8이 마지막에 만드는 paper_api_usage, V9~V11이 더하는 열, V12의 paper_reviews로 준비 여부를 본다")
     void ready() {
-        assertThat(store.ready()).as("make db-test로 V8~V10을 적용했는가").isTrue();
+        assertThat(store.ready()).as("make db-test로 V8~V12를 적용했는가").isTrue();
         assertThat(new SchemaCheck(jdbc).columnExists("paper_decisions", "packet_text")).isTrue();
+        assertThat(new SchemaCheck(jdbc).tableExists("paper_reviews")).isTrue();
     }
 
     @Test
@@ -1127,6 +1130,212 @@ class PaperStoreDbTest {
             assertThat(store.note(-1)).isEmpty();
             throw new Rollback();
         })).isInstanceOf(Rollback.class);
+    }
+
+    // ------------------------------------------------------------------ 주간 복기(V12)
+    /** 1999년 금요일들 — 운영·다른 시험의 주와 겹치지 않게(cleanUp이 지움). */
+    private static final LocalDate W1 = LocalDate.of(1999, 1, 8);
+    private static final LocalDate W2 = LocalDate.of(1999, 1, 15);
+    private static final LocalDate W3 = LocalDate.of(1999, 1, 22);
+    private static final LocalDate W4 = LocalDate.of(1999, 1, 29);
+
+    private static PaperStore.Review review(LocalDate week, String status, String inputText, JsonNode response)
+            throws Exception {
+        JsonNode input = MAPPER.readTree(inputText == null ? "{\"weekEnding\":\"" + week + "\",\"decisions\":[]}"
+                : inputText);
+        return new PaperStore.Review(week, 4, input, inputText, response, response == null ? null : response.toString(),
+                PaperStore.Review.SKIPPED.equals(status) ? null : "claude-sonnet-5-5", null, status,
+                PaperStore.Review.API_ERROR.equals(status) ? "[RATE_LIMIT] 429" : null, null, 3, 0, null);
+    }
+
+    private static JsonNode verdicts(String... thesisHeld) throws Exception {
+        StringBuilder items = new StringBuilder();
+        for (int i = 0; i < thesisHeld.length; i++) {
+            items.append(i == 0 ? "" : ",").append("{\"decisionId\":").append(i + 1)
+                    .append(",\"thesisHeld\":\"").append(thesisHeld[i]).append("\",\"note\":\"n\"}");
+        }
+        return MAPPER.readTree("{\"schemaVersion\":1,\"verdicts\":[" + items + "],\"recurringErrors\":[],"
+                + "\"keep\":[],\"proposal\":null}");
+    }
+
+    @Test
+    @DisplayName("V12 전 DB(paper_reviews 없음)는 준비 안 됨 — 복기 작업·화면의 SQL 오류(500) 대신 안내 문구, 시험 뒤 되돌림")
+    void readyRequiresV12() {
+        class Rollback extends RuntimeException {
+        }
+        assertThatThrownBy(() -> store.atomically(() -> {
+            jdbc.execute("DROP TABLE paper_reviews");
+            assertThat(new PaperStore(jdbc, MAPPER, new SchemaCheck(jdbc)).ready()).as("V12 전이면 준비 안 됨").isFalse();
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+        assertThat(new PaperStore(jdbc, MAPPER, new SchemaCheck(jdbc)).ready()).as("되돌린 뒤").isTrue();
+    }
+
+    @Test
+    @DisplayName("주간 복기: 한 주에 한 건(두 번째 넣기는 false, 처음 값 그대로), 보낸 입력 문자열의 키 순서로 읽힘, 목록은 주 최근 순·판정 수는 OK 행만 — 시험 뒤 되돌림")
+    void reviewsOncePerWeek() {
+        class Rollback extends RuntimeException {
+        }
+        assertThatThrownBy(() -> store.atomically(() -> {
+            try {
+                jdbc.update("DELETE FROM paper_reviews");
+                assertThat(store.reviews(10)).isEmpty();
+
+                assertThat(store.insertReviewIfAbsent(review(W1, "SKIPPED", null, null))).isTrue();
+                assertThat(store.insertReviewIfAbsent(review(W1, "OK", null, verdicts("유지")))).as("같은 주")
+                        .isFalse();
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM paper_reviews WHERE week_ending = ?",
+                        Integer.class, java.sql.Date.valueOf(W1))).isEqualTo(1);
+                PaperStore.Review skipped = store.review(W1).orElseThrow();
+                assertThat(skipped.status()).as("처음 값 그대로").isEqualTo("SKIPPED");
+                assertThat(skipped.inputText()).as("부르지 않은 행").isNull();
+                assertThat(skipped.input().path("weekEnding").asString()).isEqualTo("1999-01-08");
+                assertThat(skipped.model()).isNull();
+                assertThat(skipped.retryCount()).isZero();
+                assertThat(skipped.createdAt()).as("비우면 DB가 채움").isNotNull();
+
+                // JSONB는 키를 길이·바이트 순으로 정렬합니다("a"가 앞으로) — 보낸 문자열이 있으면 그 순서로 읽습니다.
+                String sent = "{\"weekEnding\":\"1999-01-15\",\"decisions\":[{\"id\":7}],\"a\":1.50}";
+                assertThat(store.insertReviewIfAbsent(review(W2, "OK", sent, verdicts("유지", "반증", "유지", "판단불가"))))
+                        .isTrue();
+                PaperStore.Review ok = store.review(W2).orElseThrow();
+                assertThat(ok.inputText()).isEqualTo(sent);
+                List<String> keys = new java.util.ArrayList<>();
+                ok.input().propertyNames().forEach(keys::add);
+                assertThat(keys).as("보낸 키 순서").containsExactly("weekEnding", "decisions", "a");
+                assertThat(jdbc.queryForObject("SELECT (SELECT array_agg(k) FROM jsonb_object_keys(input) k)::text "
+                        + "FROM paper_reviews WHERE week_ending = ?", String.class, java.sql.Date.valueOf(W2)))
+                        .as("JSONB는 순서를 바꿈").isEqualTo("{a,decisions,weekEnding}");
+                assertThat(ok.windowWeeks()).isEqualTo(4);
+                assertThat(ok.frameworkVersion()).isEqualTo(3);
+                assertThat(ok.response().path("verdicts").size()).isEqualTo(4);
+                assertThat(ok.proposalId()).isNull();
+
+                assertThat(store.insertReviewIfAbsent(review(W3, "FORMAT_ERROR", null, verdicts("유지")))).isTrue();
+                assertThat(store.insertReviewIfAbsent(review(W4, "API_ERROR", null, null))).isTrue();
+
+                List<PaperStore.ReviewSummary> list = store.reviews(10);
+                assertThat(list).extracting(PaperStore.ReviewSummary::weekEnding).as("주 최근 순")
+                        .containsExactly(W4, W3, W2, W1);
+                PaperStore.ReviewSummary okRow = list.get(2);
+                assertThat(okRow.held()).isEqualTo(2);
+                assertThat(okRow.refuted()).isEqualTo(1);
+                assertThat(okRow.undetermined()).isEqualTo(1);
+                assertThat(okRow.windowWeeks()).isEqualTo(4);
+                assertThat(okRow.proposalId()).isNull();
+                assertThat(okRow.proposalStatus()).isNull();
+                for (PaperStore.ReviewSummary other : List.of(list.get(0), list.get(1), list.get(3))) {
+                    assertThat(java.util.Arrays.asList(other.held(), other.refuted(), other.undetermined()))
+                            .as("OK가 아닌 행(%s)은 판정 수 없음 — 0건이 아님", other.status()).containsOnlyNulls();
+                }
+                assertThat(list.get(0).error()).isEqualTo("[RATE_LIMIT] 429");
+                assertThat(store.reviews(2)).extracting(PaperStore.ReviewSummary::weekEnding).containsExactly(W4, W3);
+                assertThat(store.review(LocalDate.of(1999, 2, 5))).isEmpty();
+
+                // 입력 문자열은 JSON이어야 합니다 — 구분자째 넣으면 읽을 때마다 깨지므로 넣을 때 막습니다.
+                assertThatThrownBy(() -> store.insertReviewIfAbsent(new PaperStore.Review(LocalDate.of(1999, 2, 5), 4,
+                        MAPPER.createObjectNode(), "<<복기 입력 시작>>{}<<복기 입력 끝>>", null, null, "m", null, "OK", null,
+                        null, null, 0, null)))
+                        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("input_text");
+                assertThat(store.review(LocalDate.of(1999, 2, 5))).isEmpty();
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+    }
+
+    @Test
+    @DisplayName("복기 레코드는 DB CHECK·NOT NULL 전에 상태·입력을 막는다")
+    void reviewRecordValidates() {
+        JsonNode input = MAPPER.createObjectNode();
+        assertThatThrownBy(() -> new PaperStore.Review(W1, 4, input, null, null, null, null, null, "DONE", null, null,
+                null, 0, null)).isInstanceOf(IllegalArgumentException.class).hasMessageContaining("DONE");
+        assertThatThrownBy(() -> new PaperStore.Review(W1, 4, null, null, null, null, null, null, "SKIPPED", null, null,
+                null, 0, null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new PaperStore.Review(W1, 4, input, null, null, null, null, null, "SKIPPED", null, null,
+                null, -1, null)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(PaperStore.Review.STATUSES).containsExactlyInAnyOrder("OK", "FORMAT_ERROR", "API_ERROR", "REFUSED",
+                "SKIPPED");
+        // DB CHECK와 같은 목록인가 — 레코드만 넓히고 마이그레이션을 잊으면 여기서 걸립니다.
+        String check = jdbc.queryForObject("SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c "
+                + "WHERE c.conrelid = 'paper_reviews'::regclass AND c.contype = 'c' "
+                + "AND pg_get_constraintdef(c.oid) LIKE '%status%'", String.class);
+        for (String status : PaperStore.Review.STATUSES) {
+            assertThat(check).contains("'" + status + "'");
+        }
+    }
+
+    @Test
+    @DisplayName("복기 재시도: API 오류·재시도 전 행만 같은 행에서 한 번 바꾸고 재시도 수 1 — 제안은 한 번만 이어지고, 제안을 지우면 연결만 비움 — 시험 뒤 되돌림")
+    void reviewRetryOnceAndProposalLink() {
+        class Rollback extends RuntimeException {
+        }
+        assertThatThrownBy(() -> store.atomically(() -> {
+            try {
+                assertThat(store.insertReviewIfAbsent(review(W1, "API_ERROR", null, null))).isTrue();
+                assertThat(store.insertReviewIfAbsent(review(W2, "FORMAT_ERROR", null, verdicts("유지")))).isTrue();
+                assertThat(store.insertReviewIfAbsent(review(W3, "SKIPPED", null, null))).isTrue();
+
+                String resent = "{\"weekEnding\":\"1999-01-08\",\"windowWeeks\":2}";
+                PaperStore.Review retry = new PaperStore.Review(W1, 2, MAPPER.readTree(resent), resent,
+                        verdicts("반증"), "{raw}", "claude-haiku-5-5", MAPPER.readTree("{\"inputTokens\":9}"), "OK", null,
+                        null, 5, 0, null);
+                assertThat(store.updateReviewRetry(retry)).isTrue();
+                PaperStore.Review saved = store.review(W1).orElseThrow();
+                assertThat(saved.status()).isEqualTo("OK");
+                assertThat(saved.retryCount()).isEqualTo(1);
+                assertThat(saved.windowWeeks()).isEqualTo(2);
+                assertThat(saved.inputText()).isEqualTo(resent);
+                assertThat(saved.model()).isEqualTo("claude-haiku-5-5");
+                assertThat(saved.usage().path("inputTokens").asInt()).isEqualTo(9);
+                assertThat(saved.responseRaw()).isEqualTo("{raw}");
+                assertThat(saved.error()).isNull();
+                assertThat(saved.frameworkVersion()).isEqualTo(5);
+                assertThat(saved.createdAt()).isNotNull();
+
+                assertThat(store.updateReviewRetry(retry)).as("이미 재시도함").isFalse();
+                assertThat(store.updateReviewRetry(withWeek(retry, W2))).as("형식 오류는 그 주의 끝").isFalse();
+                assertThat(store.updateReviewRetry(withWeek(retry, W3))).as("건너뛴 주").isFalse();
+                assertThat(store.updateReviewRetry(withWeek(retry, W4))).as("없는 주").isFalse();
+                assertThat(store.review(W2).orElseThrow().status()).isEqualTo("FORMAT_ERROR");
+
+                long first = store.insertProposal(new PaperStore.FrameworkProposal(0, null, 5, "주간 복기 1999-01-08",
+                        "claude-haiku-5-5", MAPPER.readTree("{\"summary\":\"요지\"}"), null, "PENDING", null, null,
+                        null, null));
+                long second = store.insertProposal(new PaperStore.FrameworkProposal(0, null, 5, "다른 것", "m", null,
+                        null, "FAILED", "x", null, null, null));
+                assertThat(store.linkReviewProposal(W1, first)).isTrue();
+                assertThat(store.linkReviewProposal(W1, second)).as("먼저 이은 제안을 덮지 않음").isFalse();
+                assertThat(store.linkReviewProposal(W4, first)).as("없는 주").isFalse();
+                assertThat(store.review(W1).orElseThrow().proposalId()).isEqualTo(first);
+                PaperStore.ReviewSummary row = store.reviews(50).stream().filter(r -> r.weekEnding().equals(W1))
+                        .findFirst().orElseThrow();
+                assertThat(row.proposalId()).isEqualTo(first);
+                assertThat(row.proposalStatus()).isEqualTo("PENDING");
+                assertThat(row.refuted()).isEqualTo(1);
+                assertThat(store.decideProposal(first, "REJECTED", null)).isTrue();
+                assertThat(store.reviews(50).stream().filter(r -> r.weekEnding().equals(W1)).findFirst().orElseThrow()
+                        .proposalStatus()).as("제안의 지금 상태").isEqualTo("REJECTED");
+
+                jdbc.update("DELETE FROM paper_framework_proposals WHERE id = ?", first);
+                assertThat(store.review(W1).orElseThrow().proposalId()).as("ON DELETE SET NULL — 복기는 남음").isNull();
+                assertThat(store.linkReviewProposal(W1, second)).as("비었으니 다시 이을 수 있음").isTrue();
+
+                // 없는 제안 번호는 외래키가 막습니다 — 트랜잭션이 오류 상태가 되므로 마지막 문장입니다.
+                assertThatThrownBy(() -> store.linkReviewProposal(W3, -1))
+                        .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+            throw new Rollback();
+        })).isInstanceOf(Rollback.class);
+    }
+
+    private static PaperStore.Review withWeek(PaperStore.Review r, LocalDate week) {
+        return new PaperStore.Review(week, r.windowWeeks(), r.input(), r.inputText(), r.response(), r.responseRaw(),
+                r.model(), r.usage(), r.status(), r.error(), r.proposalId(), r.frameworkVersion(), r.retryCount(),
+                r.createdAt());
     }
 
     private void insertPoint(String seriesId, String date, Double value) {

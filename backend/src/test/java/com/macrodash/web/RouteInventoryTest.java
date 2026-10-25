@@ -98,7 +98,8 @@ class RouteInventoryTest {
             "GET /api/paper/framework", "GET /api/paper/framework/versions/{version}", "POST /api/paper/framework",
             "GET /api/paper/framework/proposals", "POST /api/paper/framework/proposals",
             "POST /api/paper/framework/proposals/{id}/approve", "POST /api/paper/framework/proposals/{id}/reject",
-            "GET /api/paper/notes", "POST /api/paper/notes", "DELETE /api/paper/notes/{id}"));
+            "GET /api/paper/notes", "POST /api/paper/notes", "DELETE /api/paper/notes/{id}",
+            "GET /api/paper/reviews", "GET /api/paper/reviews/{weekEnding}", "POST /api/paper/reviews/run"));
 
     @Test
     @DisplayName("컨트롤러가 여는 경로가 고정 목록과 정확히 같다")

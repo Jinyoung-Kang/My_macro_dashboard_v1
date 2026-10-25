@@ -19,6 +19,8 @@ BACKEND_TABLES = (
     "paper_fills", "paper_nav_daily", "paper_gate_log", "paper_track_record", "paper_selection_log",
     "paper_framework_versions", "paper_notes", "paper_framework_proposals", "paper_settings",
     "paper_settings_history", "paper_job_runs", "paper_api_usage", "paper_start_prices",
+    # 주간 복기(V12, 2단계 D) — 백엔드 정기 작업만 씁니다.
+    "paper_reviews",
 )
 WRITE = re.compile(
     r"(?i)(INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE)\s+(" + "|".join(BACKEND_TABLES) + r")\b"

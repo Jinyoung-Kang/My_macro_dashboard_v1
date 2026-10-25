@@ -106,6 +106,8 @@ dashboard:
     risk-initial-delay-ms: 90000
     decision-interval-ms: 600000            # 결정 작업 주기(10분). 세션 다음 날 07:30 KST(설정 decisionTimeKst)부터 그 거래일 결정을 한 번
     decision-initial-delay-ms: 120000
+    review-interval-ms: 1800000             # 주간 복기 작업 주기(30분). 그 주 토요일 09:00 KST 뒤 확정 종가가 들어오면 그 주 복기를 한 번(2단계 D)
+    review-initial-delay-ms: 180000
     claude-timeout-seconds: 300             # Claude 책 호출 하나의 대기 한도(초). 출력 16,000토큰·effort high가 다 차도 끝나는 여유
 
   ai:

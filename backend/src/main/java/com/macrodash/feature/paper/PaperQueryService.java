@@ -57,7 +57,7 @@ import java.util.TreeSet;
 @Service
 public class PaperQueryService {
 
-    static final String NOT_READY_MESSAGE = "모의 매매 테이블이 아직 없습니다. 수집기가 스키마(V8·V9·V10·V11)를 적용하면 생깁니다 — "
+    static final String NOT_READY_MESSAGE = "모의 매매 테이블이 아직 없습니다. 수집기가 스키마(V8·V9·V10·V11·V12)를 적용하면 생깁니다 — "
             + "make up 후 다시 보세요.";
     /** 개요에 싣는 최근 작업 기록 수. */
     static final int OVERVIEW_JOBS = 10;

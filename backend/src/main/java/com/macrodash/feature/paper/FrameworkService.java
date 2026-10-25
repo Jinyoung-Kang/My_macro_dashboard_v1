@@ -1199,6 +1199,61 @@ public class FrameworkService {
         return out;
     }
 
+    // ------------------------------------------------------------------ 주간 복기의 제안(2단계 명세 §3 D3)
+    /** 주간 복기가 낸 제안의 출처 표시({@code response.source.kind}) — 메모·붙인 글이 아니라 그 주의 복기입니다. */
+    static final String SOURCE_WEEKLY_REVIEW = "WEEKLY_REVIEW";
+
+    /** 주간 복기 제안의 요청 글({@code request_text}) — 제안 목록에서 어느 주의 복기였는지 보이게. */
+    static String reviewRequestText(LocalDate weekEnding) {
+        return "주간 복기 " + weekEnding;
+    }
+
+    /**
+     * 주간 복기 응답의 {@code proposal}을 제안 행으로 만듭니다(넣지는 않음 — 복기 행과 한 트랜잭션으로 넣는 것은 {@link ReviewService}).
+     * 응답은 OS 절차 B 제안과 같은 모양으로 맞춥니다 — {@code {schemaVersion:1, summary = judgment, assessment = [], operations,
+     * beforeAfter = rationale, source:{kind, weekEnding}, usage}} — 그래서 승인({@link #approve}, 변경 기록 = judgment)·거절·제안 목록·
+     * 화면이 고치지 않고 그대로 돕니다. 평가(assessment)는 비웁니다: 복기의 반복 오류를 '보완'·'수정 필요' 같은 칸에 코드가 옮겨 적으면 모델이
+     * 내리지 않은 판정을 지어내게 됩니다(반복 오류는 복기 메모에 그대로 있음).
+     *
+     * <p>형식은 복기 스키마가 이미 검사했습니다. 여기서는 제안 요청({@link #propose})과 같은 사전 검사 — 연산이 기준 판에 적용되는가
+     * ({@link #apply}, 모든 판에서 쓴 번호 {@link #usedIds}) — 만 해, 적용할 수 없으면 승인할 수 없으므로 {@code FAILED}(사유
+     * {@code NOT_APPLICABLE})로, 적용되면 {@code PENDING}으로 둡니다. <b>자동 반영하지 않습니다</b> — 판은 사용자가 승인할 때만 오릅니다.
+     *
+     * @param base     복기의 시스템 프롬프트에 붙인 판(제안의 기준 판 — 그사이 다른 판이 생겼으면 승인이 거절함)
+     * @param proposal 복기 응답의 {@code proposal}(연산이 하나 이상인 객체 — 부르는 쪽이 null·빈 연산을 걸러 냄)
+     * @param usage    복기 호출의 사용량(제안 카드의 비용 칸 — 이 제안을 낸 호출)
+     */
+    FrameworkProposal reviewProposal(Frame base, LocalDate weekEnding, JsonNode proposal, String model,
+                                     String responseRaw, JsonNode usage) {
+        List<JsonNode> operations = Json.array(proposal, "operations");
+        ObjectNode response = mapper.createObjectNode();
+        response.put("schemaVersion", 1);
+        response.put("summary", Json.asText(proposal, "judgment"));
+        response.putArray("assessment");
+        response.set("operations", mapper.valueToTree(operations));
+        response.put("beforeAfter", Json.asText(proposal, "rationale"));
+        ObjectNode source = response.putObject("source");
+        source.put("kind", SOURCE_WEEKLY_REVIEW);
+        source.put("weekEnding", weekEnding.toString());
+        if (usage != null) {
+            response.set("usage", usage.deepCopy());
+        }
+        Applied dryRun = apply(base, operations, base.version() + 1, null, usedIds());
+        String status = "PENDING";
+        String error = null;
+        if (!dryRun.errors().isEmpty()) {
+            status = "FAILED";
+            error = clip("지금 판(v" + base.version() + ")에 적용할 수 없는 연산 — "
+                    + String.join(" · ", dryRun.errors()), ERROR_CHARS);
+            ObjectNode failure = response.putObject("failure");
+            failure.put("errorKind", "NOT_APPLICABLE");
+            failure.put("message", error);
+            failure.set("violations", mapper.valueToTree(dryRun.errors()));
+        }
+        return new FrameworkProposal(0, null, base.version(), reviewRequestText(weekEnding), model, response,
+                responseRaw, status, error, null, null, null);
+    }
+
     private FrameworkProposal pendingProposal(long id) {
         FrameworkProposal proposal = store.proposal(id).orElseThrow(() -> new InvalidRequestException(
                 "없는 제안입니다: " + id));
@@ -1228,8 +1283,8 @@ public class FrameworkService {
 
     /**
      * 제안 한 건 {@code {id, status, noteId, model, summary, operations, assessment, beforeAfter, error, createdAtKst, decidedAtKst,
-     * resultVersion, baseVersion, usage}} — summary·operations·assessment·beforeAfter는 모델 응답 그대로(실패해 없으면 null·빈 목록),
-     * usage는 그 호출의 토큰·추정 비용.
+     * resultVersion, baseVersion, usage, reviewWeekEnding}} — summary·operations·assessment·beforeAfter는 모델 응답 그대로(실패해 없으면
+     * null·빈 목록), usage는 그 호출의 토큰·추정 비용, reviewWeekEnding은 주간 복기가 낸 제안이면 그 주({@link #reviewProposal}, 아니면 null).
      */
     private static Map<String, Object> proposalView(FrameworkProposal p) {
         JsonNode response = p.response();
@@ -1248,6 +1303,9 @@ public class FrameworkService {
         out.put("resultVersion", p.resultVersion());
         out.put("baseVersion", p.baseVersion());
         out.put("usage", Json.child(response, "usage"));
+        JsonNode source = Json.child(response, "source");
+        out.put("reviewWeekEnding", SOURCE_WEEKLY_REVIEW.equals(Json.asText(source, "kind"))
+                ? Json.asText(source, "weekEnding") : null);
         return out;
     }
 

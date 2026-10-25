@@ -5,6 +5,7 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -22,6 +23,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -294,6 +296,60 @@ public class PaperStore {
     public record GateRow(LocalDate tradingDate, JsonNode inputs, String level, JsonNode streaks, Instant createdAt) {
     }
 
+    /**
+     * 주간 복기 한 건({@code paper_reviews}, V12 — 2단계 명세 §3 D1~D6). 주({@code weekEnding} = 그 ISO 주의 마지막 미국 거래일)마다
+     * 하나입니다. {@code input}은 코드가 만든 복기 입력(비울 수 없음 — 부르지 않은 SKIPPED도 무엇을 보고 건너뛰었는지 남김),
+     * {@code inputText}는 Claude에 보낸 그 입력 JSON 문자열 그대로(구분자·안내 문장 빼고 — 부르지 않았으면 null)입니다. 읽을 때
+     * {@code inputText}가 있으면 {@code input}도 그 문자열에서 읽어 보낸 키 순서를 지킵니다(JSONB는 키를 다시 정렬 — {@link Decision}의
+     * 패킷과 같은 방식). {@code proposalId}는 이 복기가 낸 프레임 제안(없으면 null), {@code retryCount}는 API 오류 뒤 다시 부른 횟수(0·1),
+     * {@code createdAt}은 넣을 때 null이면 DB가 지금으로 채웁니다.
+     */
+    public record Review(LocalDate weekEnding, Integer windowWeeks, JsonNode input, String inputText, JsonNode response,
+                         String responseRaw, String model, JsonNode usage, String status, String error, Long proposalId,
+                         Integer frameworkVersion, int retryCount, Instant createdAt) {
+
+        /** 형식을 지난 응답. 아래 다섯은 DB CHECK와 같은 문자열입니다. */
+        public static final String OK = "OK";
+        /** 형식 위반 — 그 주는 이것으로 끝(다시 부르지 않음). */
+        public static final String FORMAT_ERROR = "FORMAT_ERROR";
+        /** 호출 실패 — 같은 행에서 한 번만 다시 부름({@link PaperStore#updateReviewRetry}). */
+        public static final String API_ERROR = "API_ERROR";
+        /** 모델 거절 — 그 주는 이것으로 끝. */
+        public static final String REFUSED = "REFUSED";
+        /** 창 안에 Claude 결정이 없어 부르지 않음. */
+        public static final String SKIPPED = "SKIPPED";
+        public static final Set<String> STATUSES = Set.of(OK, FORMAT_ERROR, API_ERROR, REFUSED, SKIPPED);
+
+        public Review {
+            // DB CHECK·NOT NULL보다 먼저 막습니다 — 가짜 저장소로 도는 서비스 시험도 같은 자리에서 멈추게.
+            if (!STATUSES.contains(status)) {
+                throw new IllegalArgumentException("복기 상태는 " + String.join("·", List.of(OK, FORMAT_ERROR, API_ERROR,
+                        REFUSED, SKIPPED)) + "입니다: " + status);
+            }
+            if (input == null) {
+                throw new IllegalArgumentException("복기 입력(input)은 비울 수 없습니다");
+            }
+            if (retryCount < 0) {
+                throw new IllegalArgumentException("재시도 횟수는 0 이상입니다: " + retryCount);
+            }
+        }
+    }
+
+    /**
+     * 복기 목록의 한 줄 — 큰 JSON(입력·응답)은 읽지 않고, 판정 수와 연결된 제안의 상태만. 판정 수({@code held}·{@code refuted}·
+     * {@code undetermined} = 응답 {@code verdicts[].thesisHeld}의 유지·반증·판단불가)는 형식을 지난(OK) 행만 세고, 그 밖의 행은 null입니다
+     * (0건으로 채우지 않음 — 형식 위반 응답의 판정은 믿을 수 없음). {@code proposalStatus}는 연결된 제안의 지금 상태(없으면 null).
+     */
+    public record ReviewSummary(LocalDate weekEnding, Integer windowWeeks, String status, String model, String error,
+                                Long proposalId, String proposalStatus, Integer frameworkVersion, int retryCount,
+                                Integer held, Integer refuted, Integer undetermined, Instant createdAt) {
+
+        /** 응답 스키마({@code paper/review.schema.json})의 {@code thesisHeld} 값 — 판정 수가 세는 문자열(StructuredSchemaTest가 대조). */
+        public static final String HELD = "유지";
+        public static final String REFUTED = "반증";
+        public static final String UNDETERMINED = "판단불가";
+    }
+
     private static final String BOOK_COLUMNS = "code, kind, label, initial_cash, started_on, status, created_at";
     private static final String STATE_COLUMNS = "book_code, cash, nav, equity_value, exposure_pct, last_observed_at, "
             + "last_processed_collected_at, last_nav_trading_date, updated_at";
@@ -337,6 +393,18 @@ public class PaperStore {
     private static final String NOTE_COLUMNS = "id, kind, as_of_date, expires_on, title, body, archived, created_at";
     private static final String API_USAGE_COLUMNS = "day, calls, input_tokens, output_tokens, cache_read_tokens, "
             + "cache_write_tokens, est_cost_usd, est_cost_calls";
+    private static final String REVIEW_COLUMNS = "week_ending, window_weeks, "
+            // 보낸 문자열이 있으면 그것을(키 순서 그대로), 없으면 JSONB를 — 결정의 패킷과 같은 한 칸 읽기.
+            + "COALESCE(input_text, input::text) AS input, (input_text IS NOT NULL) AS input_text_stored, "
+            + "response::text AS response, response_raw, model, usage::text AS usage, status, error, proposal_id, "
+            + "framework_version, retry_count, created_at";
+    /** 판정 수 하나 — 형식을 지난(OK) 행의 {@code verdicts} 배열에서 그 값의 개수, 그 밖이면 NULL(목록 레코드 설명). */
+    private static final String VERDICT_COUNT = "CASE WHEN r.status = 'OK' AND jsonb_typeof(r.response->'verdicts') = "
+            + "'array' THEN (SELECT COUNT(*)::int FROM jsonb_array_elements(r.response->'verdicts') v "
+            + "WHERE v->>'thesisHeld' = ?) END";
+    private static final String REVIEW_SUMMARY_COLUMNS = "r.week_ending, r.window_weeks, r.status, r.model, r.error, "
+            + "r.proposal_id, p.status AS proposal_status, r.framework_version, r.retry_count, r.created_at, "
+            + VERDICT_COUNT + " AS held, " + VERDICT_COUNT + " AS refuted, " + VERDICT_COUNT + " AS undetermined";
 
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
@@ -352,15 +420,17 @@ public class PaperStore {
     }
 
     /**
-     * 테이블이 있는가. 수집기가 아직 V8~V11을 적용하지 않았으면 false입니다 — V8이 마지막에 만드는 테이블과 V9~V11이 더하는
-     * 열({@code paper_track_record.data_source}·{@code paper_decisions.packet_text}·{@code paper_api_usage.est_cost_calls})로
-     * 봅니다. V8만 있는 DB(백엔드만 새로 띄운 경우, QA-016)에서 참이면 트랙레코드 읽기·쓰기가 {@code group_code}·{@code data_source}
-     * 열과 새 기본키에서, 결정 읽기·쓰기가 {@code packet_text} 열에서, 사용량 읽기·쓰기가 추정 비용 열에서 SQL 오류(500)를 냅니다.
+     * 테이블이 있는가. 수집기가 아직 V8~V12를 적용하지 않았으면 false입니다 — V8이 마지막에 만드는 테이블과 V9~V11이 더하는
+     * 열({@code paper_track_record.data_source}·{@code paper_decisions.packet_text}·{@code paper_api_usage.est_cost_calls}),
+     * V12의 {@code paper_reviews} 테이블로 봅니다. V8만 있는 DB(백엔드만 새로 띄운 경우, QA-016)에서 참이면 트랙레코드 읽기·쓰기가
+     * {@code group_code}·{@code data_source} 열과 새 기본키에서, 결정 읽기·쓰기가 {@code packet_text} 열에서, 사용량 읽기·쓰기가 추정
+     * 비용 열에서, 주간 복기 작업·화면이 없는 테이블에서 SQL 오류(500)를 냅니다.
      */
     public boolean ready() {
         return schema.tableExists("paper_api_usage") && schema.columnExists("paper_track_record", "data_source")
                 && schema.columnExists("paper_decisions", "packet_text")
-                && schema.columnExists("paper_api_usage", "est_cost_calls");
+                && schema.columnExists("paper_api_usage", "est_cost_calls")
+                && schema.tableExists("paper_reviews");
     }
 
     /**
@@ -1485,6 +1555,121 @@ public class PaperStore {
         return jdbc.update("UPDATE paper_notes SET archived = true WHERE id = ?", id) == 1;
     }
 
+    // ------------------------------------------------------------------ 주간 복기(V12)
+    /**
+     * 복기를 그 주({@code weekEnding})에 아직 없을 때만 넣습니다({@code ON CONFLICT DO NOTHING}) — 정기 작업이 30분마다 돌고 수동
+     * 실행과 겹쳐도 한 주에 한 건입니다(명세 §3-3 "두 번 돌아도 1건"). {@code createdAt}이 null이면 지금입니다.
+     *
+     * @return 이번에 넣었으면 true, 그 주의 행이 이미 있었으면 false(기존 행 그대로 — {@link #review}로 읽음)
+     * @throws IllegalArgumentException {@code inputText}가 JSON 문자열이 아님(읽을 때 입력을 그 문자열에서 만듦 — {@link Review})
+     */
+    public boolean insertReviewIfAbsent(Review r) {
+        requireJsonText(r.inputText(), "input_text");
+        String input = mapper.writeValueAsString(r.input());
+        String response = r.response() == null ? null : mapper.writeValueAsString(r.response());
+        String usage = r.usage() == null ? null : mapper.writeValueAsString(r.usage());
+        return jdbc.update("INSERT INTO paper_reviews (week_ending, window_weeks, input, input_text, response, "
+                        + "response_raw, model, usage, status, error, proposal_id, framework_version, retry_count, "
+                        + "created_at) VALUES (?, ?, CAST(? AS jsonb), ?, CAST(? AS jsonb), ?, ?, CAST(? AS jsonb), ?, ?, "
+                        + "?, ?, ?, COALESCE(CAST(? AS timestamptz), now())) ON CONFLICT (week_ending) DO NOTHING",
+                ps -> {
+                    setDate(ps, 1, r.weekEnding());
+                    setInteger(ps, 2, r.windowWeeks());
+                    ps.setString(3, input);
+                    ps.setString(4, r.inputText());
+                    ps.setString(5, response);
+                    ps.setString(6, r.responseRaw());
+                    ps.setString(7, r.model());
+                    ps.setString(8, usage);
+                    ps.setString(9, r.status());
+                    ps.setString(10, r.error());
+                    setLong(ps, 11, r.proposalId());
+                    setInteger(ps, 12, r.frameworkVersion());
+                    ps.setInt(13, r.retryCount());
+                    setInstant(ps, 14, r.createdAt());
+                }) == 1;
+    }
+
+    /** 그 주의 복기. 없으면 empty. */
+    public Optional<Review> review(LocalDate weekEnding) {
+        return jdbc.query("SELECT " + REVIEW_COLUMNS + " FROM paper_reviews WHERE week_ending = ?", reviewMapper(),
+                Date.valueOf(weekEnding)).stream().findFirst();
+    }
+
+    /** 최근 복기 {@code limit}건 — 주 최근 순, 큰 JSON 없이 판정 수·연결된 제안 상태와 함께({@link ReviewSummary}). */
+    public List<ReviewSummary> reviews(int limit) {
+        return jdbc.query("SELECT " + REVIEW_SUMMARY_COLUMNS + " FROM paper_reviews r "
+                        + "LEFT JOIN paper_framework_proposals p ON p.id = r.proposal_id "
+                        + "ORDER BY r.week_ending DESC LIMIT ?",
+                (rs, rowNum) -> new ReviewSummary(date(rs, "week_ending"), rs.getObject("window_weeks", Integer.class),
+                        rs.getString("status"), rs.getString("model"), rs.getString("error"),
+                        rs.getObject("proposal_id", Long.class), rs.getString("proposal_status"),
+                        rs.getObject("framework_version", Integer.class), rs.getInt("retry_count"),
+                        rs.getObject("held", Integer.class), rs.getObject("refuted", Integer.class),
+                        rs.getObject("undetermined", Integer.class), instant(rs, "created_at")),
+                ReviewSummary.HELD, ReviewSummary.REFUTED, ReviewSummary.UNDETERMINED, limit);
+    }
+
+    /**
+     * API 오류로 끝난 복기를 <b>같은 행</b>에서 한 번 더 부른 결과로 바꿉니다(결정의 C7 재시도와 같은 규칙 — 형식 오류·거절은 그 주의
+     * 끝). 그 행이 아직 {@code status = 'API_ERROR'}이고 {@code retry_count = 0}일 때만 바꾸고 {@code retry_count}를 1 올립니다 — 정기
+     * 작업과 수동 실행이 동시에 재시도해도 한 번만 반영됩니다. 주는 그대로이고 나머지 열은 {@code r}의 값으로 통째로 씁니다
+     * ({@code createdAt}이 null이면 지금 — 남은 내용을 만든 시각).
+     *
+     * @return 바꿨으면 true, 이미 재시도했거나 상태가 API 오류가 아니거나 행이 없으면 false(아무것도 바꾸지 않음)
+     * @throws IllegalArgumentException {@code inputText}가 JSON 문자열이 아님
+     */
+    public boolean updateReviewRetry(Review r) {
+        requireJsonText(r.inputText(), "input_text");
+        String input = mapper.writeValueAsString(r.input());
+        String response = r.response() == null ? null : mapper.writeValueAsString(r.response());
+        String usage = r.usage() == null ? null : mapper.writeValueAsString(r.usage());
+        return jdbc.update("UPDATE paper_reviews SET window_weeks = ?, input = CAST(? AS jsonb), input_text = ?, "
+                        + "response = CAST(? AS jsonb), response_raw = ?, model = ?, usage = CAST(? AS jsonb), status = ?, "
+                        + "error = ?, proposal_id = ?, framework_version = ?, retry_count = retry_count + 1, "
+                        + "created_at = COALESCE(CAST(? AS timestamptz), now()) "
+                        + "WHERE week_ending = ? AND status = 'API_ERROR' AND retry_count = 0",
+                ps -> {
+                    setInteger(ps, 1, r.windowWeeks());
+                    ps.setString(2, input);
+                    ps.setString(3, r.inputText());
+                    ps.setString(4, response);
+                    ps.setString(5, r.responseRaw());
+                    ps.setString(6, r.model());
+                    ps.setString(7, usage);
+                    ps.setString(8, r.status());
+                    ps.setString(9, r.error());
+                    setLong(ps, 10, r.proposalId());
+                    setInteger(ps, 11, r.frameworkVersion());
+                    setInstant(ps, 12, r.createdAt());
+                    setDate(ps, 13, r.weekEnding());
+                }) == 1;
+    }
+
+    /**
+     * 복기에 그 복기가 낸 프레임 제안을 잇습니다 — 아직 이은 제안이 없을 때만(한 복기에 제안은 하나, 먼저 이은 것을 덮지 않음).
+     * 제안을 넣은 뒤 번호를 받아 부르거나, 복기 행과 함께 {@link #atomically} 안에서 부릅니다.
+     *
+     * @return 이었으면 true, 그 주의 행이 없거나 이미 이은 제안이 있으면 false
+     */
+    public boolean linkReviewProposal(LocalDate weekEnding, long proposalId) {
+        return jdbc.update("UPDATE paper_reviews SET proposal_id = ? WHERE week_ending = ? AND proposal_id IS NULL",
+                proposalId, Date.valueOf(weekEnding)) == 1;
+    }
+
+    /** 입력 문자열이 JSON인가 — 아니면 읽을 때마다 깨지므로 넣을 때 막습니다(null은 "보내지 않음"이라 통과). */
+    private void requireJsonText(String text, String column) {
+        if (text == null) {
+            return;
+        }
+        try {
+            mapper.readTree(text);
+        } catch (JacksonException e) {
+            throw new IllegalArgumentException(column + "는 입력 JSON 문자열이어야 합니다(구분자·안내 문장 빼고): "
+                    + e.getOriginalMessage());
+        }
+    }
+
     // ------------------------------------------------------------------ 초기화
     /**
      * 한 책의 장부를 비웁니다 — 체결·주문·결정·보유·재진입 금지·순자산·상태를 한 트랜잭션으로 지웁니다. 책 행(상태·출발일)은
@@ -1566,6 +1751,17 @@ public class PaperStore {
                 rs.getInt("base_version"), rs.getString("request_text"), rs.getString("model"), json(rs, "response"),
                 rs.getString("response_raw"), rs.getString("status"), rs.getString("error"),
                 rs.getObject("result_version", Integer.class), instant(rs, "created_at"), instant(rs, "decided_at"));
+    }
+
+    private RowMapper<Review> reviewMapper() {
+        return (rs, rowNum) -> {
+            String input = rs.getString("input");
+            return new Review(date(rs, "week_ending"), rs.getObject("window_weeks", Integer.class), mapper.readTree(input),
+                    rs.getBoolean("input_text_stored") ? input : null, json(rs, "response"), rs.getString("response_raw"),
+                    rs.getString("model"), json(rs, "usage"), rs.getString("status"), rs.getString("error"),
+                    rs.getObject("proposal_id", Long.class), rs.getObject("framework_version", Integer.class),
+                    rs.getInt("retry_count"), instant(rs, "created_at"));
+        };
     }
 
     private static RowMapper<Note> noteMapper() {
