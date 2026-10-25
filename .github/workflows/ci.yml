@@ -196,7 +196,8 @@ jobs:
 
       - name: AWS 덧붙임 해석 (compose.aws.yml · deploy/aws/Caddyfile)
         # AWS 개인용 서버(ADR 0019)에서만 쓰는 덧붙임이 기반 compose와 합쳐 해석되는지(문법·!override 태그)와, 닫아 둔 설정이
-        # 풀리지 않았는지 봅니다: 공개 포트는 모두 127.0.0.1이고 앞단 caddy는 8201 하나, postgres 컨테이너 유지, 로그인 유지
+        # 풀리지 않았는지 봅니다: 공개 포트는 모두 127.0.0.1이고 앞단 caddy는 8201 하나, postgres 컨테이너 유지(매일 아침 정지에 30초 여유),
+        # 국면 판정 기록 23시(가동 창 21:55~08:00 안), 로그인 유지
         # (로컬의 로그인 없는 운영자 열람 끔 — ADR 0016), Secure 쿠키 기본값, 메일 끔, 허용 출처·메일 링크는 터널 주소,
         # 데모 열람 토큰 없음, 화면은 같은 출처(/). 로컬 실행에는 쓰지 않는 파일이라 다른 잡이 읽지 않습니다. 값은 모두
         # 가짜(비밀값 없음)이고, --env-file /dev/null로 다른 값은 읽지 않습니다.
@@ -219,10 +220,11 @@ jobs:
           jq -e '[.services[].ports[]?] | length > 0 and all(.host_ip == "127.0.0.1")' "$RUNNER_TEMP/aws.json"
           jq -e '.services.caddy.ports | length == 1 and .[0].host_ip == "127.0.0.1" and .[0].published == "8201" and .[0].target == 8201' "$RUNNER_TEMP/aws.json"
           jq -e '.services.caddy.volumes | any(.target == "/etc/caddy/Caddyfile" and (.source | endswith("/deploy/aws/Caddyfile")))' "$RUNNER_TEMP/aws.json"
-          jq -e '.services.postgres.image | startswith("postgres:")' "$RUNNER_TEMP/aws.json"
+          jq -e '.services.postgres | (.image | startswith("postgres:")) and .stop_grace_period == "30s"' "$RUNNER_TEMP/aws.json"
           jq -e '.services.backend.environment | .COOKIE_SECURE == "true" and .DASHBOARD_LOCAL_NO_LOGIN == "false" and .MAIL_HOST == ""' "$RUNNER_TEMP/aws.json"
           jq -e '.services.backend.environment | .FRONTEND_ORIGIN == "http://localhost:8201,http://127.0.0.1:8201" and .FRONTEND_PORT == "8201" and .PUBLIC_URL == "http://localhost:8201" and .SERVER_FORWARDHEADERSSTRATEGY == "native"' "$RUNNER_TEMP/aws.json"
           jq -e '.services.backend.environment | has("DASHBOARD_DEMO_VIEWER_TOKEN") | not' "$RUNNER_TEMP/aws.json"
+          jq -e '.services.backend.environment.DASHBOARD_SCHEDULER_REGIMERECORDHOURKST == "23"' "$RUNNER_TEMP/aws.json"
           jq -e '.services.frontend.build.args.NEXT_PUBLIC_API_BASE == "/"' "$RUNNER_TEMP/aws.json"
           COOKIE_SECURE=false docker compose --env-file /dev/null -f docker-compose.yml -f compose.aws.yml config --format json \
             | jq -e '.services.backend.environment.COOKIE_SECURE == "false"'
@@ -253,7 +255,7 @@ jobs:
   secrets:
     name: 비밀값 검사 (gitleaks)
     runs-on: ubuntu-latest
-    # 저장소는 Private이지만 키가 한 번이라도 커밋되면 지워도 이력에 남습니다(클론·권한 변경에도 따라감). 그래서 전체 이력을 봅니다.
+    # 저장소는 공개입니다. 키가 한 번이라도 커밋되면 지워도 이력에 남고 누구나 클론할 수 있습니다. 그래서 전체 이력을 봅니다.
     # gitleaks-action은 첫 push에서 '첫 커밋^' 범위를 만들다 git 오류로 실패하므로 공식 이미지를 직접 씁니다
     # (roadrail·wakeline과 같은 방식·같은 판). 진짜 비밀이 아닌 발견은 .gitleaksignore에 지문으로 하나씩 둡니다.
     steps:
