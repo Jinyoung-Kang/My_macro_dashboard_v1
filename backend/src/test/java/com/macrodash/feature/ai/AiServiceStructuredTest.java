@@ -5,6 +5,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -100,7 +101,12 @@ class AiServiceStructuredTest {
     }
 
     private static AiService service(String baseUrl, String key) {
-        AiService service = new AiService(240, 60, 180);
+        return restricted(baseUrl, key, "");
+    }
+
+    /** 허용 목록({@code AI_ENGINES})을 준 서비스 — 빈 값이면 제한 없음({@link #service}). */
+    private static AiService restricted(String baseUrl, String key, String engines) {
+        AiService service = new AiService(240, 60, 180, engines);
         for (String field : List.of("nvidiaKey", "cerebrasKey", "cloudflareAccountId", "cloudflareToken")) {
             ReflectionTestUtils.setField(service, field, "");
         }
@@ -361,6 +367,33 @@ class AiServiceStructuredTest {
         assertThat(result.error()).contains("ANTHROPIC_API_KEY");
         assertThat(result.latencyMs()).isZero();
         assertThat(hits.get()).isZero();
+    }
+
+    @Test
+    @Disabled("재현(설계 계획서 남은 위험 AI_ENGINES): 허용 목록이 structured를 거르지 않아 목록 밖 모델도 부른다 — 다음 커밋에서 고침")
+    @DisplayName("허용 목록(AI_ENGINES)이 있으면 목록 엔진의 모델만 부른다 — 밖이면 NOT_ALLOWED, 키가 없어도 이쪽이 먼저, 나가지 않고 과금 없음")
+    void allowListLimitsModels() throws Exception {
+        String base = startServer(200, message(textBlock(ANSWER), "end_turn", "", USAGE));
+
+        AiService.StructuredResult sonnet = restricted(base, KEY, "anthropic_haiku")
+                .structured(MODEL, "프레임", "패킷", schema(), "high", 60);
+        assertThat(sonnet.ok()).isFalse();
+        assertThat(sonnet.errorKind()).isEqualTo("NOT_ALLOWED");
+        assertThat(sonnet.charged()).isFalse();
+        assertThat(sonnet.latencyMs()).isZero();
+        assertThat(sonnet.error()).contains("AI_ENGINES").contains(MODEL).doesNotContain(KEY);
+        assertThat(restricted(base, KEY, "nvidia_nemotron")
+                .structured("claude-haiku-5-5", "프레임", "패킷", schema(), "high", 60).errorKind())
+                .as("Anthropic 엔진이 없는 목록").isEqualTo("NOT_ALLOWED");
+        assertThat(restricted(base, "", "anthropic_haiku")
+                .structured(MODEL, "프레임", "패킷", schema(), "high", 60).errorKind())
+                .as("키가 없어도 허용 목록이 먼저(엔진 목록 화면과 같은 순서)").isEqualTo("NOT_ALLOWED");
+        assertThat(hits.get()).isZero();
+
+        AiService.StructuredResult haiku = restricted(base, KEY, "nvidia_nemotron, anthropic_haiku")
+                .structured("claude-haiku-5-5", "프레임", "패킷", schema(), "high", 60);
+        assertThat(haiku.ok()).as("목록 엔진의 모델").isTrue();
+        assertThat(hits.get()).isEqualTo(1);
     }
 
     @Test

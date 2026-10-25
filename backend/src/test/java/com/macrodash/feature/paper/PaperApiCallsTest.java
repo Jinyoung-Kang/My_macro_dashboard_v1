@@ -3,6 +3,7 @@ package com.macrodash.feature.paper;
 import com.macrodash.feature.ai.AiService;
 import com.macrodash.store.PaperStore.ApiUsage;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
@@ -39,7 +40,7 @@ class PaperApiCallsTest {
     private static AiService.StructuredResult result(String errorKind, Long in, Long out, Long cacheRead,
                                                      Long cacheWrite) {
         return new AiService.StructuredResult(errorKind == null, errorKind == null ? "{}" : null, "end_turn", errorKind,
-                errorKind == null ? null : "실패", errorKind == null || !"NO_KEY".equals(errorKind), in, out, cacheRead,
+                errorKind == null ? null : "실패", errorKind == null || !java.util.Set.of("NO_KEY", "NOT_ALLOWED").contains(errorKind), in, out, cacheRead,
                 cacheWrite, 1200);
     }
 
@@ -104,6 +105,15 @@ class PaperApiCallsTest {
             JsonNode saved = store.settings().orElseThrow().body();
             assertThat(PaperApiCalls.Pricing.from(saved).fallbacks()).as(useMax ? "최댓값" : "최솟값").isEmpty();
         }
+    }
+
+    @Test
+    @Disabled("재현(설계 계획서 남은 위험 AI_ENGINES): 허용 목록 밖이라 보내지 않은 호출(NOT_ALLOWED)이 상한을 깎는다 — 다음 커밋에서 고침")
+    @DisplayName("기록: 허용 목록 밖(NOT_ALLOWED)도 보내지 않은 호출이라 잡은 호출을 되돌린다")
+    void notAllowedReleasesCall() {
+        calls.reserve(DAY, 6);
+        calls.record(DAY, "claude-sonnet-5-5", result("NOT_ALLOWED", null, null, null, null));
+        assertThat(store.apiUsage(DAY).orElseThrow().calls()).as("보내지 않은 호출").isZero();
     }
 
     @Test
