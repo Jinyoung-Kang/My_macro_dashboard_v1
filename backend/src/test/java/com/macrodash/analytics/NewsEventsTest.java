@@ -7,6 +7,7 @@ import com.macrodash.analytics.NewsEvents.Result;
 import com.macrodash.analytics.NewsEvents.Settings;
 import com.macrodash.analytics.NewsEvents.Targets;
 import com.macrodash.analytics.NewsEvents.Window;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -401,6 +402,23 @@ class NewsEventsTest {
     }
 
     // ------------------------------------------------------------------ 수집 범위(초기 결정)
+
+    @Test
+    @Disabled("재현 — 다음 커밋에서 고침: 수집 전 창의 '걸린 것 없음'이 측정 0으로 남음")
+    @DisplayName("창 전체가 수집 전이면 걸린 것이 없어도 측정 hasEvents는 0이 아니라 null(없었는지 모름) — 실은 줄이 있으면 그 건수")
+    void beforeCollectionEmptyIsUnknown() {
+        Instant fetched = at("2026-10-25T06:39:17Z");
+        Headline later = new Headline("inv", "Trump touts $4 billion Audi plant in Georgia as he defends tariffs",
+                "https://www.investing.com/news/y", "Investing.com", "investing_economy", at("2026-10-25T02:48:34Z"), fetched);
+        Result empty = NewsEvents.compute(List.of(later), W, Settings.defaults(), null, UnaryOperator.identity());
+        assertThat(empty.coverage()).isEqualTo(NewsEvents.BEFORE_COLLECTION);
+        assertThat(empty.eventCount()).as("골랐는데 없었다(0)가 아니라 모름(null)").isNull();
+
+        Headline fed = new Headline("fed", "Federal Reserve issues FOMC statement", "https://www.federalreserve.gov/x",
+                "Federal Reserve", "fed_monetary", at("2026-10-23T18:00:00Z"), fetched);
+        assertThat(NewsEvents.compute(List.of(fed, later), W, Settings.defaults(), null, UnaryOperator.identity())
+                .eventCount()).as("실은 줄이 있으면 그 건수").isEqualTo(1);
+    }
 
     @Test
     @DisplayName("창이 가장 이른 수집보다 앞이면 '수집 전' — 초기 결정(10-23)은 늦게 받은 느린 피드 항목만, 비면 사건 없음이 아님을 적는다")
