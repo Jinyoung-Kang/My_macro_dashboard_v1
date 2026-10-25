@@ -64,14 +64,14 @@ export const options = {
 export function setup() {
   const res = http.post(`${BASE}/api/auth/login`, JSON.stringify({ email: __ENV.EMAIL, password: __ENV.PASSWORD }),
     { headers: { "Content-Type": "application/json", Origin: ORIGIN } });
-  const cookie = res.cookies.macro_session && res.cookies.macro_session[0];
+  const cookie = res.cookies.my_macro_session && res.cookies.my_macro_session[0];
   if (res.status !== 200 || !cookie) throw new Error(`로그인 실패: ${res.status}`);
   return { session: cookie.value };
 }
 
 function authed(data) {
   return { headers: { Origin: ORIGIN, "Content-Type": "application/json", "Accept-Encoding": "gzip" },
-    cookies: { macro_session: data.session }, timeout: "30s" };
+    cookies: { my_macro_session: data.session }, timeout: "30s" };
 }
 
 export function load(data) {

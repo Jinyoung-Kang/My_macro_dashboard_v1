@@ -52,7 +52,11 @@ import java.util.regex.Pattern;
 public class AuthService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
-    public static final String COOKIE_NAME = "macro_session";
+    /**
+     * 세션 쿠키 이름. 같은 맥에서 Local_macro_dashboard_v3(쿠키 {@code macro_session})가 함께 돌고, 브라우저 쿠키는 포트를
+     * 가리지 않아(localhost:3000과 :3001이 같은 쿠키를 봄) 이름이 같으면 한쪽 로그인이 다른 쪽 세션을 덮어씁니다 — 그래서 따로 둡니다.
+     */
+    public static final String COOKIE_NAME = "my_macro_session";
 
     /** 저장소·문서에 적혀 있던 옛 기본 비밀번호. 누구나 아는 값이라 운영자 계정에 쓰지 않습니다. */
     static final String PUBLIC_DEFAULT_PASSWORD = "admin1234@";

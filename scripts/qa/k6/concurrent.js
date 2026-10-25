@@ -16,15 +16,15 @@ export function setup() {
   const res = http.post(`${BASE}/api/auth/login`, JSON.stringify({ email: __ENV.EMAIL || '', password: __ENV.PASSWORD || '' }),
     { headers: { 'Content-Type': 'application/json', Origin: ORIGIN } });
   if (res.status !== 200) throw new Error(`login failed: ${res.status}`);
-  return { cookie: res.cookies.macro_session[0].value };
+  return { cookie: res.cookies.my_macro_session[0].value };
 }
 
 export default function (data) {
   let res;
   if (SCENARIO === 'refresh') {
-    res = http.post(`${BASE}/api/status/refresh?runFast=true`, null, { cookies: { macro_session: data.cookie }, timeout: '120s' });
+    res = http.post(`${BASE}/api/status/refresh?runFast=true`, null, { cookies: { my_macro_session: data.cookie }, timeout: '120s' });
   } else if (SCENARIO === 'run') {
-    res = http.post(`${BASE}/api/status/run/kr_holidays`, null, { cookies: { macro_session: data.cookie }, timeout: '120s' });
+    res = http.post(`${BASE}/api/status/run/kr_holidays`, null, { cookies: { my_macro_session: data.cookie }, timeout: '120s' });
   } else {
     res = http.post(`${BASE}/api/auth/login`, JSON.stringify({ email: __ENV.EMAIL || '', password: 'wrong-' + __VU }),
       { headers: { 'Content-Type': 'application/json', Origin: ORIGIN } });

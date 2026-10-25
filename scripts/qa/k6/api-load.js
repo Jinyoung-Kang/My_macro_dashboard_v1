@@ -31,14 +31,14 @@ export function setup() {
   const res = http.post(`${BASE}/api/auth/login`, JSON.stringify({ email: __ENV.EMAIL || '', password: __ENV.PASSWORD || '' }),
     { headers: { 'Content-Type': 'application/json', Origin: ORIGIN } });
   if (res.status !== 200) throw new Error(`login failed: ${res.status}`);
-  const cookie = res.cookies.macro_session && res.cookies.macro_session[0] ? res.cookies.macro_session[0].value : null;
+  const cookie = res.cookies.my_macro_session && res.cookies.my_macro_session[0] ? res.cookies.my_macro_session[0].value : null;
   if (!cookie) throw new Error('no session cookie');
   return { cookie };
 }
 
 export default function (data) {
   const e = ENDPOINTS[Math.floor(Math.random() * ENDPOINTS.length)];
-  const res = http.get(`${BASE}${e}`, { cookies: { macro_session: data.cookie }, tags: { endpoint: e } });
+  const res = http.get(`${BASE}${e}`, { cookies: { my_macro_session: data.cookie }, tags: { endpoint: e } });
   perEndpoint[e].add(res.timings.duration);
   check(res, { 'status 200': (r) => r.status === 200 });
   sleep(0.1);

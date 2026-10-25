@@ -58,6 +58,7 @@ PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너
 ## 이 환경의 함정
 - 같은 맥에서 `Local_macro_dashboard_v3`(모의 매매 개발 전 main, 3000/8080/8000/5432, compose 프로젝트 `local_macro_dashboard_v3`)가
   따로 돈다. 이 저장소는 `.env`의 포트 3001/8081/8001/5433을 쓰고, 명령은 이 폴더에서만 친다. v3 폴더·볼륨·스택은 건드리지 않는다.
+  브라우저 쿠키는 포트를 가리지 않으므로 세션 쿠키 이름도 다르다(이 저장소 `my_macro_session`, v3 `macro_session` — `AuthService.COOKIE_NAME`).
 - Claude Code 셸의 `grep`·`find`는 ugrep·bfs로 바뀌어 있어 `.gitignore` 대상(`.venv`, `.next`,
   `node_modules`, `.git`)을 건너뛴다. 파일 시스템 전체를 훑을 때는 `/usr/bin/grep`을 쓴다.
 - 테스트 DB·백업 스크립트는 `docker compose exec -T postgres`로 컨테이너 안의 psql을 쓴다.
