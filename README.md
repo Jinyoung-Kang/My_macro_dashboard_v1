@@ -117,7 +117,7 @@ make down            # 정지
 | 🇰🇷 국내 파생 & 투기세력 | `/krx` | KOSPI200 선물 OI·베이시스·4대 국면·한국판 COT Index, **현물·선물 수급 동조(외국인·기관·개인·금융투자)**, **증시 규모(시가총액·거래대금, 금융위 공식)** |
 | 📡 외국인/기관 수급 레이더 (KRX) | `/radar` | **시장 전체 투자자별 매매대금·기관 세부(토스 공식)**, 투자자별 순매수 상위, **종목별 수급 지속성(며칠째 순매수·연기금·외국인 보유율, 토스 공식)**, **외국인·기관 공통 순매수/순매도**, **순매수 종목의 재무·밸류에이션(DART 부채비율·증가율 + PER·PBR)**, 소스 진단 |
 | 🧭 시장 국면 판정 | `/regime` | 성장·신용 축 × 유동성 축으로 4국면 + 근거 지표, **판정 성과(과거 재현 → 4·13·26주 수익률, 표본 부족 표시)**, **판정 기록(하루 한 건, 고치지 않음)** |
-| 🧪 모의 알고리즘 매매 | `/paper` | **$100k 네 계좌 — 벤치마크 SPY 계좌·60/40 계좌(SPY 60% · SHY 40%), 13F 규칙 계좌(대조군), Claude 계좌(실험군) — 두 계좌는 하루 한 번 결정하고, 네 계좌 모두 같은 관측치로 모의 체결**. Claude 계좌 입력에는 미국 종목 재무(SEC XBRL, 공시일 ≤ 기준일)도 들어감. 탭 7개: 개요(계좌 카드를 누르면 정의·지금 설정·구성 도넛·최근 체결을 보이는 계좌 상세) / 기관 선정(13F 공시일 기준 트랙레코드) / 보유·체결 / 결정 로그 / 프레임(투자 OS 판) / 메모 / 설정. 운영자 전용, **로컬 전용 브랜치**(`claude/paper-trading-2026-10`, GitHub에 올리지 않음) |
+| 🧪 모의 알고리즘 매매 | `/paper` | **$100k 네 계좌 — 벤치마크 SPY 계좌·60/40 계좌(SPY 60% · SHY 40%), 13F 규칙 계좌(대조군), Claude 계좌(실험군) — 두 계좌는 하루 한 번 결정하고, 네 계좌 모두 같은 관측치로 모의 체결**. Claude 계좌 입력에는 미국 종목 재무(SEC XBRL, 공시일 ≤ 기준일)와 다음 10거래일의 발표·실적 일정(FRED·FOMC·yfinance — 판단 자료일 뿐 주문을 막지 않음)도 들어감. 탭 7개: 개요(계좌 카드를 누르면 정의·지금 설정·구성 도넛·최근 체결을 보이는 계좌 상세) / 기관 선정(13F 공시일 기준 트랙레코드) / 보유·체결 / 결정 로그 / 프레임(투자 OS 판) / 메모 / 설정. 운영자 전용, **로컬 전용 브랜치**(`claude/paper-trading-2026-10`, GitHub에 올리지 않음) |
 | 🤖 AI 종합 데이터 분석 | `/ai/report` | 수집 원본을 AI에 넘겨 리포트 생성 (8개 엔진 폴백 — Claude Haiku 5.5부터, 키가 없는 엔진은 건너뜀) |
 | 🔔 알림 | `/alerts` | 국면 전환(3일 확정)·외국인 N일 연속 순매수(시장·관심 종목)·관심 기관 13F 신규 편입을 **화면 알림함**으로. 사이드바·탭 제목에 읽지 않은 수 |
 | 👤 내 계정 · 👥 사용자 관리 | `/account` · `/admin/users` | 비밀번호 변경·로그인한 기기·계정 삭제 / (운영자) 역할·등급 지정·회원 만들기·감사 기록 |
@@ -269,7 +269,7 @@ make test-frontend     # 자가검증 + 훅 테스트(vitest) + 린트 + 빌드(
 | `MAIL_HOST`·`MAIL_PORT`·`MAIL_USERNAME`·`MAIL_PASSWORD` | 계정 메일(가입 인증·비밀번호 재설정). 없으면 가입·재설정만 꺼짐(운영자 로그인·나머지는 정상) |
 | `AI_DAILY_LIMIT` | 유료 회원의 하루 AI 리포트 한도(기본 20). 운영자는 한도 없음, 무료 회원은 쓸 수 없음 |
 | `AI_ENGINES` | 쓸 AI 엔진 ID만 쉼표로(예: `anthropic_haiku`). 비우면 키가 있는 엔진을 모두 씀(기본). 모르는 ID면 백엔드가 기동하지 않음([ADR 0014](docs/adr/0014-aws-demo-ai-report.md)) |
-| `FRED_API_KEY` | FRED 웹 CSV로 폴백 (대부분 정상) |
+| `FRED_API_KEY` | FRED 웹 CSV로 폴백 (대부분 정상). 🧪 모의 매매 발표·실적 일정(`us_calendar`)의 FRED 발표일(CPI·PCE·고용·GDP)은 대체 경로가 없어 비고 "키 미설정"으로 표시(FOMC 상수·실적일은 그대로) |
 | `SEC_USER_AGENT` | **키가 아니라 본인 이메일입니다.** 없으면 13F 수집(🧪 모의 매매 트랙레코드 포함)과 🧪 모의 매매 미국 종목 재무(`sec_fundamentals`)만 멈춥니다 |
 | `KRX_API_KEY` | KRX 선물이 KODEX 200 기반 **추정치**로 폴백 (`isEstimated` 표시) |
 | `KIS_APP_KEY` / `KIS_APP_SECRET` | 장중 수급 가집계와 교차 검증 비활성화 |
@@ -280,6 +280,7 @@ make test-frontend     # 자가검증 + 훅 테스트(vitest) + 린트 + 빌드(
 | `PAPER_ENABLED` | 비우면 `true`. `false`면 🧪 모의 매매 정기 작업(리스크 점검·하루 한 번 결정·출발일 종가 얼리기)이 쉼. 화면의 수동 실행은 그대로 |
 | `TRACK_RECORD_FETCH_BUDGET` | 🧪 13F 트랙레코드 수집(`sec_13f_track_record`)이 한 번에 새로 받는 공시 수. 비우면 400(1~2000) |
 | `FUNDAMENTALS_FETCH_BUDGET` | 🧪 미국 종목 재무 수집(`sec_fundamentals`, SEC XBRL companyfacts)이 한 번에 보내는 요청(CIK) 수. 비우면 200(1~600) — 유니버스 약 570곳을 약 36시간에 한 바퀴 |
+| `US_CALENDAR_EARNINGS_BUDGET` | 🧪 발표·실적 일정 수집(`us_calendar`, 1시간마다)이 한 번에 yfinance에 묻는 실적 일정 종목 수. 비우면 120(1~600) — 종목마다 24시간 캐시라 처음 약 5시간에 유니버스(ETF 제외)를 채우고 그 뒤로는 하루에 한 바퀴 |
 | `TOSS_*` | 토스 연결 테스트 + 레이더의 "시장 전체·수급 지속성", 국내 파생의 "현물·선물 수급 동조" 카드가 비활성화 (나머지는 그대로) |
 | `DATA_GO_KR_SERVICE_KEY` | 공공데이터포털 **일반 인증키 하나**로 특일정보·주식시세를 씁니다(서비스별 활용신청 필요). 없으면 시계는 내장 휴일 표(2025~2028)로, 공식 시세·PER·PBR은 비어 있음 |
 | `DART_API_KEY` | 수급 레이더의 재무 체크만 비어 있음 |
@@ -397,6 +398,7 @@ ok=; for i in 1 2 3 4 5 6 7 8 9 10; do docker compose -f docker-compose.yml -f c
 | 국내 종목 공식 시세·시가총액 | 금융위원회 주식시세정보 | 공식 (거래소 확정치, **다음 영업일 13시 이후**) |
 | 국내 종목 재무 | 금융감독원 Open DART (사업보고서) | 공식 (연 1회, 직전 사업연도) |
 | 🧪 미국 종목 재무 (모의 매매 Claude 계좌 패킷) | SEC EDGAR XBRL Company Facts | 공식 (10-Q·10-K·20-F 공시일 기준, 실적 보도자료 8-K 없음) |
+| 🧪 미국 발표·실적 일정 (모의 매매 Claude 계좌 패킷) | FRED release/dates · 연준 FOMC 일정표(상수) · yfinance quoteSummary | 거시는 공식(FRED는 그해 12-31까지만), 실적일은 **비공식 참고** (yfinance 내부 호출, 장 구분은 발표 시각으로 추정) |
 | **MOVE 지수** | `^TNX` 변동성 역산 | ⚠️ **추정치 — 실제 MOVE 아님** |
 
 > 이 대시보드는 **정보 제공용**입니다. 투자 판단과 그 결과의 책임은 이용자에게
@@ -412,7 +414,7 @@ ok=; for i in 1 2 3 4 5 6 7 8 9 10; do docker compose -f docker-compose.yml -f c
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 계층 구조, 데이터 흐름, 저장 스키마 |
 | [docs/API.md](docs/API.md) | REST 엔드포인트 전체 목록 |
 | [docs/adr/](docs/adr/README.md) | 설계 결정 기록 — 기능 단위 패키지·의존 규칙, Spring Boot 4 전환, 백업·복원, 프런트엔드 층 나누기 |
-| [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) | 수집 태스크 24종, 소스별 폴백 체인, 한계 |
+| [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md) | 수집 태스크 25종, 소스별 폴백 체인, 한계 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 기여 절차, 브랜치·Git 문제 해결, 테스트 상세 |
 | [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) | 맥 설치·실행 상세, 포트 변경, launchd 상주 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code가 매 대화 시작 때 읽는 작업 규칙 요약 — 위 문서들의 핵심과 절대 규칙 |

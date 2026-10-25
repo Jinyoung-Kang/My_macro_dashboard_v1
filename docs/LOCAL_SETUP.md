@@ -191,7 +191,7 @@ APP_PASSWORD=원하는_비밀번호
 
 | 키 | 발급처 | 없으면 |
 |---|---|---|
-| `FRED_API_KEY` | <https://fred.stlouisfed.org/docs/api/api_key.html> | 웹 CSV로 폴백 (대부분 정상) |
+| `FRED_API_KEY` | <https://fred.stlouisfed.org/docs/api/api_key.html> | 웹 CSV로 폴백 (대부분 정상). 🧪 모의 매매 발표·실적 일정(`us_calendar`)의 FRED 발표일(CPI·PCE·고용·GDP)은 대체 경로가 없어 비고 "키 미설정"으로 표시(FOMC 상수·실적일은 그대로) |
 | `KRX_API_KEY` | <http://data.krx.co.kr> | KRX 선물이 KODEX 200 기반 **추정치** |
 | `KIS_APP_KEY` / `KIS_APP_SECRET` | <https://apiportal.koreainvestment.com> | 장중 수급 가집계·교차 검증 꺼짐 |
 | `LS_APP_KEY` / `LS_APP_SECRET` | LS증권 홈 > 매매시스템 > API | 수급 레이더의 LS 단계만 건너뜀 |

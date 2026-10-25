@@ -160,6 +160,7 @@ config/          설정 값(AppProperties) · 정기 작업 켜기 — 여러 �
 | `FlowRecord` | 투자자별 매매 기록 한 건(값을 모르면 null) — 수급 계산의 입력 타입 |
 | `AlertRules` | 알림 사건 판정(ADR 0011) — 국면 전환 확정(3번 연속 기록)·연속 순매수 N일 도달·13F 신규 편입 |
 | `UsMarketCalendar` | 🧪 미국 거래일·세션 날짜(휴장일 규칙은 화면 `lib/marketCalendar.ts`와 같음)·13F 공시 기한 다음 거래일 |
+| `CalendarWindow` | 🧪 Claude 패킷 일정 섹션 `1b_calendar`의 창(기준일 다음 세션 … 10거래일)과 줄 고르기 — 창 밖·대상 밖 제외, '다음 일정 미정'·'자료 없음'·'일정 미공개' 구분(없는 일정을 만들지 않음) |
 | `DailySeries` | 🧪 일별 값 계열(원시 배열 + 이진 탐색 — 10년 × 수백 종목을 힙에 들기 위해). 기준일 뒤 값은 `until`로 자름 |
 | `PaperLedger` | 🧪 체결(수량 십진 내림·슬리피지)·평가·노출 |
 | `TrailingStop` | 🧪 최고가 갱신·스탑 판정·재진입 금지 |
