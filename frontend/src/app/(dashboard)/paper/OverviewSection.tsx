@@ -14,6 +14,7 @@ import {
   apiUsageView,
   type Badge,
   bookCard,
+  calendarLine,
   claudeExposureChart,
   frameworkBoundaryView,
   fundamentalsLine,
@@ -160,6 +161,13 @@ export function OverviewSection({
   const usage = status.data?.available ? apiUsageView(status.data.apiUsage) : null;
   // 재무 수집 범위(D28) — 상태 응답에만 있고, 이 필드를 보내지 않는 백엔드면 줄을 그리지 않습니다.
   const fundamentals = status.data?.available ? fundamentalsLine(status.data.fundamentals) : null;
+  // 발표·실적 일정(2단계 A, 패킷 1b_calendar) — 재무 줄과 같은 규칙(필드가 없는 백엔드면 그리지 않음).
+  const calendar = status.data?.available ? calendarLine(status.data.calendar) : null;
+  const observationSource = [
+    PAPER_SOURCES.quotes,
+    fundamentals ? `재무: ${PAPER_SOURCES.fundamentals}` : null,
+    calendar ? `일정: ${PAPER_SOURCES.calendar}` : null,
+  ].filter(Boolean).join(" · ");
   // 판 경계는 Claude 책에만 뜻이 있습니다(프레임은 규칙 책에 영향 없음, 명세 F5) — 그래도 네 책 곡선 위에 그려 같은 날 무엇이 바뀌었는지 봅니다.
   const boundaries = frameworkBoundaryView(overview.frameworkBoundaries, overview.navSeries?.dates ?? []);
 
@@ -371,7 +379,7 @@ export function OverviewSection({
       <Card
         title="장부 관측치"
         subtitle="체결·스탑·평가에 쓰는 저장본입니다. 장중이면 마지막 봉이 지연 시세입니다."
-        source={fundamentals ? `${PAPER_SOURCES.quotes} · 재무: ${PAPER_SOURCES.fundamentals}` : PAPER_SOURCES.quotes}
+        source={observationSource}
         actions={
           quotes && (
             <Freshness collectedAt={quotes.collectedAtKst} ageSeconds={quotes.ageSeconds ?? undefined} stale={quotes.stale} />
@@ -383,6 +391,7 @@ export function OverviewSection({
           <p className="mt-1 text-xs text-warn">지난 값을 이어 쓴 티커: {staleNames.join(", ")}</p>
         )}
         {fundamentals && <p className="mt-1 text-xs text-muted">{fundamentals}</p>}
+        {calendar && <p className="mt-1 text-xs text-muted">{calendar}</p>}
       </Card>
 
       <Card title="작업 기록" subtitle="정기·수동 작업이 일했을 때·오류일 때만 남깁니다(최근 10건). 상세에는 처리한 관측치의 수집 시각·봉 날짜·티커 수가 있습니다." source={PAPER_SOURCES.jobs}>

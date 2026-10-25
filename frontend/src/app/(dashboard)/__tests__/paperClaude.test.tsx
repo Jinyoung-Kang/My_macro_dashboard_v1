@@ -425,6 +425,33 @@ describe("개요 — 재무 수집 범위(D28)", () => {
   });
 });
 
+describe("개요 — 발표·실적 일정(2단계 A)", () => {
+  it("상태 응답의 calendar를 장부 관측치 카드에 한 줄로 — 출처에 FRED·FOMC·yfinance를 함께 적는다", async () => {
+    reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_ACTIVE));
+    reads["/api/paper/status"] = () => Promise.resolve({
+      available: true, schemaReady: true, initialized: true, enabled: true, jobs: [],
+      calendar: {
+        available: true, macroCount: 2, earningsCovered: 120, universe: 576, generatedAtKst: "2026-10-25 15:40 KST",
+        fredStatus: "키 미설정",
+      },
+    });
+    render(<PaperPage />);
+
+    expect(await screen.findByText("일정(FRED·FOMC·실적): 거시 2건 · 실적 120/576종목 · 갱신 2026-10-25 15:40 · FRED 키 미설정"))
+      .toBeTruthy();
+    expect(screen.getByText(/calendar\.us_events/)).toBeTruthy();
+  });
+
+  it("상태 응답에 calendar가 없으면(이전 백엔드) 줄을 그리지 않는다", async () => {
+    reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_ACTIVE));
+    reads["/api/paper/status"] = () => Promise.resolve({ available: true, schemaReady: true, initialized: true, enabled: true, jobs: [] });
+    render(<PaperPage />);
+
+    expect(await screen.findByText("Claude 노출 추이")).toBeTruthy();
+    expect(screen.queryByText(/일정\(FRED·FOMC·실적\)/)).toBeNull();
+  });
+});
+
 /** 지금 판(GET /api/paper/framework) — 임시 v0. */
 const FRAMEWORK_INTERIM = {
   available: true,

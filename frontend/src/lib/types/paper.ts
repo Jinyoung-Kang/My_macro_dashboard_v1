@@ -256,6 +256,26 @@ export interface PaperStatusResponse {
   apiUsage?: PaperApiUsage | null;
   /** 미국 종목 재무(SEC XBRL, D28)의 수집 범위 — Claude 책 패킷 8b_fundamentals의 자료. 이 필드를 아직 보내지 않는 백엔드에서는 없습니다. */
   fundamentals?: PaperFundamentalsStatus | null;
+  /** 발표·실적 일정(2단계 A)의 수집 범위 — Claude 계좌 패킷 1b_calendar의 자료. 이 필드를 아직 보내지 않는 백엔드에서는 없습니다. */
+  calendar?: PaperCalendarStatus | null;
+}
+
+/**
+ * 발표·실적 일정 수집 범위(2단계 A) — 수집기 저장본(calendar.us_events)의 요약. 저장본이 없으면 available:false이고 나머지는 모두
+ * null입니다(0으로 채우지 않음 — 화면 —).
+ */
+export interface PaperCalendarStatus {
+  available: boolean;
+  /** 수집 창(앞으로 45일)의 거시 일정 수(개수) — FOMC 상수 + FRED 발표일(CPI·PCE·고용·GDP). 패킷 창(10거래일)보다 넓습니다. */
+  macroCount: number | null;
+  /** 실적 일정을 받아 둔 종목 수(개수). */
+  earningsCovered: number | null;
+  /** 실적 일정 대상 — 모의 매매 유니버스에서 ETF를 뺀 종목 수(개수). */
+  universe: number | null;
+  /** 저장본을 마지막으로 쓴 수집 시각("2026-10-25 15:40 KST"). */
+  generatedAtKst: string | null;
+  /** FRED 발표일 부분의 상태 — "ok"·"키 미설정"·"실패". 키가 없어도 FOMC 상수는 macroCount에 들어갑니다. */
+  fredStatus: string | null;
 }
 
 /**

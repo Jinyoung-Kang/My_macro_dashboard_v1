@@ -10,6 +10,7 @@ import type {
   PaperBookResetResult,
   PaperBookStatusResult,
   PaperBookSummary,
+  PaperCalendarStatus,
   PaperClaudePreviewResult,
   PaperDecisionDetail,
   PaperDecisionSummary,
@@ -62,6 +63,8 @@ export const PAPER_SOURCES = {
   quotes: "Yahoo Finance (yfinance) — 모의 매매 유니버스 일봉(장중 마지막 봉 = 지연 시세, 저장본 paper.quotes)",
   fundamentals: "SEC EDGAR XBRL Company Facts (data.sec.gov, 수집 상태 저장본 us.fundamentals.status) — Claude 계좌 패킷 재무 "
     + "8b_fundamentals의 자료",
+  calendar: "FRED release/dates(CPI·PCE·고용·GDP 발표일) · 연준 FOMC 연간 일정표(상수) · Yahoo Finance quoteSummary calendarEvents"
+    + "(yfinance, 실적일) — 저장본 calendar.us_events, Claude 계좌 패킷 일정 1b_calendar의 자료",
   jobs: "대시보드 작업 기록 (PostgreSQL paper_job_runs)",
   trackRecord: "SEC EDGAR 13F-HR(후보 기관 분기 공시, 저장본 sec.13f.{cik}.q30) · 수정주가 Yahoo Finance(yfinance, equity_close) — "
     + "공시일 기준 복제 수익률은 대시보드 백엔드 계산(PostgreSQL paper_track_record)",
@@ -815,6 +818,25 @@ export function fundamentalsLine(fundamentals: PaperFundamentalsStatus | null | 
   ];
   if ((fundamentals.staleCompanies ?? 0) > 0) {
     parts.push(`이어받음 ${count(fundamentals.staleCompanies)}곳`);
+  }
+  return parts.join(" · ");
+}
+
+/**
+ * 발표·실적 일정 한 줄(2단계 A) — "일정(FRED·FOMC·실적): 거시 n건 · 실적 받은 종목/대상종목 · 갱신 …". 모르는 값은 —이고, FRED
+ * 부분이 정상이 아니면(키 미설정·실패) 그 상태를 덧붙입니다(키가 없어도 FOMC는 거시 건수에 셈). 상태 응답에 이 필드가 없으면(이전
+ * 백엔드) null — 줄을 그리지 않습니다.
+ */
+export function calendarLine(calendar: PaperCalendarStatus | null | undefined): string | null {
+  if (!calendar) return null;
+  const count = (value: number | null | undefined) => formatNumber(value, 0);
+  const parts = [
+    `일정(FRED·FOMC·실적): 거시 ${count(calendar.macroCount)}건`,
+    `실적 ${count(calendar.earningsCovered)}/${count(calendar.universe)}종목`,
+    `갱신 ${formatKst(calendar.generatedAtKst)}`,
+  ];
+  if (calendar.fredStatus && calendar.fredStatus !== "ok") {
+    parts.push(`FRED ${calendar.fredStatus}`);
   }
   return parts.join(" · ");
 }

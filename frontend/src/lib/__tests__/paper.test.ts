@@ -12,6 +12,7 @@ import {
   formatCoverage,
   formatExcessPoints,
   formatSharePrice,
+  calendarLine,
   fundamentalsLine,
   heldText,
   initPrompt,
@@ -256,6 +257,30 @@ describe("재무 수집 범위(D28)", () => {
     })).toBe("재무(SEC XBRL): —/—곳 · 마지막 수집 —");
     expect(fundamentalsLine(undefined)).toBeNull();
     expect(fundamentalsLine(null)).toBeNull();
+  });
+});
+
+describe("발표·실적 일정 수집 범위(2단계 A)", () => {
+  const CALENDAR = {
+    available: true, macroCount: 9, earningsCovered: 120, universe: 576, generatedAtKst: "2026-10-25 15:40 KST", fredStatus: "ok",
+  };
+
+  it("거시 건수·실적 받은 종목/대상·갱신 시각(KST) — FRED가 정상이면 상태를 적지 않는다", () => {
+    expect(calendarLine(CALENDAR)).toBe("일정(FRED·FOMC·실적): 거시 9건 · 실적 120/576종목 · 갱신 2026-10-25 15:40");
+  });
+
+  it("FRED 키 미설정·실패면 그 상태를 덧붙인다(FOMC 상수는 거시 건수에 남음)", () => {
+    expect(calendarLine({ ...CALENDAR, macroCount: 2, fredStatus: "키 미설정" }))
+      .toBe("일정(FRED·FOMC·실적): 거시 2건 · 실적 120/576종목 · 갱신 2026-10-25 15:40 · FRED 키 미설정");
+    expect(calendarLine({ ...CALENDAR, fredStatus: "실패" })).toContain("· FRED 실패");
+  });
+
+  it("저장본이 없으면 숫자·시각은 —(0으로 채우지 않음), 필드가 없는 백엔드면 줄을 그리지 않는다(null)", () => {
+    expect(calendarLine({
+      available: false, macroCount: null, earningsCovered: null, universe: null, generatedAtKst: null, fredStatus: null,
+    })).toBe("일정(FRED·FOMC·실적): 거시 —건 · 실적 —/—종목 · 갱신 —");
+    expect(calendarLine(undefined)).toBeNull();
+    expect(calendarLine(null)).toBeNull();
   });
 });
 
