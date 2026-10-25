@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<rss version="2.0">
+  <channel>
+    <title>Forex News</title>
+    <link>https://www.investing.com</link>
+    <item>
+      <enclosure url="https://content-media.investing.com/news/moved_LYNXMPEI710GL_L.jpg" length="74248" type="image/jpeg"/>
+      <title>Dollar steadies as AI jitters spur yen gains and weigh on euro</title>
+      <pubDate>2026-10-23 20:31:27</pubDate>
+      <author>Investing.com</author>
+      <link>https://www.investing.com/news/forex-news/asia-fx-steadies-as-oil-surge-weighs-on-risk-appetite-yen-holds-gains-4967999</link>
+    </item>
+    <item>
+      <enclosure url="https://content-media.investing.com/news/moved_LYNXMPEM5O140_1200_L.jpg" length="128838" type="image/jpeg"/>
+      <title>Treasury yields set for third weekly drop as AI worries fuel haven bid</title>
+      <pubDate>2026-10-23 12:33:14</pubDate>
+      <author>Investing.com</author>
+      <link>https://www.investing.com/news/forex-news/german-yields-hit-2month-lows-as-french-debt-costs-spike-4968247</link>
+    </item>
+    <item>
+      <enclosure url="https://content-media.investing.com/news/LYNXMPEM0Q12I_1200_L.jpg" length="203984" type="image/jpeg"/>
+      <title>India 40-year bond yield hits highest level since 2018</title>
+      <pubDate>2026-10-23 10:11:18</pubDate>
+      <author>Investing.com</author>
+      <link>https://www.investing.com/news/forex-news/india-40year-bond-yield-hits-highest-level-since-2018-93CH-4968714</link>
+    </item>
+    </channel>
+</rss>

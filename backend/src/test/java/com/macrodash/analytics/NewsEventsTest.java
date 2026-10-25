@@ -273,7 +273,7 @@ class NewsEventsTest {
         assertThat(s.cap()).isEqualTo(NewsEvents.DEFAULT_MAX_PER_DAY);
         assertThat(new Settings(true, 99, null, null).cap()).isEqualTo(NewsEvents.MAX_PER_DAY_LIMIT);
         assertThat(new Settings(true, -1, null, null).cap()).isZero();
-        assertThat(NewsEvents.DEFAULT_FEEDS).hasSize(7);
+        assertThat(NewsEvents.DEFAULT_FEEDS).as("단계 0의 일곱 + 인베스팅 외환(2026-10-25)").hasSize(8).contains("investing_forex");
         assertThat(NewsEvents.DEFAULT_KEYWORDS).contains("rate decision", "Middle East", "payrolls");
     }
 

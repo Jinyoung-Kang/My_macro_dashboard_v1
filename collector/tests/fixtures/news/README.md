@@ -8,6 +8,7 @@ lxml로 다시 쓴 것입니다(그래서 XML 선언의 따옴표가 작은따�
 | `investing_news_25.xml` | `investing_stock` | https://www.investing.com/rss/news_25.rss | RSS 2.0, `pubDate`가 `2026-10-25 02:48:34`처럼 **시간대 없음**(UTC로 읽음) |
 | `investing_news_95.xml` | `investing_ind` | https://www.investing.com/rss/news_95.rss | 위와 같음 |
 | `investing_news_14.xml` | `investing_economy` | https://www.investing.com/rss/news_14.rss | 위와 같음 |
+| `investing_news_1.xml` | `investing_forex` | https://www.investing.com/rss/news_1.rss | 위와 같음 — 2026-10-25(KST) 수집기 컨테이너에서 같은 방법(앞 3항목, lxml 다시 쓰기)으로 받음 |
 | `fed_press_monetary.xml` | `fed_monetary` | https://www.federalreserve.gov/feeds/press_monetary.xml | RSS 2.0, RFC 822 GMT |
 | `bls_cpi.xml` | `bls_cpi` | https://www.bls.gov/feed/cpi.rss | 주소는 .rss지만 **Atom 1.0**, `-04:00` |
 | `bls_empsit.xml` | `bls_empsit` | https://www.bls.gov/feed/empsit.rss | Atom 1.0 |

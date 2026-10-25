@@ -60,6 +60,9 @@ FEEDS: tuple[Feed, ...] = (
     Feed("investing_stock", "Investing.com", "https://www.investing.com/rss/news_25.rss", "default"),
     Feed("investing_ind", "Investing.com", "https://www.investing.com/rss/news_95.rss", "default"),
     Feed("investing_economy", "Investing.com", "https://www.investing.com/rss/news_14.rss", "default"),
+    # 외환(2026-10-25 추가) — 사용자가 고른 인베스팅 뉴스 네 분류(외환·주식·경제 지표·경제) 가운데 RSS로 아직 받지 않던 하나.
+    # 같은 분류의 HTML 페이지(/news/forex-news 등)는 Cloudflare가 자동 요청을 모두 403으로 막아(브라우저·제품명 UA 모두) 받지 않습니다.
+    Feed("investing_forex", "Investing.com", "https://www.investing.com/rss/news_1.rss", "default"),
     Feed("fed_monetary", "Federal Reserve", "https://www.federalreserve.gov/feeds/press_monetary.xml", "default"),
     Feed("bls_cpi", "BLS", "https://www.bls.gov/feed/cpi.rss", "bls"),
     Feed("bls_empsit", "BLS", "https://www.bls.gov/feed/empsit.rss", "bls"),

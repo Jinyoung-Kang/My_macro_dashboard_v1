@@ -98,12 +98,12 @@ public final class NewsEvents {
             "ceasefire", "credit", "default", "bank", "recession", "Treasury", "yields");
 
     /**
-     * {@code news.feeds} 기본값 — 수집기의 피드 일곱 개(명세 B1) 전부. 수집기 피드 상수의 키와 같아야 합니다(다르면 그 피드는
+     * {@code news.feeds} 기본값 — 수집기의 피드 여덟 개(명세 B1 — 단계 0의 일곱 개 + 2026-10-25 인베스팅 외환) 전부. 수집기 피드 상수의 키와 같아야 합니다(다르면 그 피드는
      * 패킷에 들지 않음).
      */
     public static final List<String> DEFAULT_FEEDS = List.of(
-            "investing_stock", "investing_ind", "investing_economy", "fed_monetary", "bls_cpi", "bls_empsit",
-            "sec_press");
+            "investing_stock", "investing_ind", "investing_economy", "investing_forex", "fed_monetary", "bls_cpi",
+            "bls_empsit", "sec_press");
 
     /** 결과 상태. */
     public static final String OK = "OK";

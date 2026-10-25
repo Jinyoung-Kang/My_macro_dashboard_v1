@@ -236,7 +236,7 @@ class EventsSectionTest {
     }
 
     @Test
-    @DisplayName("설정 기본값 본문 — 켬·10건·기본 사전·피드 일곱 개(키 순서 고정)")
+    @DisplayName("설정 기본값 본문 — 켬·10건·기본 사전·피드 여덟 개(키 순서 고정)")
     void defaultsBody() {
         JsonNode body = MAPPER.valueToTree(EventsSection.defaultsBody());
         assertThat(body.path("enabled").asBoolean()).isTrue();

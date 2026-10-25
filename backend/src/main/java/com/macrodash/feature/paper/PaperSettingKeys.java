@@ -169,7 +169,7 @@ final class PaperSettingKeys {
             of("news.keywords", Type.PHRASES, false,
                     "매크로 키워드(영어 낱말·구절, 대소문자 무시, 쉼표·줄바꿈으로 나눔 — B3). 보유·후보·watchlist 티커는 따로 잡음"),
             new Spec("news.feeds", Type.FEEDS, null, null, NewsEvents.DEFAULT_FEEDS, false,
-                    "패킷에 넣을 피드 키(수집은 일곱 피드 모두) — " + String.join(" · ", NewsEvents.DEFAULT_FEEDS)));
+                    "패킷에 넣을 피드 키(수집은 여덟 피드 모두) — " + String.join(" · ", NewsEvents.DEFAULT_FEEDS)));
 
     private static final Map<String, Spec> BY_KEY;
 

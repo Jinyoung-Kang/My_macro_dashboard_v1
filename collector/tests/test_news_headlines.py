@@ -40,6 +40,7 @@ FILES = {
     "investing_stock": "investing_news_25.xml",
     "investing_ind": "investing_news_95.xml",
     "investing_economy": "investing_news_14.xml",
+    "investing_forex": "investing_news_1.xml",
     "fed_monetary": "fed_press_monetary.xml",
     "bls_cpi": "bls_cpi.xml",
     "bls_empsit": "bls_empsit.xml",
@@ -61,11 +62,12 @@ def _replace(raw: bytes, old: str, new: str, count: int = 1) -> bytes:
 # ==============================================================================
 # 1. 피드 목록·의존성·이름
 # ==============================================================================
-def test_피드는_단계0에서_고정한_일곱_개():
+def test_피드는_단계0에서_고정한_일곱_개와_외환_하나():
     assert [(f.key, f.source, f.url, f.session) for f in svc.FEEDS] == [
         ("investing_stock", "Investing.com", "https://www.investing.com/rss/news_25.rss", "default"),
         ("investing_ind", "Investing.com", "https://www.investing.com/rss/news_95.rss", "default"),
         ("investing_economy", "Investing.com", "https://www.investing.com/rss/news_14.rss", "default"),
+        ("investing_forex", "Investing.com", "https://www.investing.com/rss/news_1.rss", "default"),
         ("fed_monetary", "Federal Reserve", "https://www.federalreserve.gov/feeds/press_monetary.xml", "default"),
         ("bls_cpi", "BLS", "https://www.bls.gov/feed/cpi.rss", "bls"),
         ("bls_empsit", "BLS", "https://www.bls.gov/feed/empsit.rss", "bls"),
@@ -74,6 +76,8 @@ def test_피드는_단계0에서_고정한_일곱_개():
     urls = " ".join(feed.url for feed in svc.FEEDS)
     # 야후는 robots.txt가 전체 금지, 인베스팅 전체 피드는 내부자 거래 자동 항목, 연준 press_all은 제재·인가 공지(B1).
     assert "yahoo" not in urls and "/rss/news.rss" not in urls and "press_all" not in urls
+    # 인베스팅은 RSS만 — 뉴스 HTML 페이지(/news/…)는 Cloudflare가 자동 요청을 막아 받지 않음(D29, 2026-10-25 확인).
+    assert all("/rss/" in feed.url for feed in svc.FEEDS if "investing.com" in feed.url)
     assert svc.FEED_KEYS == tuple(FILES)
 
 
@@ -295,7 +299,7 @@ def test_세션은_피드마다_정해진_것을_쓰고_SEC는_속도_제한을_
         content, content_type = svc.fetch_feed(feed)
         assert content == _fixture(feed.key) and content_type == "application/rss+xml"
 
-    assert [name for name, _ in web.calls] == ["default"] * 4 + ["bls", "bls", "sec_rate_limit", "sec"]
+    assert [name for name, _ in web.calls] == ["default"] * 5 + ["bls", "bls", "sec_rate_limit", "sec"]
 
 
 def test_BLS_세션은_설명형_UA에_연락처가_없고_403을_다시_보내지_않는다(monkeypatch):
@@ -405,14 +409,14 @@ def _by_title(rows: dict) -> dict[str, tuple[date, dict]]:
     return {payload["title"]: (day, payload) for day, payload in rows.values()}
 
 
-def test_일곱_피드를_받아_7일_안의_항목만_저장한다(store, web):
+def test_여덟_피드를_받아_7일_안의_항목만_저장한다(store, web):
     detail = task_module.task_news_headlines()
 
     rows = _rows(store)
-    # 인베스팅 9건(10-23~10-25) + SEC 3건(10-20·10-23). 연준(10-13 이전)·BLS(10-14 이전)는 보관 기한(10-18) 밖이라 넣지 않습니다.
-    assert len(rows) == 12
+    # 인베스팅 12건(10-23~10-25, 외환 3건 포함) + SEC 3건(10-20·10-23). 연준(10-13 이전)·BLS(10-14 이전)는 보관 기한(10-18) 밖이라 넣지 않습니다.
+    assert len(rows) == 15
     assert {payload["feed"] for _, payload in rows.values()} == {
-        "investing_stock", "investing_ind", "investing_economy", "sec_press"}
+        "investing_stock", "investing_ind", "investing_economy", "investing_forex", "sec_press"}
     day, payload = _by_title(rows)["Trump announces Audi will build $4 billion US factory in Georgia"]
     assert day == date(2026, 10, 25)
     assert payload == {
@@ -430,18 +434,18 @@ def test_일곱_피드를_받아_7일_안의_항목만_저장한다(store, web):
     assert sec_day == date(2026, 10, 23) and sec["source"] == "SEC" and sec["publishedAt"] == "2026-10-23T14:10:00+00:00"
 
     status = _status(store)
-    assert (status["feedsOk"], status["feedsTotal"], status["failedFeeds"]) == (7, 7, [])
-    assert (status["stored7d"], status["insertedThisRun"], status["deletedThisRun"]) == (12, 12, 0)
+    assert (status["feedsOk"], status["feedsTotal"], status["failedFeeds"]) == (8, 8, [])
+    assert (status["stored7d"], status["insertedThisRun"], status["deletedThisRun"]) == (15, 15, 0)
     assert status["generatedAt"] == "2026-10-25T07:00:00+00:00"
     assert (status["retentionDays"], status["retainedFrom"]) == (7, "2026-10-18")
     assert status["maybeMissed"] == []   # 첫 수집은 늘 전부 처음이라 세지 않습니다
     assert status["feeds"]["fed_monetary"]["skippedOld"] == 3 and status["feeds"]["fed_monetary"]["new"] == 0
     assert status["feeds"]["investing_economy"]["newestAt"] == "2026-10-25T06:00:53+00:00"
     assert status["feeds"]["sec_press"]["lastOkAt"] == "2026-10-25T07:00:00+00:00"
-    assert detail == "새 헤드라인 12건 · 피드 7/7 · 7일 보관 12건"
+    assert detail == "새 헤드라인 15건 · 피드 8/8 · 7일 보관 15건"
 
     # 같은 호스트에 잇달아 보낼 때만 쉽니다(인베스팅 셋 사이 2번, BLS 둘 사이 1번). SEC는 속도 제한을 거칩니다.
-    assert [seconds for name, seconds in web.calls if name == "sleep"] == [task_module.HOST_SPACING_SECONDS] * 3
+    assert [seconds for name, seconds in web.calls if name == "sleep"] == [task_module.HOST_SPACING_SECONDS] * 4
     assert web.fetched() == list(URL.values())
     assert ("sec_rate_limit", None) in web.calls
 
@@ -458,8 +462,8 @@ def test_BLS_Atom_항목이_저장되고_미래_시각은_건너뛴다(store, we
     assert cpi["link"] == "https://www.bls.gov/news.release/archives/cpi_10142026.htm"
     assert "Minutes of the Board's discount rate meetings on August 17, September 9, and September 16, 2026" in titles
     assert len(titles) == 2   # BLS CPI 10-14 + 연준 10-13. 고용(10-02)·연준 10-07은 기한 밖
-    # 인베스팅 9건·SEC 3건은 지금(10-15)보다 하루 넘게 뒤 — 시간대를 잘못 읽은 것으로 보고 넣지 않습니다.
-    assert "미래 시각 12건 건너뜀" in detail
+    # 인베스팅 12건·SEC 3건은 지금(10-15)보다 하루 넘게 뒤 — 시간대를 잘못 읽은 것으로 보고 넣지 않습니다.
+    assert "미래 시각 15건 건너뜀" in detail
     assert _status(store)["feeds"]["investing_stock"]["skippedFuture"] == 3
 
 
@@ -470,14 +474,14 @@ def test_피드_하나가_실패해도_나머지는_저장되고_사유가_실�
     ok, detail = tasks.run_task(tasks.TASKS_BY_NAME["news_headlines"])
 
     assert ok is True
-    assert len(_rows(store)) == 9   # 인베스팅 9건 — SEC 3건만 빠짐
+    assert len(_rows(store)) == 12   # 인베스팅 12건 — SEC 3건만 빠짐
     recorded = store.read_task_history("news_headlines")[0]
     assert recorded["status"] == "ok"
-    assert "피드 5/7" in recorded["detail"]
+    assert "피드 6/8" in recorded["detail"]
     assert "실패 2개: bls_cpi(HTTP 403 — BLS 차단(UA)); sec_press(ConnectionError — 서버가 연결을 거부했습니다)" \
         in recorded["detail"]
     status = _status(store)
-    assert status["feedsOk"] == 5
+    assert status["feedsOk"] == 6
     assert status["failedFeeds"] == [
         {"feed": "bls_cpi", "source": "BLS", "reason": "HTTP 403 — BLS 차단(UA)"},
         {"feed": "sec_press", "source": "SEC", "reason": "ConnectionError — 서버가 연결을 거부했습니다"},
@@ -491,7 +495,7 @@ def test_HTML_응답은_그_피드만_실패(store, web):
     detail = task_module.task_news_headlines()
 
     assert "investing_ind(RSS·Atom 피드가 아님(HTML 등))" in detail
-    assert len(_rows(store)) == 9
+    assert len(_rows(store)) == 12
 
 
 def test_전부_실패하면_EmptyResult이고_행과_상태를_그대로_둔다(store, web):
@@ -504,7 +508,7 @@ def test_전부_실패하면_EmptyResult이고_행과_상태를_그대로_둔다
         task_module.task_news_headlines()
 
     message = str(caught.value)
-    assert message.startswith("피드 0/7 — 기존 저장본 유지 · 실패 7개: investing_stock(")
+    assert message.startswith("피드 0/8 — 기존 저장본 유지 · 실패 8개: investing_stock(")
     assert all(f"{key}(" in message for key in FILES)
     assert _status(store) == {"marker": "이전 상태"}
     # 전부 실패한 실행은 보관 정리도 하지 않습니다.
@@ -525,7 +529,7 @@ def test_같은_제목은_날짜가_달라도_다시_넣지_않는다(store, web
     detail = task_module.task_news_headlines()
 
     rows = _rows(store)
-    assert len(rows) == 12 and detail.startswith("새 헤드라인 0건")
+    assert len(rows) == 15 and detail.startswith("새 헤드라인 0건")
     assert _by_title(rows)["Trump announces Audi will build $4 billion US factory in Georgia"] == first
 
 
@@ -538,7 +542,7 @@ def test_한_실행_안에서_여러_피드의_같은_제목은_한_행이고_�
     task_module.task_news_headlines()
 
     rows = _rows(store)
-    assert len(rows) == 11
+    assert len(rows) == 14
     day, payload = rows[svc.title_entity("HSBC sees cautious optimism in VC and PE activity")]
     # 제목·출처·링크는 FEEDS 순서로 먼저 온 피드의 것, feeds에는 실어 온 피드 모두(회귀 COL-1 — 예전에는 처음 피드 하나만 남아
     # news.feeds = [investing_economy]인 설정에서 이 사건이 빠졌습니다).
@@ -561,7 +565,7 @@ def test_다음_실행에서_다른_피드가_같은_제목을_실으면_그_행
 
     rows = _rows(store)
     day, after = rows[svc.title_entity(title)]
-    assert len(rows) == 12 and detail.startswith("새 헤드라인 0건")
+    assert len(rows) == 15 and detail.startswith("새 헤드라인 0건")
     assert day == before_day
     assert after == {**before, "feeds": ["investing_stock", "investing_economy"]}
 
@@ -599,11 +603,11 @@ def test_7일이_지난_행은_지우고_기한_안은_남긴다(store, web):
 
     rows = _rows(store)
     assert "aaaaaaaaaaaaaaaa" not in rows and "bbbbbbbbbbbbbbbb" in rows
-    assert len(rows) == 13
+    assert len(rows) == 16
     assert len(_rows(store, catalog.OBS_FSC_PRICE)) == 1   # 다른 데이터셋은 건드리지 않습니다
     status = _status(store)
-    assert (status["deletedThisRun"], status["stored7d"]) == (1, 13)
-    assert "7일 보관 13건(지움 1건)" in detail
+    assert (status["deletedThisRun"], status["stored7d"]) == (1, 16)
+    assert "7일 보관 16건(지움 1건)" in detail
 
 
 def test_두_번째_실행은_새것이_없어도_성공이고_누락_가능이_아니다(store, web):
@@ -612,7 +616,7 @@ def test_두_번째_실행은_새것이_없어도_성공이고_누락_가능이_
 
     detail = task_module.task_news_headlines()
 
-    assert detail == "새 헤드라인 0건 · 피드 7/7 · 7일 보관 12건"
+    assert detail == "새 헤드라인 0건 · 피드 8/8 · 7일 보관 15건"
     status = _status(store)
     assert status["maybeMissed"] == [] and status["insertedThisRun"] == 0
     assert status["feeds"]["investing_stock"]["seen"] == 3
@@ -644,7 +648,7 @@ def test_시각_없는_항목은_세고_저장하지_않는다(store, web):
     detail = task_module.task_news_headlines()
 
     assert "시각 없음 1건 건너뜀" in detail
-    assert len(_rows(store)) == 11
+    assert len(_rows(store)) == 14
     assert _status(store)["feeds"]["investing_stock"]["skippedNoTime"] == 1
 
 
@@ -654,7 +658,7 @@ def test_시간_상한을_넘으면_남은_피드는_다음_실행으로(store, 
     detail = task_module.task_news_headlines()
 
     assert web.fetched() == [URL["investing_stock"], URL["investing_ind"], URL["investing_economy"]]
-    assert "피드 3/7" in detail and "실패 4개: fed_monetary(시간 상한(300초) — 다음 실행)" in detail
+    assert "피드 3/8" in detail and "실패 5개: investing_forex(시간 상한(300초) — 다음 실행)" in detail
     assert len(_rows(store)) == 9
 
 

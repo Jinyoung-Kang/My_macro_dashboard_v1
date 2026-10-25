@@ -78,7 +78,7 @@ final class EventsSection {
     record Built(Map<String, Object> section, NewsEvents.Result result) {
     }
 
-    /** 설정 기본값 본문({@code PaperSettingsService.defaultsJson}의 {@code news}) — 켬, 10건, 기본 사전, 피드 일곱 개 모두. */
+    /** 설정 기본값 본문({@code PaperSettingsService.defaultsJson}의 {@code news}) — 켬, 10건, 기본 사전, 피드 여덟 개 모두. */
     static Map<String, Object> defaultsBody() {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("enabled", true);
