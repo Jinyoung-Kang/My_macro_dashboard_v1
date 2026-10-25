@@ -49,6 +49,11 @@ public final class Datasets {
      * 실행 집계(universe·mapped·fetchedThisRun·failedThisRun). 사실 자체는 {@link #OBS_US_FUNDAMENTALS}에 있습니다.
      */
     public static final String SNAP_US_FUNDAMENTALS_STATUS = "us.fundamentals.status";
+    /**
+     * 모의 매매 Claude 계좌 패킷 {@code 1b_calendar}의 원자료(2단계 A) — 거시 발표일(FRED 릴리스·FOMC 상수, 앞으로 45일)과
+     * 유니버스 종목(ETF 제외)의 다음 실적 발표일(yfinance, 종목당 24시간 캐시). 기준일 창과 보유·후보 고르기는 백엔드가 합니다.
+     */
+    public static final String SNAP_US_CALENDAR = "calendar.us_events";
 
     /** 변동성 지수는 가장 긴 기간으로 한 번 저장하고 짧은 기간은 잘라 씁니다. */
     public static final String VOLATILITY_STORE_PERIOD = "5y";

@@ -154,6 +154,27 @@ def fundamentals_fetch_budget() -> int:
         return FUNDAMENTALS_FETCH_BUDGET
 
 
+US_CALENDAR_EARNINGS_BUDGET = 120
+
+
+def us_calendar_earnings_budget() -> int:
+    """
+    미국 일정 수집(task_us_calendar)이 한 번 실행에서 yfinance에 묻는 실적 일정 종목 수 상한. 기본 120, 1~600.
+
+    종목마다 24시간 캐시라 평소에는 한 시간에 약 24종목(유니버스 약 576종목 ÷ 24)만 다시 묻고, 처음 채울 때만 다섯 번(약 5시간)에
+    나눠 받습니다. 120 × (응답 0.16~0.7초 + 간격 0.5초) ≈ 80~140초로 slow 시간 상한(600초) 안이고, 같은 Yahoo 한도를
+    paper_quotes 등과 나눠 씁니다(명세 2단계 A2 — 계좌 보유는 백엔드 테이블이라 수집기는 유니버스 전체를 받음).
+    비었거나 숫자가 아니면 기본값 — 잘못 적은 값으로 수집을 멈추지(0) 않게 1 밑으로는 내리지 않습니다.
+    """
+    raw = (os.environ.get("US_CALENDAR_EARNINGS_BUDGET") or "").strip()
+    if not raw:
+        return US_CALENDAR_EARNINGS_BUDGET
+    try:
+        return min(600, max(1, int(raw)))
+    except ValueError:
+        return US_CALENDAR_EARNINGS_BUDGET
+
+
 # ==============================================================================
 # 외부 API 키 (없으면 빈 문자열)
 # ==============================================================================

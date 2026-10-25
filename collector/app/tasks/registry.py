@@ -17,6 +17,7 @@ from .series import (
     task_fred_series, task_fx_history, task_krx_futures, task_sector_history, task_volatility_history,
 )
 from .toss import task_toss_market_flows, task_toss_radar_universe, task_toss_stock_flows
+from .us_calendar import task_us_calendar
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ ALL_TASKS: tuple[Task, ...] = (
     Task("fx_history", "slow", task_fx_history, "환율·달러인덱스 일별 종가"),
     Task("equity_history", "slow", task_equity_history, "13F 매핑 종목 일별 종가"),
     Task("paper_quotes", "slow", task_paper_quotes, "모의 매매 유니버스 최근 3개월 일봉 (장부 관측치, 로컬 전용)"),
+    Task("us_calendar", "slow", task_us_calendar, "미국 발표·실적 일정 — FRED 릴리스·FOMC 상수·yfinance 실적일 (모의 매매 Claude 계좌 패킷, 로컬 전용)"),
     Task("volatility_history", "slow", task_volatility_history, "VIX·MOVE 변동성 시계열"),
     Task("cot_history", "slow", task_cot_history, "CFTC COT (주 1회 발표)"),
     Task("daum_futures_trend", "slow", task_daum_futures_trend, "Daum 선물 투자주체별 수급"),

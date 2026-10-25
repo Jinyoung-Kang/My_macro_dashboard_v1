@@ -72,6 +72,7 @@ class DatasetsParityTest {
         assertThat(constant(source, "SNAP_TRACK_RECORD_INDEX")).isEqualTo(Datasets.SNAP_TRACK_RECORD_INDEX);
         assertThat(constant(source, "OBS_US_FUNDAMENTALS")).isEqualTo(Datasets.OBS_US_FUNDAMENTALS);
         assertThat(constant(source, "SNAP_US_FUNDAMENTALS_STATUS")).isEqualTo(Datasets.SNAP_US_FUNDAMENTALS_STATUS);
+        assertThat(constant(source, "SNAP_US_CALENDAR")).isEqualTo(Datasets.SNAP_US_CALENDAR);
     }
 
     @Test

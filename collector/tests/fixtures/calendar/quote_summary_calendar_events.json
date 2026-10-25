@@ -1,0 +1,87 @@
+{
+ "AAPL": {
+  "quoteSummary": {
+   "result": [
+    {
+     "calendarEvents": {
+      "maxAge": 1,
+      "earnings": {
+       "earningsDate": [
+        1793649600
+       ],
+       "earningsCallDate": [
+        1793656800
+       ],
+       "isEarningsDateEstimate": false,
+       "earningsAverage": 1.98187,
+       "earningsLow": 1.93,
+       "earningsHigh": 2.06,
+       "revenueAverage": 113357085200,
+       "revenueLow": 112525022000,
+       "revenueHigh": 116186700000
+      },
+      "exDividendDate": 1786320000,
+      "dividendDate": 1786579200
+     }
+    }
+   ],
+   "error": null
+  }
+ },
+ "PANW": {
+  "quoteSummary": {
+   "result": [
+    {
+     "calendarEvents": {
+      "maxAge": 1,
+      "earnings": {
+       "earningsDate": [
+        1795118400
+       ],
+       "earningsCallDate": [
+        1788292800
+       ],
+       "isEarningsDateEstimate": true,
+       "earningsAverage": 0.9715,
+       "earningsLow": 0.95,
+       "earningsHigh": 1.01,
+       "revenueAverage": 3307502950,
+       "revenueLow": 3292425750,
+       "revenueHigh": 3367100000
+      }
+     }
+    }
+   ],
+   "error": null
+  }
+ },
+ "JPM": {
+  "quoteSummary": {
+   "result": [
+    {
+     "calendarEvents": {
+      "maxAge": 1,
+      "earnings": {
+       "earningsDate": [
+        1799929800
+       ],
+       "earningsCallDate": [
+        1799933400
+       ],
+       "isEarningsDateEstimate": false,
+       "earningsAverage": 5.90316,
+       "earningsLow": 5.65,
+       "earningsHigh": 6.4,
+       "revenueAverage": 51142683070,
+       "revenueLow": 50066000000,
+       "revenueHigh": 52544343000
+      },
+      "exDividendDate": 1791244800,
+      "dividendDate": 1793404800
+     }
+    }
+   ],
+   "error": null
+  }
+ }
+}

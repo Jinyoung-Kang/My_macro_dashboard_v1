@@ -31,6 +31,9 @@ SNAP_TOSS_RADAR_UNIVERSE = "kr.toss_radar_universe"  # 거래대금 상위 100�
 SNAP_PAPER_QUOTES = "paper.quotes"      # 모의 매매 유니버스 최근 3개월 일봉(장중 마지막 봉 = 지연 시세) — 장부 관측치
 SNAP_TRACK_RECORD_INDEX = "sec.13f.track_record_index"  # 모의 매매 트랙레코드 후보 기관 목록·기관별 수집 진행률(q30)
 SNAP_US_FUNDAMENTALS_STATUS = "us.fundamentals.status"  # 모의 매매 미국 재무(SEC XBRL) 회사별 수집 상태 — 사실은 observations us.fundamentals
+# 모의 매매 Claude 계좌 패킷 1b_calendar의 원자료(2단계 A) — 거시 발표일(FRED 릴리스·FOMC 상수, 앞으로 45일)과 유니버스 종목
+# (ETF 제외)의 다음 실적 발표일(yfinance). 기준일 창·보유·후보 고르기는 백엔드가 합니다.
+SNAP_US_CALENDAR = "calendar.us_events"
 
 # 변동성 지수(^VIX / ^MOVE)는 가장 긴 기간으로 한 번 저장하고, 짧은 기간
 # 요청은 잘라 씁니다 (13F에서 q1을 q8에서 유도하는 것과 같은 방식).
