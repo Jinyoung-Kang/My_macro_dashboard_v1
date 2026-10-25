@@ -64,12 +64,31 @@ final class PaperBooks {
         }
     }
 
+    /**
+     * 화면 이름(paper_books.label) — 이 상수 한 곳에서 정합니다. 이름은 초기화 때 행에 들어가고 그 뒤로는 다시 쓰지 않으므로, 바꾸면
+     * {@link #LEGACY_LABELS}에 옛 이름을 남겨 이미 만든 행도 맞춥니다({@link PaperAdminService#reconcileLabels}).
+     */
+    static final String RULES_LABEL = "규칙 계좌";
+    static final String CLAUDE_LABEL = "Claude 계좌";
+    static final String BENCH_SPY_LABEL = "SPY 계좌";
+    static final String BENCH_MIX_LABEL = "60/40 계좌";
+
+    /**
+     * 옛 화면 이름 — 2026-10-25에 '책'을 '계좌'로 바꾸기 전의 초기화가 행에 넣은 값. 지금 행 이름이 이 값 그대로일 때만 새 이름으로
+     * 바꿉니다(손으로 고친 이름은 그대로). 벤치마크의 옛 이름은 구성 비중이었습니다 — 구성은 정의의 {@code weights}에 그대로 있습니다.
+     */
+    static final Map<String, String> LEGACY_LABELS = Map.of(
+            RULES, "규칙 책",
+            CLAUDE, "Claude 재량 책",
+            BENCH_SPY, "SPY 100%",
+            BENCH_MIX, "SPY 60% · SHY 40%");
+
     /** 화면에 보이는 순서이기도 합니다. */
     static final List<Definition> ALL = List.of(
-            new Definition(RULES, KIND_RULES, "규칙 책", Map.of()),
-            new Definition(CLAUDE, KIND_CLAUDE, "Claude 재량 책", Map.of()),
-            new Definition(BENCH_SPY, KIND_BENCHMARK, "SPY 100%", weights("SPY", 100.0)),
-            new Definition(BENCH_MIX, KIND_BENCHMARK, "SPY 60% · SHY 40%", weights("SPY", 60.0, "SHY", 40.0)));
+            new Definition(RULES, KIND_RULES, RULES_LABEL, Map.of()),
+            new Definition(CLAUDE, KIND_CLAUDE, CLAUDE_LABEL, Map.of()),
+            new Definition(BENCH_SPY, KIND_BENCHMARK, BENCH_SPY_LABEL, weights("SPY", 100.0)),
+            new Definition(BENCH_MIX, KIND_BENCHMARK, BENCH_MIX_LABEL, weights("SPY", 60.0, "SHY", 40.0)));
 
     static Optional<Definition> find(String code) {
         return ALL.stream().filter(d -> d.code().equals(code)).findFirst();

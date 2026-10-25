@@ -53,7 +53,7 @@ class PaperSettingsServiceTest {
         assertThat(out.get("version")).isEqualTo(2);
         assertThat(out.get("changedKeys")).isEqualTo(List.of("slippageBp", "trackRecord.windowYears",
                 "blend.groupB.topN", "model"));
-        assertThat(out.get("warning")).isEqualTo("규칙 책은 동결된 대조군입니다 — 이 변경은 실험 조건을 바꿉니다");
+        assertThat(out.get("warning")).isEqualTo("규칙 계좌는 동결된 대조군입니다 — 이 변경은 실험 조건을 바꿉니다");
         assertThat(body().path("slippageBp").asDouble()).isEqualTo(10);
         assertThat(body().path("trackRecord").path("windowYears").asInt()).isEqualTo(5);
         assertThat(body().path("trackRecord").path("topN").asInt()).as("다른 키는 그대로").isEqualTo(5);

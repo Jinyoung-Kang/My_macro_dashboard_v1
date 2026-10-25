@@ -141,6 +141,22 @@ class PaperStoreDbTest {
     }
 
     @Test
+    @DisplayName("이름 바꾸기는 지금 이름이 옛 이름 그대로일 때만 — 두 번째는 false, 다른 이름·없는 책은 그대로")
+    void relabelBookOnlyFromExactLabel() {
+        store.insertBookIfAbsent(book(BOOK, "규칙 책"));
+        store.insertBookIfAbsent(book(OTHER_BOOK, "내가 붙인 이름"));
+
+        assertThat(store.relabelBook(BOOK, "규칙 책", "규칙 계좌")).isTrue();
+        assertThat(store.book(BOOK).orElseThrow().label()).isEqualTo("규칙 계좌");
+        assertThat(store.relabelBook(BOOK, "규칙 책", "규칙 계좌")).as("이미 바뀜 — 멱등").isFalse();
+        assertThat(store.book(BOOK).orElseThrow().label()).isEqualTo("규칙 계좌");
+
+        assertThat(store.relabelBook(OTHER_BOOK, "SPY 100%", "SPY 계좌")).as("손으로 고친 이름").isFalse();
+        assertThat(store.book(OTHER_BOOK).orElseThrow().label()).isEqualTo("내가 붙인 이름");
+        assertThat(store.relabelBook("t_none", "규칙 책", "규칙 계좌")).as("없는 책").isFalse();
+    }
+
+    @Test
     @DisplayName("체결은 주문당 하나 — 같은 주문의 두 번째 체결은 DuplicateKeyException이고 행은 하나")
     void oneFillPerOrder() {
         store.insertBookIfAbsent(book(BOOK, "규칙 책"));

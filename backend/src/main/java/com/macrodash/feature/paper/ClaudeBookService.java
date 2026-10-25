@@ -264,7 +264,7 @@ public class ClaudeBookService {
             throw new IllegalArgumentException("기준 거래일이 없습니다");
         }
         if (!List.of(RuleBookService.SCHEDULED, RuleBookService.MANUAL).contains(kind)) {
-            throw new IllegalArgumentException("Claude 책 결정 종류는 SCHEDULED · MANUAL입니다(초기 결정은 start): " + kind);
+            throw new IllegalArgumentException("Claude 계좌 결정 종류는 SCHEDULED · MANUAL입니다(초기 결정은 start): " + kind);
         }
         requireReady();
         Decision retrying = null;
@@ -277,7 +277,7 @@ public class ClaudeBookService {
         }
         Book book = claudeBook();
         if (PaperBooks.NOT_STARTED.equals(book.status())) {
-            throw new InvalidRequestException("Claude 책은 아직 시작 전입니다 — 개요의 'Claude 재량 책 시작'으로 초기 결정을 먼저 "
+            throw new InvalidRequestException("Claude 계좌는 아직 시작 전입니다 — 개요의 'Claude 계좌 시작'으로 초기 결정을 먼저 "
                     + "내리세요.");
         }
         SettingsRow row = settingsRow();
@@ -286,7 +286,7 @@ public class ClaudeBookService {
             if (RuleBookService.MANUAL.equals(kind)) {
                 // 수동 결정은 행을 남기지 않습니다 — SKIPPED를 남기면 같은 거래일에 재개한 뒤 다시 눌러도 그 행이 돌아와 Claude를
                 // 부르지 않습니다(MANUAL도 거래일마다 한 건).
-                throw new InvalidRequestException("Claude 책이 일시정지 중이라 수동 결정을 내지 않았습니다(Claude를 부르지 않음) — "
+                throw new InvalidRequestException("Claude 계좌가 일시정지 중이라 수동 결정을 내지 않았습니다(Claude를 부르지 않음) — "
                         + "보유·체결 탭에서 재개한 뒤 누르세요.");
             }
             if (retrying != null) {
@@ -329,12 +329,12 @@ public class ClaudeBookService {
             Book current = claudeBook();
             if (PaperBooks.NOT_STARTED.equals(current.status())) {
                 // Claude를 부르는 사이에 초기화(리셋)됐습니다 — 현금만 든 시작 전 책에 주문을 남기지 않습니다.
-                throw new InvalidRequestException("Claude 책이 결정을 준비하는 사이에 초기화돼 시작 전 상태입니다 — 결정을 내지 "
+                throw new InvalidRequestException("Claude 계좌가 결정을 준비하는 사이에 초기화돼 시작 전 상태입니다 — 결정을 내지 "
                         + "않았습니다.");
             }
             if (!before.equals(generation(current))) {
                 // 초기화한 뒤 다시 시작했습니다(출발일은 설정값이라 같아도 초기 결정이 새 행) — 리셋 전 장부로 만든 결정입니다.
-                throw new InvalidRequestException("Claude 책이 결정을 준비하는 사이에 초기화된 뒤 다시 시작했습니다 — 초기화 전 "
+                throw new InvalidRequestException("Claude 계좌가 결정을 준비하는 사이에 초기화된 뒤 다시 시작했습니다 — 초기화 전 "
                         + "장부로 만든 결정이라 내지 않았습니다.");
             }
             Optional<Decision> raced = store.decisionFor(PaperBooks.CLAUDE, asOf, kind);
@@ -348,7 +348,7 @@ public class ClaudeBookService {
             Plan plan = plan(asOf, kind, false, attempt, view, row, claude, quotes, observedUniverse(quotes), Map.of());
             String status = paused ? STATUS_SKIPPED : plan.status();
             if (paused) {
-                plan.response().put("skipped", "Claude를 부르는 사이에 책이 일시정지돼 통과 주문 " + plan.accepted()
+                plan.response().put("skipped", "Claude를 부르는 사이에 계좌가 일시정지돼 통과 주문 " + plan.accepted()
                         + "건을 집행하지 않음(취소로 남김) — 재개한 뒤의 결정부터 다시 냅니다");
                 plan.response().put("pausedDuringCall", true);
             }
@@ -411,7 +411,7 @@ public class ClaudeBookService {
             if (!attempt.succeeded()) {
                 log.warn("Claude 책 시작: 호출 실패({}) — 시작하지 않았습니다: {}", attempt.status(), attempt.error());
                 throw new InvalidRequestException("Claude 호출이 실패해 시작하지 않았습니다(" + statusLabel(attempt.status())
-                        + "): " + clip(attempt.error(), 400) + " — 책은 시작 전 그대로입니다. 다시 누르면 Claude를 한 번 더 "
+                        + "): " + clip(attempt.error(), 400) + " — 계좌는 시작 전 그대로입니다. 다시 누르면 Claude를 한 번 더 "
                         + "부릅니다(하루 호출 상한에 셈).");
             }
             // 유니버스를 출발일 종가를 얼리기 전에 정합니다(initialUniverse) — 얼린 뒤에 세면 패킷 밖 종목이 들어옵니다.
@@ -427,7 +427,7 @@ public class ClaudeBookService {
                     return new StartResult(existing.get(), List.of());
                 }
                 BookState state = store.state(PaperBooks.CLAUDE).orElseThrow(() -> new IllegalStateException(
-                        "Claude 책 상태(paper_book_state)가 없습니다 — 초기화를 다시 실행하세요"));
+                        "Claude 계좌 상태(paper_book_state)가 없습니다 — 초기화를 다시 실행하세요"));
                 LedgerView view = cashOnly(state.cash());
                 Plan plan = plan(prepared.start(), RuleBookService.INITIAL, true, attempt, view, prepared.row(),
                         prepared.claude(), Optional.empty(), universe, closes);
@@ -696,7 +696,7 @@ public class ClaudeBookService {
 
     private LedgerView ledgerView(boolean initial) {
         BookState state = store.state(PaperBooks.CLAUDE).orElseThrow(() -> new IllegalStateException(
-                "Claude 책 상태(paper_book_state)가 없습니다 — 초기화를 다시 실행하세요"));
+                "Claude 계좌 상태(paper_book_state)가 없습니다 — 초기화를 다시 실행하세요"));
         if (initial) {
             return cashOnly(state.cash());
         }
@@ -738,7 +738,7 @@ public class ClaudeBookService {
         }
 
         if (!(view.nav() > 0)) {
-            throw new IllegalStateException("Claude 책 순자산이 0 이하라 주문을 검증할 수 없습니다: " + view.nav());
+            throw new IllegalStateException("Claude 계좌 순자산이 0 이하라 주문을 검증할 수 없습니다: " + view.nav());
         }
         Map<String, Double> weights = new TreeMap<>();
         Map<String, Integer> heldDays = new TreeMap<>();
@@ -1234,13 +1234,13 @@ public class ClaudeBookService {
 
     private Book claudeBook() {
         return store.book(PaperBooks.CLAUDE).orElseThrow(() -> new InvalidRequestException(
-                "Claude 책이 없습니다 — 먼저 초기화(POST /api/paper/init)를 누르세요."));
+                "Claude 계좌가 없습니다 — 먼저 초기화(POST /api/paper/init)를 누르세요."));
     }
 
     private static void requireNotStarted(Book book) {
         if (!PaperBooks.NOT_STARTED.equals(book.status())) {
-            throw new InvalidRequestException("Claude 책은 이미 시작했습니다(상태 " + book.status() + ", 출발 "
-                    + book.startedOn() + ") — 다시 시작하려면 그 책을 초기화(리셋)한 뒤 누르세요.");
+            throw new InvalidRequestException("Claude 계좌는 이미 시작했습니다(상태 " + book.status() + ", 출발 "
+                    + book.startedOn() + ") — 다시 시작하려면 그 계좌를 초기화(리셋)한 뒤 누르세요.");
         }
     }
 

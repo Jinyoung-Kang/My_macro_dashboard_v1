@@ -108,7 +108,7 @@ public class PaperQueryService {
         return List.of(
                 "모의 매매입니다. 어떤 주문도 밖으로 나가지 않습니다.",
                 "체결가는 최대 1시간 묵은 지연 시세입니다.",
-                "장부는 배당을 반영하지 않습니다(가격 수익률, 네 책 같은 조건). 트랙레코드는 수정주가라 배당이 들어갑니다 — "
+                "장부는 배당을 반영하지 않습니다(가격 수익률, 네 계좌 같은 조건). 트랙레코드는 수정주가라 배당이 들어갑니다 — "
                         + "두 숫자를 섞어 비교하지 마세요.",
                 config.startDate() + " 체결은 사후 체결입니다.",
                 "13F 신호는 공시 시차 45일을 안고 있습니다. 트랙레코드는 공시일 다음 영업일부터 복제한 값이라 실제 기관 수익률이 "
@@ -116,7 +116,7 @@ public class PaperQueryService {
                 "후보 기관 목록은 오늘 알려진 운용사라 생존 편향이 있습니다. 커버리지(티커 붙은 비중)가 100% 미만이면 "
                         + "'커버 보유분 기준'입니다.",
                 "몇 달치 결과로는 통계적 결론을 낼 수 없습니다.",
-                "Claude 책은 같은 입력에도 답이 달라질 수 있습니다. 재현은 기록으로만 합니다.");
+                "Claude 계좌는 같은 입력에도 답이 달라질 수 있습니다. 재현은 기록으로만 합니다.");
     }
 
     // ------------------------------------------------------------------ 개요·상태
@@ -323,7 +323,7 @@ public class PaperQueryService {
         out.put("staleCompanies", stale);
         // 예산은 설정(FUNDAMENTALS_FETCH_BUDGET)이라 저장본에 남은 값으로 적습니다 — 모르면 문장에서 뺍니다.
         Integer budget = count(payload, "budget");
-        out.put("note", "SEC XBRL Company Facts — Claude 책 패킷(8b_fundamentals)에만 씁니다(규칙 책·검증기는 읽지 않음). "
+        out.put("note", "SEC XBRL Company Facts — Claude 계좌 패킷(8b_fundamentals)에만 씁니다(규칙 계좌·검증기는 읽지 않음). "
                 + (budget == null ? "" : "12시간마다 CIK " + budget + "건까지 받아 유니버스를 여러 번에 나눠 돕니다. ")
                 + "실적 보도자료(8-K)는 들어오지 않습니다.");
         return out;
@@ -785,7 +785,7 @@ public class PaperQueryService {
     /** 없는 책 코드는 404가 아니라 400 — 고칠 것(코드)을 알려 줍니다. */
     private Book existing(String code) {
         return store.book(code).orElseThrow(() -> new InvalidRequestException(
-                "없는 책입니다: " + Params.echo(code) + " (rules · claude · bench_spy · bench_mix)"));
+                "없는 계좌입니다: " + Params.echo(code) + " (rules · claude · bench_spy · bench_mix)"));
     }
 
     // ------------------------------------------------------------------ 숫자·글자

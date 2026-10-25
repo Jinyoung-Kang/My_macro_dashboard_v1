@@ -218,7 +218,76 @@ class PaperAdminServiceTest {
         assertThatThrownBy(() -> admin.setStatus("rules", "PAUSED")).isInstanceOf(InvalidRequestException.class);
         assertThatThrownBy(() -> admin.setStatus("bench_spy", "NOT_STARTED")).isInstanceOf(InvalidRequestException.class);
         assertThatThrownBy(() -> admin.setStatus("nope", "PAUSED")).isInstanceOf(InvalidRequestException.class)
-                .hasMessageContaining("없는 책");
+                .hasMessageContaining("없는 계좌");
+    }
+
+    @Test
+    @DisplayName("초기화: 새 책 이름은 정의 그대로(규칙 계좌 · Claude 계좌 · SPY 계좌 · 60/40 계좌)")
+    void initUsesDefinitionLabels() {
+        admin(AFTER_START).init();
+
+        assertThat(List.of("rules", "claude", "bench_spy", "bench_mix")).extracting(code -> store.books.get(code).label())
+                .containsExactly("규칙 계좌", "Claude 계좌", "SPY 계좌", "60/40 계좌");
+    }
+
+    /** 2026-10-25 전 초기화가 남긴 행 — 이름만 옛 이름. */
+    private void oldBook(String code, String kind, String label) {
+        store.insertBookIfAbsent(new Book(code, kind, label, 100_000, null, PaperBooks.NOT_STARTED, FRI_CLOSE));
+    }
+
+    @Test
+    @DisplayName("이름 맞추기: 옛 이름 그대로인 행만 새 이름으로, 손으로 고친 이름은 그대로, 두 번째는 바꾸는 것 없음")
+    void reconcileLabelsRenamesOnlyLegacyLabels() {
+        oldBook("rules", PaperBooks.KIND_RULES, "규칙 책");
+        oldBook("claude", PaperBooks.KIND_CLAUDE, "Claude 재량 책");
+        oldBook("bench_spy", PaperBooks.KIND_BENCHMARK, "SPY 100%");
+        oldBook("bench_mix", PaperBooks.KIND_BENCHMARK, "내 60/40");
+        PaperAdminService admin = admin(AFTER_START);
+
+        assertThat(admin.reconcileLabels()).containsExactly("rules", "claude", "bench_spy");
+        assertThat(List.of("rules", "claude", "bench_spy", "bench_mix")).extracting(code -> store.books.get(code).label())
+                .containsExactly("규칙 계좌", "Claude 계좌", "SPY 계좌", "내 60/40");
+
+        assertThat(admin.reconcileLabels()).as("멱등").isEmpty();
+        assertThat(store.books.get("rules").label()).isEqualTo("규칙 계좌");
+        assertThat(store.books.get("bench_mix").label()).as("모르는 이름은 그대로").isEqualTo("내 60/40");
+    }
+
+    @Test
+    @DisplayName("이름 맞추기: 초기화를 다시 눌러도 옛 이름을 맞추고(이미 있는 책은 다시 넣지 않음), 장부는 건드리지 않는다")
+    void initReconcilesLegacyLabels() {
+        oldBook("bench_mix", PaperBooks.KIND_BENCHMARK, "SPY 60% · SHY 40%");
+        store.upsertState(new BookState("bench_mix", 100_000, 100_000, 0, 0, null, null, null, null));
+
+        PaperAdminService.InitResult result = admin(AFTER_START).init();
+
+        assertThat(result.created()).doesNotContain("bench_mix");
+        assertThat(store.books.get("bench_mix").label()).isEqualTo("60/40 계좌");
+        assertThat(store.books.get("bench_mix").createdAt()).as("행은 그대로 — 이름만").isEqualTo(FRI_CLOSE);
+    }
+
+    @Test
+    @DisplayName("기동 때 이름 맞추기: 옛 이름을 맞추고, 테이블이 없으면 건너뛰며, 실패해도 예외를 내지 않는다")
+    void reconcileLabelsOnStartup() {
+        oldBook("rules", PaperBooks.KIND_RULES, "규칙 책");
+
+        store.ready = false;
+        assertThatCode(() -> admin(AFTER_START).reconcileLabelsOnStartup()).doesNotThrowAnyException();
+        assertThat(store.books.get("rules").label()).as("테이블이 없다고 보면 건너뜀").isEqualTo("규칙 책");
+
+        store.ready = true;
+        admin(AFTER_START).reconcileLabelsOnStartup();
+        assertThat(store.books.get("rules").label()).isEqualTo("규칙 계좌");
+
+        FakePaperStore broken = new FakePaperStore() {
+            @Override
+            public boolean relabelBook(String code, String from, String to) {
+                throw new IllegalStateException("DB 끊김");
+            }
+        };
+        PaperAdminService failing = new PaperAdminService(broken, marketData, PaperFixtures.quietReader(),
+                PaperFixtures.settings(broken), ledger, PaperFixtures.config(), PaperFixtures.MAPPER, AFTER_START);
+        assertThatCode(failing::reconcileLabelsOnStartup).doesNotThrowAnyException();
     }
 
     @Test

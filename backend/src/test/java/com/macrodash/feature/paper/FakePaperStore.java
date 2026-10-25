@@ -112,6 +112,16 @@ class FakePaperStore extends PaperStore {
     }
 
     @Override
+    public boolean relabelBook(String code, String from, String to) {
+        Book b = books.get(code);
+        if (b == null || !from.equals(b.label())) {
+            return false;
+        }
+        books.put(code, new Book(b.code(), b.kind(), to, b.initialCash(), b.startedOn(), b.status(), b.createdAt()));
+        return true;
+    }
+
+    @Override
     public Optional<BookState> state(String code) {
         return Optional.ofNullable(states.get(code));
     }

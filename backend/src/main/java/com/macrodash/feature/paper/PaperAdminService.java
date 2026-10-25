@@ -11,6 +11,8 @@ import com.macrodash.support.Params;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.ObjectMapper;
@@ -105,6 +107,8 @@ public class PaperAdminService {
      */
     public InitResult init() {
         requireReady();
+        // 이미 있는 책은 아래에서 다시 넣지 않으므로(이름도 그대로), 옛 이름이면 여기서 맞춥니다.
+        reconcileLabels();
         // 초기화로 원인이 풀렸을 수 있으니, 실패로 기억해 둔 관측치도 다음 처리에서 다시 시도합니다.
         ledger.forgetFailures();
         return ledger.exclusively(() -> {
@@ -145,6 +149,47 @@ public class PaperAdminService {
             }
             return new InitResult(settingsCreated, created, backfilled, skipped, captured);
         });
+    }
+
+    // ------------------------------------------------------------------ 화면 이름
+    /**
+     * 책 이름을 지금 정의({@link PaperBooks#ALL})로 맞춥니다 — 행 이름이 옛 이름({@link PaperBooks#LEGACY_LABELS}) 그대로일 때만.
+     * 이름은 처음 초기화 때 행에 들어가고 그 뒤로는 다시 쓰지 않아서, 화면 이름을 바꿔도 이미 만든 장부는 옛 이름을 계속 보였습니다.
+     * 조건부 UPDATE라 몇 번 불러도 같고, 손으로 고친 이름은 건드리지 않습니다. 장부 숫자가 아니라 이름 한 칸이라 관측치 처리와
+     * 겹쳐도 됩니다(exclusively 밖). 스키마 파일로 고치지 않는 까닭: paper_books는 백엔드가 쓰는 표이고(ADR 0008) 이름은 이 정의가 정합니다.
+     *
+     * @return 이번에 이름을 바꾼 책 코드(정의 순)
+     */
+    public List<String> reconcileLabels() {
+        requireReady();
+        List<String> renamed = new ArrayList<>();
+        for (PaperBooks.Definition definition : PaperBooks.ALL) {
+            String legacy = PaperBooks.LEGACY_LABELS.get(definition.code());
+            if (legacy != null && !legacy.equals(definition.label())
+                    && store.relabelBook(definition.code(), legacy, definition.label())) {
+                renamed.add(definition.code());
+            }
+        }
+        return renamed;
+    }
+
+    /**
+     * 기동 때 한 번 이름을 맞춥니다. 운영 장부는 이미 초기화돼 있어 초기화를 다시 누를 일이 없으므로, 기동이 옛 이름을 고치는 자리입니다.
+     * 테이블이 아직 없으면(스키마 적용 전) 건너뜁니다 — 그때는 옛 이름의 행도 없고, 다음 기동·초기화가 맞춥니다. 실패해도 기동은 막지 않습니다.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void reconcileLabelsOnStartup() {
+        try {
+            if (!store.ready()) {
+                return;
+            }
+            List<String> renamed = reconcileLabels();
+            if (!renamed.isEmpty()) {
+                log.info("모의 매매 책 이름을 지금 정의로 맞췄습니다: {}", renamed);
+            }
+        } catch (RuntimeException e) {
+            log.warn("모의 매매 책 이름 맞추기 실패 — 다음 기동·초기화 때 다시 합니다: {}", e.toString());
+        }
     }
 
     // ------------------------------------------------------------------ 출발일 종가
@@ -249,8 +294,8 @@ public class PaperAdminService {
         return ledger.exclusively(() -> store.atomically(() -> {
             Book book = existing(code);
             if (PaperBooks.NOT_STARTED.equals(book.status())) {
-                throw new InvalidRequestException("시작 전 책(" + code + ")은 운용·일시정지를 바꿀 수 없습니다. "
-                        + "규칙·Claude 책은 개요의 '규칙 책 시작'·'Claude 재량 책 시작'(초기 결정)으로 시작합니다.");
+                throw new InvalidRequestException("시작 전 계좌(" + code + ")는 운용·일시정지를 바꿀 수 없습니다. "
+                        + "규칙·Claude 계좌는 개요의 '규칙 계좌 시작'·'Claude 계좌 시작'(초기 결정)으로 시작합니다.");
             }
             int cancelled = 0;
             if (PaperBooks.PAUSED.equals(target)) {
@@ -272,7 +317,7 @@ public class PaperAdminService {
         requireReady();
         Book book = existing(code);
         if (confirm == null || !confirm.equals(code)) {
-            throw new InvalidRequestException("초기화하려면 확인 문구로 책 코드(" + code + ")를 그대로 입력하세요.");
+            throw new InvalidRequestException("초기화하려면 확인 문구로 계좌 코드(" + code + ")를 그대로 입력하세요.");
         }
         PaperSettings current = settings.current().settings();
         ledger.forgetFailures();   // 비운 책은 같은 관측치로 다시 처리해도 됩니다
@@ -343,7 +388,7 @@ public class PaperAdminService {
 
     private Book existing(String code) {
         return store.book(code).orElseThrow(() -> new InvalidRequestException(
-                "없는 책입니다: " + Params.echo(code) + " (rules · claude · bench_spy · bench_mix)"));
+                "없는 계좌입니다: " + Params.echo(code) + " (rules · claude · bench_spy · bench_mix)"));
     }
 
     private void requireReady() {

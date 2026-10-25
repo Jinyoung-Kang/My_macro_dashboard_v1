@@ -262,7 +262,7 @@ public class RuleBookService {
             throw new IllegalArgumentException("기준 거래일이 없습니다");
         }
         if (!List.of(SCHEDULED, MANUAL, REBALANCE).contains(kind)) {
-            throw new IllegalArgumentException("규칙 책 결정 종류는 SCHEDULED · MANUAL · REBALANCE입니다(초기 결정은 start): "
+            throw new IllegalArgumentException("규칙 계좌 결정 종류는 SCHEDULED · MANUAL · REBALANCE입니다(초기 결정은 start): "
                     + kind);
         }
         requireReady();
@@ -272,7 +272,7 @@ public class RuleBookService {
         }
         Book book = rulesBook();
         if (PaperBooks.NOT_STARTED.equals(book.status())) {
-            throw new InvalidRequestException("규칙 책은 아직 시작 전입니다 — 개요의 '시작'으로 초기 결정을 먼저 내리세요.");
+            throw new InvalidRequestException("규칙 계좌는 아직 시작 전입니다 — 개요의 '시작'으로 초기 결정을 먼저 내리세요.");
         }
         Instant started = clock.instant();
         SettingsRow row = settingsRow();
@@ -291,7 +291,7 @@ public class RuleBookService {
             Book current = rulesBook();
             if (PaperBooks.NOT_STARTED.equals(current.status())) {
                 // 잠금 밖에서 13F를 읽는 사이에 초기화(리셋)됐습니다 — 현금만 든 시작 전 책에 주문을 남기지 않습니다.
-                throw new InvalidRequestException("규칙 책이 결정을 준비하는 사이에 초기화돼 시작 전 상태입니다 — 결정을 내지 "
+                throw new InvalidRequestException("규칙 계좌가 결정을 준비하는 사이에 초기화돼 시작 전 상태입니다 — 결정을 내지 "
                         + "않았습니다. 개요의 '시작'으로 초기 결정을 먼저 내리세요.");
             }
             boolean paused = PaperBooks.PAUSED.equals(current.status());
@@ -341,7 +341,7 @@ public class RuleBookService {
                 return new StartResult(existing.get(), List.of());
             }
             BookState state = store.state(PaperBooks.RULES).orElseThrow(() -> new IllegalStateException(
-                    "규칙 책 상태(paper_book_state)가 없습니다 — 초기화를 다시 실행하세요"));
+                    "규칙 계좌 상태(paper_book_state)가 없습니다 — 초기화를 다시 실행하세요"));
             LedgerView view = cashOnlyView(state.cash());
             Draft draft = plan(prepared.start(), INITIAL, prepared.context(), prepared.rules(), prepared.paper(),
                     prepared.universe(), prepared.unpriced(), view, Set.of());
@@ -707,7 +707,7 @@ public class RuleBookService {
 
     private LedgerView ledgerView(Book book) {
         BookState state = store.state(book.code()).orElseThrow(() -> new IllegalStateException(
-                "규칙 책 상태(paper_book_state)가 없습니다 — 초기화를 다시 실행하세요"));
+                "규칙 계좌 상태(paper_book_state)가 없습니다 — 초기화를 다시 실행하세요"));
         Map<String, Integer> qty = new HashMap<>();
         Map<String, Double> price = new HashMap<>();
         for (Position p : store.positions(book.code())) {
@@ -1340,13 +1340,13 @@ public class RuleBookService {
 
     private Book rulesBook() {
         return store.book(PaperBooks.RULES).orElseThrow(() -> new InvalidRequestException(
-                "규칙 책이 없습니다 — 먼저 초기화(POST /api/paper/init)를 누르세요."));
+                "규칙 계좌가 없습니다 — 먼저 초기화(POST /api/paper/init)를 누르세요."));
     }
 
     private static void requireNotStarted(Book book) {
         if (!PaperBooks.NOT_STARTED.equals(book.status())) {
-            throw new InvalidRequestException("규칙 책은 이미 시작했습니다(상태 " + book.status() + ", 출발 "
-                    + book.startedOn() + ") — 다시 시작하려면 그 책을 초기화(리셋)한 뒤 누르세요.");
+            throw new InvalidRequestException("규칙 계좌는 이미 시작했습니다(상태 " + book.status() + ", 출발 "
+                    + book.startedOn() + ") — 다시 시작하려면 그 계좌를 초기화(리셋)한 뒤 누르세요.");
         }
     }
 

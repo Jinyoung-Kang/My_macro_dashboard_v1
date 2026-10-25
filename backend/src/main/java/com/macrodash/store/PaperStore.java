@@ -418,6 +418,16 @@ public class PaperStore {
         });
     }
 
+    /**
+     * 책 이름을 바꿉니다 — 지금 이름이 {@code from} 그대로일 때만. 조건부라 몇 번 불러도 결과가 같고, 다른 이름(손으로 고친 이름)은
+     * 건드리지 않습니다.
+     *
+     * @return 이번에 바꿨으면 true(없는 책·이미 바뀐 이름·다른 이름이면 false)
+     */
+    public boolean relabelBook(String code, String from, String to) {
+        return jdbc.update("UPDATE paper_books SET label = ? WHERE code = ? AND label = ?", to, code, from) == 1;
+    }
+
     // ------------------------------------------------------------------ 상태
     public Optional<BookState> state(String code) {
         return jdbc.query("SELECT " + STATE_COLUMNS + " FROM paper_book_state WHERE book_code = ?",

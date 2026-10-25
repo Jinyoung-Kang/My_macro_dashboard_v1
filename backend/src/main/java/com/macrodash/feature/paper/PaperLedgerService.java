@@ -199,7 +199,7 @@ public class PaperLedgerService {
         }
         List<Book> books = new ArrayList<>(store.books());
         if (books.isEmpty()) {
-            return Outcome.skipped("초기화 전입니다 — 책이 없습니다");
+            return Outcome.skipped("초기화 전입니다 — 계좌가 없습니다");
         }
         books.sort((a, b) -> PaperBooks.ORDER.compare(a.code(), b.code()));
         PaperSettings current = settings.current().settings();
@@ -248,15 +248,15 @@ public class PaperLedgerService {
 
     /** 오류가 난 책만 남은 관측치의 사유 문구(정기 작업도 같은 문구를 씀). */
     static String heldBackReason(Quotes quotes, List<String> books) {
-        return "수집 " + Kst.stamp(quotes.collectedAt()) + " 관측치에서 오류가 난 책(" + String.join(", ", books)
-                + ")은 같은 관측치로 다시 시도하지 않습니다 — 새 관측치에서 다시 시도합니다(수동 실행은 한 번 더 시도)";
+        return "수집 " + Kst.stamp(quotes.collectedAt()) + " 관측치에서 오류가 난 계좌(" + String.join(", ", books)
+                + ")는 같은 관측치로 다시 시도하지 않습니다 — 새 관측치에서 다시 시도합니다(수동 실행은 한 번 더 시도)";
     }
 
     /** 책 하나(트랜잭션 안). 이미 처리한 관측치면 null. */
     private BookRun processBook(Book book, Quotes quotes, PaperSettings current) {
         Optional<BookState> stateRow = store.state(book.code());
         if (stateRow.isEmpty()) {
-            throw new IllegalStateException("책 상태(paper_book_state)가 없습니다 — 초기화를 다시 실행하세요");
+            throw new IllegalStateException("계좌 상태(paper_book_state)가 없습니다 — 초기화를 다시 실행하세요");
         }
         BookState state = stateRow.get();
         if (!isNew(quotes, state)) {

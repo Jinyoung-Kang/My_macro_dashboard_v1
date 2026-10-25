@@ -222,7 +222,7 @@ public class PaperDecisionJob {
         Instant now = clock.instant();
         LocalDate d = UsMarketCalendar.lastCompletedSession(now);
         if (store.books().isEmpty()) {
-            return new Result(NOT_INITIALIZED, d, null, null, null, "초기화 전입니다 — 책이 없습니다");
+            return new Result(NOT_INITIALIZED, d, null, null, null, "초기화 전입니다 — 계좌가 없습니다");
         }
         Times times = times();
         Instant decisionAt = kst(d.plusDays(1), times.decision());
@@ -280,7 +280,7 @@ public class PaperDecisionJob {
                 decision = decideRules(d, pricesFinal, detail);
                 failures.remove(new FailureKey(d, PaperBooks.RULES));
             } catch (RuntimeException e) {
-                errors.add("규칙 책: " + message(e));
+                errors.add("규칙 계좌: " + message(e));
                 detail.put("rulesError", message(e));
                 failedBooks.add(PaperBooks.RULES);
             }
@@ -299,7 +299,7 @@ public class PaperDecisionJob {
                 }
                 failures.remove(new FailureKey(d, PaperBooks.CLAUDE));
             } catch (RuntimeException e) {
-                errors.add("Claude 책: " + message(e));
+                errors.add("Claude 계좌: " + message(e));
                 detail.put("claudeError", message(e));
                 failedBooks.add(PaperBooks.CLAUDE);
             }
@@ -457,7 +457,7 @@ public class PaperDecisionJob {
      */
     private String claudeSkipReason(Optional<Book> book, LocalDate d) {
         if (book.isEmpty()) {
-            return "Claude 책 없음";
+            return "Claude 계좌 없음";
         }
         if (!PaperBooks.ACTIVE.equals(book.get().status())) {
             return PaperBooks.NOT_STARTED.equals(book.get().status()) ? "시작 전 — 결정을 내지 않습니다"

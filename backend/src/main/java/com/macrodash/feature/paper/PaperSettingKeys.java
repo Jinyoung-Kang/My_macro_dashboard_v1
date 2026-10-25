@@ -33,7 +33,7 @@ final class PaperSettingKeys {
     }
 
     /** 규칙 책 영향 키를 바꿨을 때의 경고(명세 S3) — 화면의 확인 문구와 같은 문장입니다. */
-    static final String RULES_FROZEN_WARNING = "규칙 책은 동결된 대조군입니다 — 이 변경은 실험 조건을 바꿉니다";
+    static final String RULES_FROZEN_WARNING = "규칙 계좌는 동결된 대조군입니다 — 이 변경은 실험 조건을 바꿉니다";
 
     /** 값의 형. {@link #wire}는 화면에 보내는 이름(frontend lib/paper.ts settingKind가 읽는 이름). */
     enum Type {
@@ -94,25 +94,25 @@ final class PaperSettingKeys {
 
     /** 화면에 보이는 순서이기도 합니다(점 경로의 첫 마디로 묶음). */
     static final List<Spec> ALL = List.of(
-            choice("model", ClaudeBookService.MODELS, false, "Claude 책 모델(D5) — 거절·오류 때 다른 모델로 자동 전환하지 않음"),
-            choice("effort", ClaudeBookService.EFFORTS, false, "Claude 책 effort(C2 기본 high)"),
+            choice("model", ClaudeBookService.MODELS, false, "Claude 계좌 모델(D5) — 거절·오류 때 다른 모델로 자동 전환하지 않음"),
+            choice("effort", ClaudeBookService.EFFORTS, false, "Claude 계좌 effort(C2 기본 high)"),
             integer("apiDailyCallCap", 0, ClaudeBookService.MAX_DAILY_CALL_CAP, false,
                     "하루(KST) Claude 호출 상한(D18) — 정기·수동 결정·재시도·미리보기·시작을 모두 셈. 0이면 부르지 않음"),
             of("decisionTimeKst", Type.TIME, false, "결정 시각(KST, HH:mm) — 미국 세션 다음 날 이 시각부터 그 거래일 결정(C1)"),
             of("decisionDeadlineKst", Type.TIME, false,
                     "확정 종가를 기다리는 기한(KST, HH:mm) — 지나면 있는 값으로 진행하고 pricesFinal=false"),
-            number("slippageBp", 0, 100, true, "체결 슬리피지(bp) — 네 책 공통(D9)"),
-            number("maxWeightStockPct", 1, 100, true, "종목당 비중 상한(%) — Claude 검증기·규칙 책(D8)"),
-            number("maxWeightEtfPct", 1, 100, true, "ETF 비중 상한(%) — Claude 검증기·규칙 책(D8)"),
+            number("slippageBp", 0, 100, true, "체결 슬리피지(bp) — 네 계좌 공통(D9)"),
+            number("maxWeightStockPct", 1, 100, true, "종목당 비중 상한(%) — Claude 검증기·규칙 계좌(D8)"),
+            number("maxWeightEtfPct", 1, 100, true, "ETF 비중 상한(%) — Claude 검증기·규칙 계좌(D8)"),
             integer("maxPositions", 1, 100, false, "매수 뒤 최대 종목 수(현금성 제외) — Claude 검증기"),
             number("trailingStopPct", 1, 50, true, "트레일링 스탑(%) — 최고가 대비 이만큼 떨어지면 전량 매도(D10)"),
             integer("lockoutTradingDays", 0, 250, true, "스탑 뒤 재진입 금지 거래일(D10)"),
             integer("maxDiscretionaryOrdersPerMonth", 0, 200, false, "Claude 재량 주문 월 상한(C9)"),
             integer("minHoldTradingDaysForSell", 0, 60, false, "Claude 재량 매도 전 최소 보유 거래일(C9, 스탑 제외)"),
-            number("minOrderNotional", 0, 100_000, true, "주문 최소 금액(달러) — Claude 검증기·규칙 책 매수(C9)"),
-            integer("minHolders", 1, 12, true, "규칙 책 매수 후보·매도 신호가 되는 최소 기관 수(R2)"),
-            integer("rulesMaxNames", 1, 50, true, "규칙 책 매수 종목 수 상한(R4)"),
-            of("parkCashInShy", Type.BOOLEAN, true, "규칙 책이 남는 현금을 SHY에 둠(R3)"),
+            number("minOrderNotional", 0, 100_000, true, "주문 최소 금액(달러) — Claude 검증기·규칙 계좌 매수(C9)"),
+            integer("minHolders", 1, 12, true, "규칙 계좌 매수 후보·매도 신호가 되는 최소 기관 수(R2)"),
+            integer("rulesMaxNames", 1, 50, true, "규칙 계좌 매수 종목 수 상한(R4)"),
+            of("parkCashInShy", Type.BOOLEAN, true, "규칙 계좌가 남는 현금을 SHY에 둠(R3)"),
             of("universeExtraTickers", Type.TICKERS, true, "유니버스에 늘 넣는 ETF(D8) — ETF 비중 상한을 받는 종목"),
             of("cashLikeTickers", Type.TICKERS, true, "현금성 종목(스탑·비중 상한·종목 수 제외, 기본 SHY)"),
             integer("notesDefaultExpiryTradingDays", 1, 60, false, "시황 메모 기본 만료(거래일, F6)"),
@@ -147,7 +147,7 @@ final class PaperSettingKeys {
             integer("blend.groupB.minPeriods", 1, 8, true, "그룹 B 자격: 최소 구간 수(D27)"),
             number("blend.groupWeightA", 0, 1, true, "기관 가중에서 그룹 A 몫(0~1, D27)"),
             number("blend.convictionCapPct", 1, 50, true, "확신도 상한(그 종목의 기관 내 비중 %, D27)"),
-            choice("blend.allocation", List.of("CONVICTION", "EQUAL"), true, "규칙 책 배분 방식(확신도 비례·동일 비중, D27)"),
+            choice("blend.allocation", List.of("CONVICTION", "EQUAL"), true, "규칙 계좌 배분 방식(확신도 비례·동일 비중, D27)"),
             number("blend.minTargetPct", 0, 10, true, "확신도 비례 배분의 최소 목표 비중(%, D27)"),
             number("gate.us10yStage1", 0, 20, false, "OS 게이트 참고 — 10년물 1단계(%) · 구속하지 않음(D7)"),
             number("gate.us10yFull", 0, 20, false, "OS 게이트 참고 — 10년물 전면(%) · 구속하지 않음(D7)"),

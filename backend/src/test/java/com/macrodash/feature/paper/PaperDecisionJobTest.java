@@ -693,7 +693,7 @@ class PaperDecisionJobTest {
         assertThat(first.rules()).isNull();
         assertThat(first.claude()).as("대조군 오류가 실험군의 하루를 지우지 않음").isNotNull();
         assertThat(first.claude().status()).isEqualTo("NO_TRADE");
-        assertThat(first.message()).contains("규칙 책", "13F 저장본 고장");
+        assertThat(first.message()).contains("규칙 계좌", "13F 저장본 고장");
         assertThat(claudeDecided).containsExactly("2026-10-26 SCHEDULED true");
         JsonNode detail = store.jobRuns.get(0).detail();
         assertThat(detail.path("rulesError").asString()).contains("13F 저장본 고장");

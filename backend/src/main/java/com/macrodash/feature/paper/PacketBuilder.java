@@ -1601,7 +1601,7 @@ public class PacketBuilder {
         if (initial) {
             out.put("note", "초기 결정 — 출발 현금만(보유 없음)");
         } else if (!ledger.exists()) {
-            out.put("note", "Claude 책 장부가 없습니다(초기화 전) — 출발 현금 기준");
+            out.put("note", "Claude 책 장부가 없습니다(초기화 전) — 출발 현금 기준");   // 패킷 문장 — 실험 중 바꾸지 않음(ClaudePrompts.ROLE 주석)
         }
         out.put("nav", decimal(ledger.nav(), 2));
         out.put("cash", decimal(ledger.cash(), 2));

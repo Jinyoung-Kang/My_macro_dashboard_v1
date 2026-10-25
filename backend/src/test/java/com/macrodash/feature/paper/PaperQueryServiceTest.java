@@ -215,7 +215,7 @@ class PaperQueryServiceTest {
         assertThat(((Map<String, Object>) nav.get("book")).get("code")).isEqualTo("bench_spy");
 
         assertThatThrownBy(() -> query.orders("nope", 50)).isInstanceOf(InvalidRequestException.class)
-                .hasMessageContaining("없는 책");
+                .hasMessageContaining("없는 계좌");
         assertThat(query.status().get("settingsVersion")).isEqualTo(1);
     }
 
