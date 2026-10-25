@@ -117,6 +117,9 @@ from .us_calendar import (  # noqa: F401
 from .news import (  # noqa: F401
     task_news_headlines,
 )
+from .earnings_surprise import (  # noqa: F401
+    task_earnings_surprise,
+)
 from .registry import (  # noqa: F401
     ALL_TASKS,
     TASKS_BY_NAME,
@@ -137,4 +140,4 @@ from .runner import (  # noqa: F401
     _log_late_finish,
     run_group,
 )
-from . import base, filings, fundamentals, korea_public, maintenance, markets, news, registry, runner, series, toss, us_calendar  # noqa: F401,E402
+from . import base, earnings_surprise, filings, fundamentals, korea_public, maintenance, markets, news, registry, runner, series, toss, us_calendar  # noqa: F401,E402

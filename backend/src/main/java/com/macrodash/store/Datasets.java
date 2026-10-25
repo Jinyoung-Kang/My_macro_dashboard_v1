@@ -60,6 +60,13 @@ public final class Datasets {
      * {@link #OBS_NEWS_HEADLINE}에 있습니다.
      */
     public static final String SNAP_NEWS_STATUS = "news.headlines.status";
+    /**
+     * 모의 매매 Claude 계좌 패킷 {@code 8b_fundamentals}의 EPS 서프라이즈(2단계 C) 수집 상태 — 종목별 {@code items}
+     * ({@code fetchedAt}·{@code rows}·{@code latestReported}·{@code error}?·{@code isStale}?)와 실행 집계({@code universe}·
+     * {@code covered}·{@code withEstimate4}·{@code fetchedThisRun}·{@code failedThisRun}·{@code stoppedReason}?), 받은 시각
+     * {@code generatedAt}(UTC). 분기 값 자체는 {@link #OBS_US_EARNINGS_SURPRISE}에 있습니다.
+     */
+    public static final String SNAP_EARNINGS_SURPRISE_STATUS = "us.earnings_surprise.status";
 
     /** 변동성 지수는 가장 긴 기간으로 한 번 저장하고 짧은 기간은 잘라 씁니다. */
     public static final String VOLATILITY_STORE_PERIOD = "5y";
@@ -144,6 +151,13 @@ public final class Datasets {
      * 7일이 지난 행은 수집기가 지웁니다. 거르기(종목·키워드)와 패킷 창은 백엔드가 합니다.
      */
     public static final String OBS_NEWS_HEADLINE = "news_headline";
+    /**
+     * 모의 매매 어닝 서프라이즈(yfinance quoteSummary {@code earnings.earningsChart}, 2단계 C·D36). entity = 티커, obs_date = 실제
+     * 발표 시각({@code reportedDate})의 미국 동부 날짜, payload {@code {periodEnd, actual, estimate, surprisePct, currency, smallBase,
+     * reportedAt, source}}({@code reportedAt}은 동부 시간대 오프셋을 붙인 ISO). 수집기만 쓰고(ADR 0008) (날짜, 티커)마다 덮어쓰며
+     * 지우지 않습니다(출처가 최근 4분기만 줘 쌓아야 8분기가 됨). 결정에는 obs_date ≤ 기준일만 씁니다.
+     */
+    public static final String OBS_US_EARNINGS_SURPRISE = "us.earnings_surprise";
 
     // ------------------------------------------------------------- 신선도(초)
     /** 장중 시세성 데이터 (수집 주기 5분의 3배). */

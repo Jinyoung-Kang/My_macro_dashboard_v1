@@ -37,6 +37,9 @@ SNAP_US_CALENDAR = "calendar.us_events"
 # 모의 매매 Claude 계좌 패킷 11b_events(2단계 B)의 수집 상태 — 피드별 성공·실패와 사유, 7일 보관 건수, 마지막 수집 시각.
 # 헤드라인 자체는 observations news_headline에 있습니다.
 SNAP_NEWS_STATUS = "news.headlines.status"
+# 모의 매매 Claude 계좌 패킷 8b_fundamentals의 EPS 서프라이즈(2단계 C)의 수집 상태 — 종목별 받은 시각·저장 행 수·최신 발표일·오류와
+# 실행 집계(universe·covered·withEstimate4·fetchedThisRun·failedThisRun). 분기 값 자체는 observations us.earnings_surprise에 있습니다.
+SNAP_EARNINGS_SURPRISE_STATUS = "us.earnings_surprise.status"
 
 # 변동성 지수(^VIX / ^MOVE)는 가장 긴 기간으로 한 번 저장하고, 짧은 기간
 # 요청은 잘라 씁니다 (13F에서 q1을 q8에서 유도하는 것과 같은 방식).
@@ -109,12 +112,16 @@ OBS_US_FUNDAMENTALS = "us.fundamentals"
 # sha256 앞 16자, obs_date = 발행 시각의 UTC 날짜, payload {title, link, source, feed, publishedAt, fetchedAt}.
 # 같은 제목은 7일 안에 다시 넣지 않고(날짜가 달라도), 7일이 지난 행은 태스크가 지웁니다. 거르기·패킷 창은 백엔드가 합니다.
 OBS_NEWS_HEADLINE = "news_headline"
+# 모의 매매 어닝 서프라이즈(yfinance quoteSummary earnings.earningsChart, 2단계 C·D36). entity = 티커, obs_date = 실제 발표 시각
+# (reportedDate)의 미국 동부 날짜 — 백엔드가 obs_date ≤ 기준일로 시점(PIT)을 자릅니다. payload {periodEnd, actual, estimate,
+# surprisePct, currency, smallBase, reportedAt, source}. (날짜, 티커)마다 upsert(나중에 받은 값이 추정치를 채우거나 고침), 지우지 않음.
+OBS_US_EARNINGS_SURPRISE = "us.earnings_surprise"
 
 # 기간으로 지워도 되는 누적 데이터셋은 태스크가 스스로 보존 기한을 두는 fsc_price·toss_stock_flow(각 400일)·news_headline(7일)뿐입니다(QA-070).
 # radar_ranking(다시 받을 수 없음, ADR 0005)·fred·fed_liquidity(증분 적재, 판정 성과가 전 구간을 씀, ADR 0009)·
 # krx_futures(원천이 최근 40일만 줌)·fsc_market(보충은 최근 7일만 함)·equity_close(모의 매매 트랙레코드가 10년 창을 통째로 쓰고,
 # 상장폐지되면 야후가 그 종목의 과거 종가를 더 주지 않음)·us.fundamentals(사실은 공시로 쌓이기만 하고, 그 시점 값을 고르려면
-# 옛 공시일 행이 있어야 함)는 기간이 지나도 지우지 않습니다.
+# 옛 공시일 행이 있어야 함)·us.earnings_surprise(출처가 최근 4분기만 줘 지우면 다시 받을 수 없음)는 기간이 지나도 지우지 않습니다.
 
 
 # ==============================================================================

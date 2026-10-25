@@ -1,0 +1,481 @@
+{
+ "AAPL": {
+  "quoteSummary": {
+   "result": [
+    {
+     "earnings": {
+      "maxAge": 86400,
+      "earningsChart": {
+       "quarterly": [
+        {
+         "date": "3Q2025",
+         "actual": 1.85,
+         "estimate": 1.76993,
+         "fiscalQuarter": "4Q2025",
+         "calendarQuarter": "3Q2025",
+         "difference": "0.08",
+         "surprisePct": "4.52",
+         "periodEndDate": 1759190400,
+         "reportedDate": 1761856200
+        },
+        {
+         "date": "4Q2025",
+         "actual": 2.84,
+         "estimate": 2.6708,
+         "fiscalQuarter": "1Q2026",
+         "calendarQuarter": "4Q2025",
+         "difference": "0.17",
+         "surprisePct": "6.34",
+         "periodEndDate": 1767139200,
+         "reportedDate": 1769722200
+        },
+        {
+         "date": "1Q2026",
+         "actual": 2.01,
+         "estimate": 1.94275,
+         "fiscalQuarter": "2Q2026",
+         "calendarQuarter": "1Q2026",
+         "difference": "0.07",
+         "surprisePct": "3.46",
+         "periodEndDate": 1774915200,
+         "reportedDate": 1777581000
+        },
+        {
+         "date": "2Q2026",
+         "actual": 2.02,
+         "estimate": 1.89243,
+         "fiscalQuarter": "3Q2026",
+         "calendarQuarter": "2Q2026",
+         "difference": "0.13",
+         "surprisePct": "6.74",
+         "periodEndDate": 1782777600,
+         "reportedDate": 1785443428
+        }
+       ],
+       "currentQuarterEstimate": 1.97965,
+       "currentQuarterEstimateDate": "3Q",
+       "currentCalendarQuarter": "3Q2026",
+       "currentQuarterEstimateYear": 2026,
+       "currentFiscalQuarter": "4Q2026",
+       "currentPeriodEndDate": 1790726400,
+       "earningsDate": [
+        1793649600
+       ],
+       "isEarningsDateEstimate": false
+      },
+      "financialsChart": {
+       "yearly": [
+        {
+         "date": 2022,
+         "revenue": 394328000000,
+         "earnings": 99803000000,
+         "profitMargin": 0.2530964
+        },
+        {
+         "date": 2023,
+         "revenue": 383285000000,
+         "earnings": 96995000000,
+         "profitMargin": 0.25306234
+        },
+        {
+         "date": 2024,
+         "revenue": 391035000000,
+         "earnings": 93736000000,
+         "profitMargin": 0.23971257
+        },
+        {
+         "date": 2025,
+         "revenue": 416161000000,
+         "earnings": 112010000000,
+         "profitMargin": 0.26915064
+        }
+       ],
+       "quarterly": [
+        {
+         "date": "3Q2025",
+         "fiscalQuarter": "4Q2025",
+         "revenue": 102466000000,
+         "earnings": 27466000000,
+         "profitMargin": 0.2680499
+        },
+        {
+         "date": "4Q2025",
+         "fiscalQuarter": "1Q2026",
+         "revenue": 143756000000,
+         "earnings": 42097000000,
+         "profitMargin": 0.2928365
+        },
+        {
+         "date": "1Q2026",
+         "fiscalQuarter": "2Q2026",
+         "revenue": 111184000000,
+         "earnings": 29578000000,
+         "profitMargin": 0.26602748
+        },
+        {
+         "date": "2Q2026",
+         "fiscalQuarter": "3Q2026",
+         "revenue": 109417000000,
+         "earnings": 29789000000,
+         "profitMargin": 0.27225202
+        }
+       ]
+      },
+      "financialCurrency": "USD",
+      "defaultMethodology": "gaap"
+     }
+    }
+   ],
+   "error": null
+  }
+ },
+ "BIDU": {
+  "quoteSummary": {
+   "result": [
+    {
+     "earnings": {
+      "maxAge": 86400,
+      "earningsChart": {
+       "quarterly": [
+        {
+         "date": "3Q2025",
+         "actual": 11.12,
+         "estimate": 8.20424,
+         "fiscalQuarter": "3Q2025",
+         "calendarQuarter": "3Q2025",
+         "difference": "2.92",
+         "surprisePct": "35.54",
+         "periodEndDate": 1759190400,
+         "reportedDate": 1763456400
+        },
+        {
+         "date": "4Q2025",
+         "actual": 10.62,
+         "estimate": 9.64644,
+         "fiscalQuarter": "4Q2025",
+         "calendarQuarter": "4Q2025",
+         "difference": "0.97",
+         "surprisePct": "10.09",
+         "periodEndDate": 1767139200,
+         "reportedDate": 1772096400
+        },
+        {
+         "date": "1Q2026",
+         "actual": 12.06,
+         "estimate": 11.42943,
+         "fiscalQuarter": "1Q2026",
+         "calendarQuarter": "1Q2026",
+         "difference": "0.63",
+         "surprisePct": "5.52",
+         "periodEndDate": 1774915200,
+         "reportedDate": 1779094800
+        },
+        {
+         "date": "2Q2026",
+         "actual": 7.22,
+         "estimate": 9.83686,
+         "fiscalQuarter": "2Q2026",
+         "calendarQuarter": "2Q2026",
+         "difference": "-2.62",
+         "surprisePct": "-26.6",
+         "periodEndDate": 1782777600,
+         "reportedDate": 1787043600
+        }
+       ],
+       "currentQuarterEstimate": 6.93363,
+       "currentQuarterEstimateDate": "3Q",
+       "currentCalendarQuarter": "3Q2026",
+       "currentQuarterEstimateYear": 2026,
+       "currentFiscalQuarter": "3Q2026",
+       "currentPeriodEndDate": 1790726400,
+       "earningsDate": [
+        1795005000
+       ],
+       "isEarningsDateEstimate": true
+      },
+      "financialsChart": {
+       "yearly": [
+        {
+         "date": 2022,
+         "revenue": 123675000000,
+         "earnings": 7559000000,
+         "profitMargin": 0.06111987
+        },
+        {
+         "date": 2023,
+         "revenue": 134598000000,
+         "earnings": 20315000000,
+         "profitMargin": 0.15093093
+        },
+        {
+         "date": 2024,
+         "revenue": 133125000000,
+         "earnings": 23760000000,
+         "profitMargin": 0.17847887
+        },
+        {
+         "date": 2025,
+         "revenue": 129079000000,
+         "earnings": 5589000000,
+         "profitMargin": 0.043299068
+        }
+       ],
+       "quarterly": [
+        {
+         "date": "3Q2025",
+         "fiscalQuarter": "3Q2025",
+         "revenue": 31174000000,
+         "earnings": -11232000000,
+         "profitMargin": -0.36030024
+        },
+        {
+         "date": "4Q2025",
+         "fiscalQuarter": "4Q2025",
+         "revenue": 32740000000,
+         "earnings": 1782000000,
+         "profitMargin": 0.054428834
+        },
+        {
+         "date": "1Q2026",
+         "fiscalQuarter": "1Q2026",
+         "revenue": 32075000000,
+         "earnings": 3445000000,
+         "profitMargin": 0.10740452
+        },
+        {
+         "date": "2Q2026",
+         "fiscalQuarter": "2Q2026",
+         "revenue": 31325000000,
+         "earnings": 2319000000,
+         "profitMargin": 0.07403033
+        }
+       ]
+      },
+      "financialCurrency": "CNY",
+      "defaultMethodology": "nongaap"
+     }
+    }
+   ],
+   "error": null
+  }
+ },
+ "SPCX": {
+  "quoteSummary": {
+   "result": [
+    {
+     "earnings": {
+      "maxAge": 86400,
+      "earningsChart": {
+       "quarterly": [
+        {
+         "date": "1Q2026",
+         "actual": -1.27,
+         "fiscalQuarter": "1Q2026",
+         "calendarQuarter": "1Q2026",
+         "periodEndDate": 1774915200,
+         "reportedDate": 1778151878
+        },
+        {
+         "date": "2Q2026",
+         "actual": -0.09,
+         "estimate": -0.28931,
+         "fiscalQuarter": "2Q2026",
+         "calendarQuarter": "2Q2026",
+         "difference": "0.2",
+         "surprisePct": "68.89",
+         "periodEndDate": 1782777600,
+         "reportedDate": 1785873665
+        },
+        {
+         "date": "3Q2026",
+         "actual": 0.35,
+         "estimate": 0.16471,
+         "fiscalQuarter": "3Q2026",
+         "calendarQuarter": "3Q2026",
+         "difference": "0.19",
+         "surprisePct": "112.49",
+         "periodEndDate": 1790726400,
+         "reportedDate": 1792526451
+        }
+       ],
+       "currentQuarterEstimate": 0.39505,
+       "currentQuarterEstimateDate": "4Q",
+       "currentCalendarQuarter": "4Q2026",
+       "currentQuarterEstimateYear": 2026,
+       "currentFiscalQuarter": "4Q2026",
+       "currentPeriodEndDate": 1798675200,
+       "earningsDate": [],
+       "isEarningsDateEstimate": false
+      },
+      "financialsChart": {
+       "yearly": [
+        {
+         "date": 2025,
+         "revenue": 0,
+         "earnings": -4937000000,
+         "profitMargin": 0.0
+        }
+       ],
+       "quarterly": [
+        {
+         "date": "1Q2026",
+         "fiscalQuarter": "1Q2026",
+         "revenue": 0,
+         "earnings": -4276000000,
+         "profitMargin": 0.0
+        },
+        {
+         "date": "2Q2026",
+         "fiscalQuarter": "2Q2026",
+         "revenue": 7814000000,
+         "earnings": -541000000,
+         "profitMargin": -0.06923471
+        },
+        {
+         "date": "3Q2026",
+         "fiscalQuarter": "3Q2026",
+         "revenue": 14575000000,
+         "earnings": 4404000000,
+         "profitMargin": 0.30216122
+        }
+       ]
+      },
+      "financialCurrency": "USD",
+      "defaultMethodology": "gaap"
+     }
+    }
+   ],
+   "error": null
+  }
+ },
+ "INTC": {
+  "quoteSummary": {
+   "result": [
+    {
+     "earnings": {
+      "maxAge": 86400,
+      "earningsChart": {
+       "quarterly": [
+        {
+         "date": "3Q2025",
+         "actual": 0.23,
+         "estimate": 0.00705,
+         "fiscalQuarter": "3Q2025",
+         "calendarQuarter": "3Q2025",
+         "difference": "0.22",
+         "surprisePct": "3162.41",
+         "periodEndDate": 1759190400,
+         "reportedDate": 1761249660
+        },
+        {
+         "date": "4Q2025",
+         "actual": 0.15,
+         "estimate": 0.08264,
+         "fiscalQuarter": "4Q2025",
+         "calendarQuarter": "4Q2025",
+         "difference": "0.07",
+         "surprisePct": "81.51",
+         "periodEndDate": 1767139200,
+         "reportedDate": 1769115660
+        },
+        {
+         "date": "1Q2026",
+         "actual": 0.29,
+         "estimate": 0.01313,
+         "fiscalQuarter": "1Q2026",
+         "calendarQuarter": "1Q2026",
+         "difference": "0.28",
+         "surprisePct": "2108.68",
+         "periodEndDate": 1774915200,
+         "reportedDate": 1776974460
+        },
+        {
+         "date": "2Q2026",
+         "actual": 0.42,
+         "estimate": 0.21584,
+         "fiscalQuarter": "2Q2026",
+         "calendarQuarter": "2Q2026",
+         "difference": "0.2",
+         "surprisePct": "94.59",
+         "periodEndDate": 1782777600,
+         "reportedDate": 1784836860
+        }
+       ],
+       "currentQuarterEstimate": 0.39526,
+       "currentQuarterEstimateDate": "3Q",
+       "currentCalendarQuarter": "3Q2026",
+       "currentQuarterEstimateYear": 2026,
+       "currentFiscalQuarter": "3Q2026",
+       "currentPeriodEndDate": 1790726400,
+       "earningsDate": [
+        1793304000
+       ],
+       "isEarningsDateEstimate": false
+      },
+      "financialsChart": {
+       "yearly": [
+        {
+         "date": 2022,
+         "revenue": 63054000000,
+         "earnings": 8014000000,
+         "profitMargin": 0.12709741
+        },
+        {
+         "date": 2023,
+         "revenue": 54228000000,
+         "earnings": 1689000000,
+         "profitMargin": 0.03114627
+        },
+        {
+         "date": 2024,
+         "revenue": 53101000000,
+         "earnings": -18756000000,
+         "profitMargin": -0.3532137
+        },
+        {
+         "date": 2025,
+         "revenue": 52853000000,
+         "earnings": -267000000,
+         "profitMargin": -0.0050517474
+        }
+       ],
+       "quarterly": [
+        {
+         "date": "3Q2025",
+         "fiscalQuarter": "3Q2025",
+         "revenue": 13653000000,
+         "earnings": 4063000000,
+         "profitMargin": 0.2975903
+        },
+        {
+         "date": "4Q2025",
+         "fiscalQuarter": "4Q2025",
+         "revenue": 13674000000,
+         "earnings": -591000000,
+         "profitMargin": -0.04322071
+        },
+        {
+         "date": "1Q2026",
+         "fiscalQuarter": "1Q2026",
+         "revenue": 13577000000,
+         "earnings": -3728000000,
+         "profitMargin": -0.27458203
+        },
+        {
+         "date": "2Q2026",
+         "fiscalQuarter": "2Q2026",
+         "revenue": 16128000000,
+         "earnings": -11033000000,
+         "profitMargin": -0.6840898
+        }
+       ]
+      },
+      "financialCurrency": "USD",
+      "defaultMethodology": "nongaap"
+     }
+    }
+   ],
+   "error": null
+  }
+ }
+}

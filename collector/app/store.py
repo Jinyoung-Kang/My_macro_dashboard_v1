@@ -638,6 +638,32 @@ def add_headline_feeds(dataset: str, since: str, pairs: Iterable[tuple[str, str]
     return changed
 
 
+def observation_entity_summary(dataset: str, number_field: str, period_field: str) -> dict[str, dict]:
+    """
+    entity마다 저장 행 수(``rows``), payload ``number_field``가 숫자인 기간 수(``periodsWithNumber`` — ``period_field`` 값마다 한 번,
+    그 칸이 없는 행은 한 행씩), 가장 늦은 obs_date(``latest``).
+
+    어닝 서프라이즈 상태(us.earnings_surprise.status)의 커버리지를 이번 응답이 아니라 **저장된 행**으로 셉니다 — 행은 지우지 않고
+    쌓이므로(출처는 최근 4분기만 줌). 기간으로 묶는 것은 출처가 한 분기의 발표일을 바꾸면 같은 ``periodEnd``가 다른 obs_date로 한 행
+    더 쌓이기 때문입니다 — 행으로 세면 3분기뿐인 종목이 '4분기 이상'에 들지만, 백엔드 패킷(EarningsHistory)은 분기마다 한 행만
+    싣습니다. 기간을 모르는 행은 어느 분기인지 알 수 없어 묶지 않습니다(백엔드와 같음). JSON null은 숫자가 아니라 세지 않습니다.
+    """
+    with connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT entity, COUNT(*) AS n,
+                   COUNT(DISTINCT payload->>%(period)s) FILTER (WHERE jsonb_typeof(payload->%(number)s) = 'number')
+                   + COUNT(*) FILTER (WHERE jsonb_typeof(payload->%(number)s) = 'number'
+                                      AND payload->>%(period)s IS NULL) AS k,
+                   MAX(obs_date) AS latest
+            FROM observations WHERE dataset = %(dataset)s GROUP BY entity
+            """,
+            {"number": number_field, "period": period_field, "dataset": dataset},
+        ).fetchall()
+    return {r["entity"]: {"rows": int(r["n"]), "periodsWithNumber": int(r["k"]), "latest": r["latest"].isoformat()}
+            for r in rows}
+
+
 def list_observation_dates(
     dataset: str, *, filters: dict[str, str] | None = None,
 ) -> list[str]:
@@ -1027,6 +1053,8 @@ def missing_datasets() -> list[dict]:
         (catalog.SNAP_US_CALENDAR, "모의 매매 미국 발표·실적 일정"),
         # 피드 하나라도 받으면 생깁니다(키 없음). 전부 실패하면 생기지 않아 여기서 '누락'으로 보입니다.
         (catalog.SNAP_NEWS_STATUS, "모의 매매 사건 뉴스(RSS) 수집 상태"),
+        # 키가 필요 없습니다(yfinance). 한 종목이라도 받으면 생기고, 전부 실패·내부 API 변경이면 생기지 않아 '누락'으로 보입니다.
+        (catalog.SNAP_EARNINGS_SURPRISE_STATUS, "모의 매매 어닝 서프라이즈(yfinance) 수집 상태"),
     ]
 
     # 키가 있어야 받을 수 있는 데이터셋은 키가 설정된 경우에만 "누락"으로 봅니다.

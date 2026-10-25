@@ -113,6 +113,8 @@ services:
       FUNDAMENTALS_FETCH_BUDGET: "${FUNDAMENTALS_FETCH_BUDGET:-}"
       # 모의 매매 미국 실적 일정(yfinance) 수집의 실행당 종목 예산. 비우면 120(collector/app/settings.py).
       US_CALENDAR_EARNINGS_BUDGET: "${US_CALENDAR_EARNINGS_BUDGET:-}"
+      # 모의 매매 어닝 서프라이즈(yfinance) 수집의 실행당 종목 예산. 비우면 100(collector/app/settings.py).
+      EARNINGS_SURPRISE_BUDGET: "${EARNINGS_SURPRISE_BUDGET:-}"
       # 국내 공공 API — 공공데이터포털 키 하나로 특일정보·주식시세를 씁니다.
       DATA_GO_KR_SERVICE_KEY: "${DATA_GO_KR_SERVICE_KEY:-}"
       DART_API_KEY: "${DART_API_KEY:-}"

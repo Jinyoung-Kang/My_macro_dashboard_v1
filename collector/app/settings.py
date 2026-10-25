@@ -175,6 +175,27 @@ def us_calendar_earnings_budget() -> int:
         return US_CALENDAR_EARNINGS_BUDGET
 
 
+EARNINGS_SURPRISE_BUDGET = 100
+
+
+def earnings_surprise_budget() -> int:
+    """
+    어닝 서프라이즈 수집(task_earnings_surprise, 12시간마다)이 한 번 실행에서 yfinance에 묻는 종목 수 상한. 기본 100, 1~600.
+
+    유니버스 약 576종목(ETF 제외)을 하루 두 번 × 100으로 약 3일에 한 바퀴 돌고, 실적을 막 발표한 종목은 순서의 앞에 둡니다
+    (명세 C2 '1회 예산 100종목, 증분'). 100 × (응답 0.16~0.7초 + 간격 0.5초) ≈ 70~120초로 weekly 시간 상한(1,800초)에 한참 못
+    미치고, 같은 Yahoo 한도를 us_calendar·paper_quotes와 나눠 씁니다.
+    비었거나 숫자가 아니면 기본값 — 잘못 적은 값으로 수집을 멈추지(0) 않게 1 밑으로는 내리지 않습니다.
+    """
+    raw = (os.environ.get("EARNINGS_SURPRISE_BUDGET") or "").strip()
+    if not raw:
+        return EARNINGS_SURPRISE_BUDGET
+    try:
+        return min(600, max(1, int(raw)))
+    except ValueError:
+        return EARNINGS_SURPRISE_BUDGET
+
+
 # ==============================================================================
 # 외부 API 키 (없으면 빈 문자열)
 # ==============================================================================
