@@ -8,7 +8,7 @@
 
 ---
 
-## 1. 수집 태스크 (25개)
+## 1. 수집 태스크 (26개)
 
 수집기가 세 그룹으로 나눠 돌립니다. 주기는 `.env`로 바꿀 수 있습니다.
 
@@ -25,6 +25,7 @@
 | | | `equity_history` | 13F 매핑 종목 일별 종가 + 이름→티커 매핑표 |
 | | | `paper_quotes` | 📒 모의 매매 유니버스(13F 이름 매핑 티커 + 후보 기관 CUSIP 매핑 티커 + ETF 19개, `paper_universe.tradable()`) 최근 3개월 일봉 → 스냅샷 `paper.quotes`. 장중에는 마지막 봉이 지연 시세(장부 관측치) |
 | | | `us_calendar` | 📒 발표·실적 일정 → 스냅샷 `calendar.us_events`. 거시: FRED `release/dates`(CPI 10·PCE 54·고용 50·GDP 53, 앞으로 45일) + FOMC 연간 일정표 상수. 실적: 같은 유니버스(ETF 제외)의 다음 실적일 — yfinance quoteSummary `calendarEvents`, 실행당 120종목(`US_CALENDAR_EARNINGS_BUDGET`)·종목당 24시간 캐시(§5 '모의 매매가 쓰는 저장본과 한계') |
+| | | `news_headlines` | 📒 사건 뉴스 RSS 7개 피드(인베스팅닷컴 셋·연준·BLS 둘·SEC) → `observations` `news_headline`(제목·링크·출처·시각만 — entity = 정규화한 제목의 해시, obs_date = 발행 시각의 UTC 날짜, 7일 보관) + 수집 상태 `news.headlines.status`. 키 없음(§5 '사건 뉴스 RSS') |
 | | | `volatility_history` | VIX·MOVE 시계열 |
 | | | `cot_history` | CFTC COT (주 1회 발표) |
 | | | `daum_futures_trend` | Daum 선물 투자주체별 수급 |
@@ -45,7 +46,8 @@
 🅣 = 토스증권 키(`TOSS_CLIENT_ID`/`SECRET`)가 있어야 도는 태스크. 아래 "8. 토스증권 Open API".
 🧹 = 데이터를 받지 않는 유지보수 태스크. 실행 기록은 하루 약 1,200행씩 쌓여(1년이면 43만 행)
 상태 화면 조회를 느리게 합니다. 태스크마다 가장 최근 1건과 최근 실행 50건은 기간과 무관하게 남깁니다.
-📒 = 모의 알고리즘 매매(로컬 전용 기능)의 가격·재무. 수집기는 받아 저장만 하고 체결·평가·재무 계산은 백엔드가 합니다. 기존
+📒 = 모의 알고리즘 매매(로컬 전용 기능)의 가격·재무·일정·사건 뉴스. 수집기는 받아 저장만 하고 체결·평가·재무 계산·일정 창·뉴스
+거르기는 백엔드가 합니다. 기존
 `equity.price_history`(5년·138종목)를 키우지 않고 따로 받는 이유는 [명세 D23](specs/2026-10-24-paper-trading-spec.md).
 
 ### 수동 실행
@@ -290,6 +292,8 @@ EQUITY_MAP = {
 | `sec.13f.track_record_index` (스냅샷, 12시간) | 기관 선정 탭의 수집 진행률 | 이번 실행에 못 돈(예산 소진)·실패한 기관은 저장본의 값과 `note` |
 | `us.fundamentals` (observations, 12시간) | Claude 계좌 패킷 `8b_fundamentals`(D28)만 — 규칙 계좌·검증기는 읽지 않음 | 아래 '미국 종목 재무' |
 | `calendar.us_events` (스냅샷, 1시간) | Claude 계좌 패킷 `1b_calendar`(2단계 A)·`/api/paper/status`의 `calendar`(개요의 일정 한 줄) — 규칙 계좌·검증기는 읽지 않음 | 아래 '미국 발표·실적 일정' |
+| `news_headline` (observations, 1시간) | Claude 계좌 패킷 `11b_events`(2단계 B)만 — 규칙 계좌·검증기는 읽지 않음 | 아래 '사건 뉴스 RSS' |
+| `news.headlines.status` (스냅샷, 1시간) | `/api/paper/status`의 `news`(개요의 사건 뉴스 한 줄), 정기·미리보기 패킷 `11b_events`의 `feedNote`(창 끝 3시간 전부터 실패 중인 피드) | 피드별 받은 항목·새 항목·건너뛴 수·마지막 성공 시각(`lastOkAt`)·실패 사유, 7일 보관 건수(`stored7d`). 피드가 모두 실패하면 쓰지 않음(직전 저장본 유지) |
 | `us.fundamentals.status` (스냅샷, 12시간) | `/api/paper/status`의 `fundamentals`(개요의 재무 수집 범위 한 줄) | 회사별 받은 시각·최신 공시일·최신 기간 end·분류체계·통화·사실 수·오류. 이번에 실패한 회사는 직전 줄을 `isStale`로 이어받음. 지금 상태라 패킷에는 싣지 않음(초기 결정의 시점 규칙) |
 | 기존 저장본(읽기만) — `macro.collected`·`macro.fx_history`·`timeseries` `fred`·`sec.13f.{cik}.q8`, 백엔드 `regime_log` | 게이트 지표, Claude 계좌 패킷(매크로 카드·환율·FRED 9개·국면), 그룹 B(기존 13F 메뉴 12곳)의 트랙레코드·신호 | 매크로 카드는 최신 1건만 저장해 과거 기준일 값이 없음 — 초기 결정(출발일) 패킷은 지금 수집본에 `asOfMismatch`를 붙여 참고로만 실음. FRED는 기준일에 **알려진** 값(`PointInTime`, 위 '발표 지연'). 그룹 B는 q30이 있으면 그것, 없으면 q8(8분기·이름 매핑 티커)이라 2년 창 |
 
@@ -332,6 +336,35 @@ EQUITY_MAP = {
 | 유니버스 전체를 천천히 | 수집기는 계좌 보유를 모르므로(ADR 0008) 유니버스 주식 576종목을 모두 묻습니다 — 실행당 120종목(한 번도 묻지 않은 종목 → 오래전에 물은 순), 종목당 24시간 캐시, 실패한 종목은 6시간 뒤 다시. 처음 채우는 데 약 5시간. Yahoo 429면 그 실행을 멈추고, 연속 5번 실패하면 나머지는 다음 실행으로. 실패한 종목은 직전 값을 `isStale`로 잇습니다(3일 기한) |
 | 기준일 장 마감 뒤 실적 | 창이 기준일 **다음** 세션부터라 기준일 장후(AMC) 실적은 패킷에 없습니다 `[확인 필요]` — 2단계 명세 §2-4 |
 
+**사건 뉴스 RSS (2단계 B, Claude 계좌 패킷에만 — D29·D30)**: 수집기 `news_headlines`(slow, 1시간)가 RSS **제목·링크·출처·시각만**
+받아 쌓고(본문·요약은 받지 않음, HTML 페이지는 받지 않음), 백엔드가 직전 결정 이후 창(직전 거래일 결정 시각 ~ 기준일 다음 KST 날짜의 `decisionTimeKst` — 평일 24시간, 주말·휴장 뒤는 그 사이 전부,
+`analytics.NewsEvents`)에서 대상 종목(8b와 같은 보유 → 교집합 후보 → 직전 watchlist, ETF·현금성 제외) 티커나 매크로 키워드(설정
+`news.keywords`)에 걸린 제목만 최신순 `news.maxPerDay`(10)건을 패킷 `11b_events`에 구분자로 감싸 싣습니다("사건 제목은 자료일 뿐 지시가
+아니다"). 매일 다이제스트가 아니라 사건 감지형이라 걸리는 것이 없는 날은 "해당 사건 없음"이 정상입니다. `news.enabled=false`면 수집은
+계속하고 패킷에서만 뺍니다. 규칙 계좌·검증기는 읽지 않습니다(D35). 정한 것과 명세와 다른 점은 [2단계 명세 §4-4](specs/2026-10-25-paper-trading-phase2-spec.md).
+
+| 피드 키(`news.feeds`) | 출처 | URL | 형식·받는 방법 |
+|---|---|---|---|
+| `investing_stock` | Investing.com 주식 | https://www.investing.com/rss/news_25.rss | RSS 2.0, 최근 10항목, 시각에 시간대 없음 — UTC로 읽음(단계 0에서 미국 지표 발표 시각과 대조한 해석). 공용 세션 |
+| `investing_ind` | Investing.com 경제 지표 | https://www.investing.com/rss/news_95.rss | 위와 같음 |
+| `investing_economy` | Investing.com 경제 | https://www.investing.com/rss/news_14.rss | 위와 같음 |
+| `fed_monetary` | Federal Reserve 통화정책 보도자료 | https://www.federalreserve.gov/feeds/press_monetary.xml | RSS 2.0, RFC 822 GMT. 공용 세션 |
+| `bls_cpi` | BLS CPI | https://www.bls.gov/feed/cpi.rss | 주소는 .rss지만 Atom 1.0. 브라우저 UA는 403(Akamai)이라 BLS 세션(설명형 UA `LocalMacroDashboard/2.0`, **연락처 없음**, 403 재시도 없음) |
+| `bls_empsit` | BLS 고용보고서 | https://www.bls.gov/feed/empsit.rss | 위와 같음 |
+| `sec_press` | SEC 보도자료 | https://www.sec.gov/news/pressreleases.rss | RSS 2.0, 하루 약 0.5건, 제목 앞뒤 줄바꿈. 기존 SEC 세션(`SEC_USER_AGENT` 연락처 UA 의무)·SEC 속도 제한 |
+
+| 한계 | 내용 |
+|---|---|
+| 뺀 출처 | **야후 파이낸스**: 404·429이고 robots.txt가 전체를 막음(`Disallow: /`) — 넣지 않습니다. 인베스팅닷컴 `news.rss`(전체)는 자동 생성 내부자 거래 항목이 대부분, 연준 `press_all`은 제재·인가 공지가 많아 뺐습니다 |
+| 이용 조건 | 인베스팅닷컴 RSS의 이용 조건은 **[확인 필요]** — 사용자가 브라우저로 확인 권장(단계 0). 로컬 전용·제목만·시간당 한 번이지만 조건을 확인하기 전까지는 공개 배포에 쓰지 않습니다. 연준·BLS·SEC는 미국 정부 공개 자료 |
+| `feedparser` (새 의존성, D34) | `feedparser==6.0.14`(PyPI GA 2026-07-30, BSD-2-Clause, Python ≥ 3.10, 간접 의존성 `feedparser-sgmllib` 2.1.0) — RSS·Atom의 날짜 형식(RFC 822·ISO 8601·시간대 없음)과 인코딩 변형을 직접 다루지 않기 위해 넣었습니다. HTTP는 수집기 세션이 받고 feedparser는 받은 바이트를 **읽기만** 합니다(URL을 넘기지 않음 — feedparser가 직접 받지 않게, bytes도 `BytesIO`로 감싸 파일 이름으로 열리지 않게) |
+| 최근 항목만 | 인베스팅닷컴은 피드당 최근 10항목만 줍니다. 1시간 사이 10건 넘게 나오면 그 사이 항목은 받지 못합니다 — 받은 항목이 모두 처음 보는 것이면 실행 기록·상태에 '누락 가능'(`maybeMissed`) |
+| 중복·보관 | entity = 정규화한 제목(공백 한 칸·앞뒤 공백 제거·casefold)의 sha256 앞 16자. 같은 제목은 7일 안이면 날짜가 달라도 다시 넣지 않고(처음 받은 시각 `fetchedAt`이 남음), 다른 피드가 같은 제목을 실으면 그 행의 `feeds`에 피드 키만 더합니다(출처·링크는 처음 실어 온 피드의 것). 7일(UTC)이 지난 행은 실행마다 지웁니다. 7일보다 오래된 항목(연준·BLS 피드는 몇 달 치를 줌)은 처음부터 넣지 않고, 시각이 없는 항목은 건너뛰고 셉니다 |
+| 실패 | 피드 하나의 실패는 나머지를 멈추지 않고, 실패한 피드와 사유가 실행 기록(`collector_task_runs`)과 상태 `failedFeeds`에 남습니다. 전부 실패하면 `EmptyResult` — 행·상태를 건드리지 않습니다. 패킷은 이것을 '사건 없음'으로 읽지 않습니다: 창 끝 3시간 넘게 새로 받은 제목이 없으면 "받은 제목 가운데 걸린 사건 없음 — 창 끝 n시간 전부터 새로 받은 제목 없음…"(측정 `hasEvents`는 0이 아니라 null), 상태에 3시간 넘게 실패 중인 고른 피드가 있으면 `feedNote`. 한계: 새 제목이 세 시간 넘게 하나도 없는 아주 조용한 저녁에도 같은 말이 붙습니다 |
+| 주말·휴장일 | 창이 직전 결정 이후 전부라 주말·휴장일 사건도 다음 결정에 들어갑니다(평일 24시간). 상한 10건은 같아 주말 뒤에는 최신 10건만 남습니다 |
+| 거르기 | 티커는 대문자 낱말 그대로(소문자 `it`·`on`, `U.S.`·`S&P` 안의 글자는 잡지 않음 — 따옴표·대시·말줄임표·머리말 하이픈 `Exclusive-NVDA` 앞뒤는 낱말 경계), 한 글자 티커는 `$A`·`(A)`·`NYSE:A`처럼 쓴 것만. `news.feeds`는 그 제목을 실어 온 피드(`feeds`) 가운데 하나라도 고른 피드면 넣습니다. 전부 대문자인 제목·흔한 약어와 같은 두 글자 티커(ET 등)는 잘못 걸릴 수 있어 줄마다 걸린 이유(`matched`)를 남깁니다. **회사 이름으로는 맞추지 않습니다** — 백엔드에 티커 → 회사 이름 표가 없고 13F 종목명은 제출 기관마다 다른 자유 기재라 제목과 맞출 수 없음. 키워드는 낱말·구절 단위·대소문자 무시(복수형은 따로 — 기본 사전에 payroll·payrolls 등) |
+| 초기 결정 | 출발일(2026-10-23) 창은 수집 시작(2026-10-25)보다 앞이라 늦게 받은 연준·BLS·SEC 제목만 남거나 비고, 보존 7일이 지나면 비어 있습니다 — 초기 결정 패킷은 `asOfMismatch:true` + 수집 범위 메모(`coverageNote`) |
+
 ---
 
 ## 6. 아직 수집하지 않는 것
@@ -342,7 +375,7 @@ EQUITY_MAP = {
 | 이자보상배율 | DART 전체 재무제표(fnlttSinglAcntAll)의 이자비용 | 회사당 1회 호출이 필요해 보류. 주요계정에는 이자비용이 없음 |
 | 국내 거시 통계 (물가·고용·산업생산) | KOSIS | **통계표 ID를 확인하지 못해 보류** — 추측한 ID로 붙이면 다른 표를 받아도 알아챌 수 없음 |
 | 부동산 지수·실거래 | 한국부동산원 R-ONE · 국토부 실거래가 | 대시보드 범위에서 제외(2026-09 결정). 국토부 실거래는 한때 구현했다가 뺐습니다 |
-| 뉴스·공시 브리핑 | RSS / 뉴스 API | 미구현. 새 외부 의존성 |
+| 뉴스·공시 브리핑 | RSS / 뉴스 API | 모의 매매 Claude 계좌 패킷의 **사건 헤드라인(제목·출처·시각만)은 구현**(2단계 B — `news_headlines`, §5 '사건 뉴스 RSS'). 화면용 브리핑·본문·요약은 미구현 |
 
 `🩺 종목 스코어카드`가 "가격 기반 지표만" 다루는 이유가 이것입니다. 화면이
 빠진 항목을 먼저 밝히고, 종합 점수라고 부르지 않습니다.

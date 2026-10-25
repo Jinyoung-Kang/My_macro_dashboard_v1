@@ -198,7 +198,7 @@ APP_PASSWORD=원하는_비밀번호
 | `TOSS_CLIENT_ID` / `TOSS_CLIENT_SECRET` | 토스증권 Open API | 토스 테스트 메뉴 + 레이더·국내 파생의 투자자별 매매 카드 + 교차 검증의 토스 3항목이 꺼짐. 토스 개발자 콘솔의 허용 IP에 이 맥의 공인 IP 필요 |
 | `ANTHROPIC_API_KEY` (Claude Haiku 5.5) | <https://platform.claude.com> | 자동 탐색이 Claude를 건너뛰고 무료 엔진만 씀. 유료 — 리포트 1건 약 1센트 미만 |
 | `NVIDIA_API_KEY` 등 AI 키 | <https://build.nvidia.com> 등 | AI 메뉴만 꺼짐 (Claude 키까지 모두 없을 때) |
-| `SEC_USER_AGENT` | 키가 아니라 **본인 이메일** | 13F 수집만 멈춤 (나머지는 정상) |
+| `SEC_USER_AGENT` | 키가 아니라 **본인 이메일** | 13F 수집과 모의 매매 미국 종목 재무(`sec_fundamentals`)가 멈추고, 사건 뉴스의 SEC 보도자료 피드(`sec_press`)만 실패로 남음 (나머지는 정상) |
 
 > **`SEC_USER_AGENT`는 발급받는 키가 아닙니다.** SEC EDGAR는 연락처 없는
 > 요청을 차단하므로(정책상 요구사항), 본인 이메일을 그대로 넣으면 됩니다.

@@ -80,6 +80,11 @@ pandas DataFrame을 JSON 문자열로 저장하면 **dtype을 따로 실어야**
 낸(또는 값이 바뀐) XBRL 사실 묶음이고 지우지 않습니다(티커의 CIK가 다른 회사로 바뀌면 옛 CIK만의 행은 수집기가 지움). 백엔드는 패킷의 종목만 `obs_date ≤ 기준일`로 읽어
 (`StoreRepository.readObservationsUntil`) 그날 몰랐던 정정값이 섞이지 않게 합니다.
 
+🧪 모의 매매 사건 뉴스(`news_headline`, 2단계 B)도 같은 표입니다 — entity = 정규화한 제목의 해시, obs_date = 발행 시각의 UTC 날짜, payload =
+제목·링크·출처·피드·시각이고, 수집기가 7일이 지난 행을 지웁니다(같은 제목은 날짜가 달라도 다시 넣지 않고, 다른 피드가 실으면 그 행의
+`feeds`에 피드 키만 더함 — 이 표를 쓰는 것은 수집기뿐). entity로 고를 수 없어 백엔드는
+결정 창이 덮는 날짜부터 읽고(`StoreRepository.readObservationsBetween`) 거르기는 `analytics.NewsEvents`가 합니다.
+
 ### 3-2. 스키마 변경은 번호 붙은 파일로
 
 `db/migrations/V{번호}__{설명}.sql`을 **수집기가 기동할 때** 번호 순서로 한 번씩 적용하고
@@ -161,6 +166,7 @@ config/          설정 값(AppProperties) · 정기 작업 켜기 — 여러 �
 | `AlertRules` | 알림 사건 판정(ADR 0011) — 국면 전환 확정(3번 연속 기록)·연속 순매수 N일 도달·13F 신규 편입 |
 | `UsMarketCalendar` | 🧪 미국 거래일·세션 날짜(휴장일 규칙은 화면 `lib/marketCalendar.ts`와 같음)·13F 공시 기한 다음 거래일 |
 | `CalendarWindow` | 🧪 Claude 패킷 일정 섹션 `1b_calendar`의 창(기준일 다음 세션 … 10거래일)과 줄 고르기 — 창 밖·대상 밖 제외, '다음 일정 미정'·'자료 없음'·'일정 미공개' 구분(없는 일정을 만들지 않음) |
+| `NewsEvents` | 🧪 Claude 패킷 사건 섹션 `11b_events`의 창(직전 결정 이후 — 평일 24시간, 주말·휴장 뒤는 그 사이 전부)과 헤드라인 거르기 — 대상 티커(대문자 낱말)·매크로 키워드(낱말·구절), 최신순 상한, 줄마다 걸린 이유, '꺼짐'·'자료 없음'·'해당 사건 없음'·수집 전·창 끝 수집 공백(`STALE`) 구분 |
 | `DailySeries` | 🧪 일별 값 계열(원시 배열 + 이진 탐색 — 10년 × 수백 종목을 힙에 들기 위해). 기준일 뒤 값은 `until`로 자름 |
 | `PaperLedger` | 🧪 체결(수량 십진 내림·슬리피지)·평가·노출 |
 | `TrailingStop` | 🧪 최고가 갱신·스탑 판정·재진입 금지 |
