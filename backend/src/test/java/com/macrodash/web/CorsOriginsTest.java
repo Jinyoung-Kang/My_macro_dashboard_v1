@@ -49,25 +49,28 @@ class CorsOriginsTest {
     }
 
     @Test
-    @DisplayName("QA-136: AWS 배포(compose.aws.yml)의 허용 출처가 관리자 터널(SSM 포트 포워딩, localhost:8201) 화면의 POST를 받는다")
-    void awsDeploymentAcceptsTheAdminTunnel() throws Exception {
+    @DisplayName("QA-136·ADR 0019: AWS 개인용 서버(compose.aws.yml)의 허용 출처는 터널 화면(SSM 포트 포워딩, localhost:8201)뿐이다")
+    void awsDeploymentAcceptsOnlyTheTunnel() throws Exception {
         Path compose = Path.of("../compose.aws.yml");
         assumeTrue(Files.exists(compose), "compose.aws.yml을 찾을 수 없습니다");
         Matcher setting = Pattern.compile("\\n\\s+FRONTEND_ORIGIN:\\s*(.+)").matcher(Files.readString(compose));
         assertThat(setting.find()).as("compose.aws.yml backend에 FRONTEND_ORIGIN이 있어야 함").isTrue();
-        // 배포 때 .env의 PUBLIC_ORIGIN(CloudFront 주소)이 들어가는 자리입니다.
-        String origins = setting.group(1).trim().replaceAll("^\"|\"$", "")
-                .replaceAll("\\$\\{PUBLIC_ORIGIN[^}]*}", "https://dxxxx.cloudfront.net");
+        String origins = setting.group(1).trim().replaceAll("^\"|\"$", "");
+        assertThat(origins).as("보간 없는 고정값 — 서버 .env의 FRONTEND_ORIGIN이 끼어들 자리가 없음").doesNotContain("${");
+        // 백엔드가 더하는 'http://*:화면 포트'도 터널 포트여야 합니다 — 기본 3000이면 PC의 다른 3000번 개발 서버가 같은 사이트로 통과.
+        Matcher port = Pattern.compile("\\n\\s+FRONTEND_PORT:\\s*\"(\\d+)\"").matcher(Files.readString(compose));
+        assertThat(port.find()).as("compose.aws.yml backend에 FRONTEND_PORT 고정값이 있어야 함").isTrue();
 
         AppProperties properties = new AppProperties();
         properties.setFrontendOrigin(origins);
-        properties.setFrontendPort(3000);
+        properties.setFrontendPort(Integer.parseInt(port.group(1)));
         WebConfig.SessionFilter filter = new WebConfig.SessionFilter(null, WebConfig.allowedOriginPatterns(properties), false);
 
-        for (String origin : new String[]{"https://dxxxx.cloudfront.net", "http://localhost:8201", "http://127.0.0.1:8201"}) {
+        for (String origin : new String[]{"http://localhost:8201", "http://127.0.0.1:8201"}) {
             assertThat(filter.foreignOrigin(post(origin))).as(origin).isFalse();
         }
-        for (String origin : new String[]{"https://attacker.example", "http://localhost:8202", "https://localhost:8201"}) {
+        for (String origin : new String[]{"https://dxxxx.cloudfront.net", "https://attacker.example", "http://localhost:8202",
+                "https://localhost:8201", "http://localhost:3000", "http://127.0.0.1:3000"}) {
             assertThat(filter.foreignOrigin(post(origin))).as(origin).isTrue();
         }
     }

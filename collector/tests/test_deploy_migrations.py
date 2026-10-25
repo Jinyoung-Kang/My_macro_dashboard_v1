@@ -9,7 +9,9 @@ QA-016: 스키마 파일만 바뀐 배포에서 새 테이블이 생기지 않�
 
 QA-107: 같은 결함이 AWS 데모 배포 절차(README·compose.aws.yml 머리말)에 남아 있었습니다. 절차가 `build --pull`과
 `up -d` 두 줄뿐이라, 스키마 파일과 백엔드만 바뀐 릴리스에서는 수집기가 다시 만들어지지 않아 새 스키마가 적용되지
-않습니다. 문서에 적힌 배포 명령도 `up -d` 뒤에 스키마를 적용해야 합니다.
+않습니다. 문서에 적힌 배포 명령도 `up -d` 뒤에 스키마를 적용해야 합니다. AWS 개인용 서버(ADR 0019)에서는 README가
+scripts/aws/deploy.sh를 가리키고(그 스크립트의 스키마 적용은 tests/test_aws_scripts.py), compose.aws.yml 머리말에는
+손으로 배포할 때의 명령이 남습니다.
 
 QA-118: 그 반복문(`… && break; sleep 3; done`)은 10번 모두 실패해도 마지막 명령이 `sleep`이라 종료 코드 0으로
 끝났습니다. 문서는 'make migrate와 같다'고 적지만 make migrate는 ⚠️를 찍고 exit 1입니다. SSM이나 `&&`로 이은
@@ -49,13 +51,12 @@ def test_QA016_QA_스택_up도_스키마를_적용한다():
     assert "init_schema" in up
 
 
-def _aws_readme_commands() -> str:
-    """README '### AWS 데모 배포' 절의 첫 bash 블록."""
+def _aws_readme_blocks() -> list[str]:
+    """README '### AWS 개인용 서버' 절의 bash 블록들."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    section = readme[readme.index("### AWS 데모 배포"):]
+    section = readme[readme.index("### AWS 개인용 서버"):]
     section = section[:section.index("\n## ")]
-    block = section[section.index("```bash") + len("```bash"):]
-    return block[:block.index("```")]
+    return [chunk.split("```", 1)[0] for chunk in section.split("```bash")[1:]]
 
 
 def _aws_header_commands() -> str:
@@ -65,14 +66,21 @@ def _aws_header_commands() -> str:
     return block[:block.index("\n#\n")]
 
 
-@pytest.mark.parametrize("where", ["README", "compose.aws.yml"])
-def test_QA107_AWS_배포_절차도_up_뒤에_스키마를_적용한다(where):
-    commands = _aws_readme_commands() if where == "README" else _aws_header_commands()
+def test_QA107_README의_서버_배포는_deploy_sh이고_손으로_적은_up_뒤에는_스키마를_적용한다():
+    blocks = _aws_readme_blocks()
+    assert any("scripts/aws/deploy.sh" in block for block in blocks), "README가 서버 배포 명령(deploy.sh)을 보여야 합니다"
+    for block in blocks:
+        if " up -d" in block:
+            assert "init_schema" in block[block.index(" up -d"):], "README: up -d 뒤에 스키마 적용(init_schema)이 없습니다"
+
+
+def test_QA107_compose_aws_머리말의_손_배포도_up_뒤에_스키마를_적용한다():
+    commands = _aws_header_commands()
     up = commands.index(" up -d")
-    assert "init_schema" in commands[up:], f"{where}: up -d 뒤에 스키마 적용(init_schema)이 없습니다"
+    assert "init_schema" in commands[up:], "compose.aws.yml: up -d 뒤에 스키마 적용(init_schema)이 없습니다"
     # 수집기가 막 다시 만들어진 직후에는 exec가 실패할 수 있어 make migrate처럼 기다렸다 다시 시도합니다.
     schema_line = next(line for line in commands[up:].splitlines() if "init_schema" in line)
-    assert "sleep" in schema_line, f"{where}: 스키마 적용에 재시도가 없습니다"
+    assert "sleep" in schema_line, "compose.aws.yml: 스키마 적용에 재시도가 없습니다"
 
 
 def test_QA107_docker_compose_머리말의_실행_안내는_make_up():
@@ -81,9 +89,9 @@ def test_QA107_docker_compose_머리말의_실행_안내는_make_up():
     assert "make up" in run_line
 
 
-def _schema_snippet(where: str) -> str:
-    """`up -d` 다음 줄부터의 스키마 적용 명령(이어지는 줄 포함). compose.aws.yml 머리말은 주석 표시를 떼고 '↑' 설명 앞까지."""
-    commands = _aws_readme_commands() if where == "README" else _aws_header_commands()
+def _schema_snippet() -> str:
+    """compose.aws.yml 머리말의 `up -d` 다음 줄부터의 스키마 적용 명령(이어지는 줄 포함) — 주석 표시를 떼고 '↑' 설명 앞까지."""
+    commands = _aws_header_commands()
     lines = commands[commands.index(" up -d"):].splitlines()[1:]
     out: list[str] = []
     for line in lines:
@@ -100,25 +108,23 @@ _REPORT = '\nrc=$?\necho "calls=$calls"\nexit $rc\n'
 _SHELLS = [s for s in ("/bin/bash", "/bin/sh") if Path(s).exists()]   # 맥의 /bin/bash는 3.2
 
 
-def _run_schema(shell: str, where: str, docker_rc: int) -> subprocess.CompletedProcess:
-    script = _FAKE.format(rc=docker_rc) + _schema_snippet(where) + _REPORT
+def _run_schema(shell: str, docker_rc: int) -> subprocess.CompletedProcess:
+    script = _FAKE.format(rc=docker_rc) + _schema_snippet() + _REPORT
     return subprocess.run([shell, "-c", script], capture_output=True, text=True, timeout=30)
 
 
 @pytest.mark.parametrize("shell", _SHELLS)
-@pytest.mark.parametrize("where", ["README", "compose.aws.yml"])
-def test_QA118_스키마_적용이_10번_모두_실패하면_알리고_0이_아닌_값으로_끝난다(where, shell):
-    result = _run_schema(shell, where, docker_rc=1)
-    assert "calls=10" in result.stdout, f"{where}: 10번 다시 시도해야 합니다 — {result.stdout!r} {result.stderr!r}"
-    assert result.returncode != 0, f"{where}({shell}): 10번 모두 실패했는데 종료 코드 0 — 배포가 성공으로 보입니다"
-    assert "스키마" in result.stderr, f"{where}: 실패를 사람에게도 알려야 합니다(make migrate의 ⚠️처럼)"
+def test_QA118_스키마_적용이_10번_모두_실패하면_알리고_0이_아닌_값으로_끝난다(shell):
+    result = _run_schema(shell, docker_rc=1)
+    assert "calls=10" in result.stdout, f"10번 다시 시도해야 합니다 — {result.stdout!r} {result.stderr!r}"
+    assert result.returncode != 0, f"compose.aws.yml({shell}): 10번 모두 실패했는데 종료 코드 0 — 배포가 성공으로 보입니다"
+    assert "스키마" in result.stderr, "실패를 사람에게도 알려야 합니다(make migrate의 ⚠️처럼)"
 
 
 @pytest.mark.parametrize("shell", _SHELLS)
-@pytest.mark.parametrize("where", ["README", "compose.aws.yml"])
-def test_QA118_스키마_적용이_성공하면_한_번으로_끝나고_0이다(where, shell):
-    result = _run_schema(shell, where, docker_rc=0)
-    assert result.returncode == 0, f"{where}({shell}): {result.stdout!r} {result.stderr!r}"
+def test_QA118_스키마_적용이_성공하면_한_번으로_끝나고_0이다(shell):
+    result = _run_schema(shell, docker_rc=0)
+    assert result.returncode == 0, f"compose.aws.yml({shell}): {result.stdout!r} {result.stderr!r}"
     assert "calls=1" in result.stdout
     assert result.stderr == ""
 

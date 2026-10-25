@@ -1,0 +1,18 @@
+# deploy/aws/Caddyfile — AWS 개인용 서버의 앞단(ADR 0019). compose.aws.yml의 caddy 서비스가 읽습니다.
+#
+# 들어오는 길은 SSM 포트 포워딩 하나입니다(PC의 localhost:8201 → 서버 127.0.0.1:8201 → 이 컨테이너 8201).
+# TLS는 쓰지 않습니다 — 평문은 서버의 루프백과 SSM 터널(암호화) 안에서만 흐릅니다.
+# 화면과 API를 한 주소(같은 출처)로 묶습니다. 화면은 NEXT_PUBLIC_API_BASE=/로 빌드돼 /api/...를 상대 경로로 부릅니다(ADR 0012의 정의).
+# X-Forwarded-For는 Caddy 기본: trusted_proxies를 두지 않아 들어온 값을 믿지 않고 접속 주소로 채워 보냅니다.
+{
+	auto_https off
+}
+
+:8201 {
+	handle /api/* {
+		reverse_proxy backend:8080
+	}
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

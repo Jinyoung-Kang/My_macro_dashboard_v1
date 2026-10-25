@@ -1,87 +1,79 @@
 # =============================================================================
-# compose.aws.yml — AWS 배포용 덧붙임 (ADR 0012). 로컬 실행에는 쓰지 않습니다.
+# compose.aws.yml — AWS 개인용 서버 덧붙임 (ADR 0019). 로컬 실행에는 쓰지 않습니다.
 #
+# 서버(EC2 my-macro-app)에서는 scripts/aws/deploy.sh가 아래를 점검과 함께 돕니다(make up 대신 — 정확한 순서는 그 스크립트).
+# 손으로 할 때(서버의 ubuntu 사용자):
+#   export COMPOSE_FILE=docker-compose.yml:compose.aws.yml   # 두 파일을 늘 함께(서버 .env에도 같은 값)
 #   export APP_VERSION="main@$(git rev-parse --short HEAD)" APP_UPDATED="$(TZ=Asia/Seoul git log -1 --format=%cd --date=format-local:%Y-%m-%d)"
-#   docker compose -f docker-compose.yml -f compose.aws.yml --env-file .env build --pull   # 베이스 이미지 보안 패치
-#   docker compose -f docker-compose.yml -f compose.aws.yml --env-file .env up -d
-#   ok=; for i in 1 2 3 4 5 6 7 8 9 10; do docker compose -f docker-compose.yml -f compose.aws.yml --env-file .env \
+#   docker compose build --pull backend && docker compose build --pull frontend && docker compose build --pull collector   # 4 GiB — 하나씩
+#   docker compose up -d && docker compose up -d --no-deps --force-recreate caddy   # 바뀐 Caddyfile(파일 하나 bind mount)
+#   ok=; for i in 1 2 3 4 5 6 7 8 9 10; do docker compose \
 #     exec -T collector python -c "from app import store; store.init_schema()" && { ok=1; break; }; sleep 3; done; \
 #     [ -n "$ok" ] || { echo "⚠️ 스키마를 적용하지 못했습니다 — 수집기 로그(logs collector)를 보세요" >&2; false; }   # 스키마 적용
 #   ↑ make migrate와 같음. 수집기는 기동할 때만 db/migrations를 적용해, 스키마와 백엔드만 바뀐 배포에서는 up -d가
 #     수집기를 다시 만들지 않아 새 스키마가 빠집니다(QA-016). 이미 적용한 파일은 건너뜀. 10번 모두 실패하면 ⚠️와
 #     0이 아닌 종료 코드(QA-118) — exit 대신 false라 대화형 셸에 붙여 넣어도 창이 닫히지 않음
 #
+# 사용자는 1명(운영자)이고 공인 주소로는 아무 포트도 열지 않습니다(보안 그룹 인바운드 0). 화면은 PC의 scripts/aws/tunnel.sh가
+# 여는 SSM 포트 포워딩(PC localhost:8201 → 서버 127.0.0.1:8201)으로만 엽니다.
+#
 # 바뀌는 것
-#   · postgres 컨테이너 대신 RDS(PostgreSQL 18, TLS) — 접속 주소는 RDS_HOST. 서버 인증서와 호스트 이름까지 검증(verify-full):
-#     CA는 AWS 공개 신뢰 저장소의 서울 리전 묶음(certs/rds-ap-northeast-2-bundle.pem, truststore.pki.rds.amazonaws.com).
-#     RDS_HOST는 RDS 기본 엔드포인트(*.rds.amazonaws.com)여야 함 — IP·별칭이면 호스트 이름 검증에 실패
-#   · 화면·API는 127.0.0.1에만 열고, 앞단(Caddy)이 둘을 한 주소(같은 출처)로 묶음 → 프론트는 NEXT_PUBLIC_API_BASE=/
-#   · 로그인은 그대로(ADR 0016): 로컬의 '로그인 없이 운영자로 열기'(DASHBOARD_LOCAL_NO_LOGIN)를 "false"로 고정 — 서버 .env에
-#     LOCAL_NO_LOGIN이 섞여 들어와도 켜지지 않음
-#   · 앞단이 넘긴 X-Forwarded-For를 Tomcat이 믿음(내부 대역에서 온 것만) → 로그인 제한이 방문자 IP별로 동작
-#   · 공개 데모라 끄는 것: 메일(가입·재설정), 화면 조회가 수집을 일으키는 것(store_only),
-#     무료 AI 엔진 키(NVIDIA·Cerebras·Cloudflare는 비움)
-#   · 데모 열람(ADR 0013): 앞단 공개 쪽이 접근 코드를 확인한 요청에 X-Demo-Viewer 헤더로 DEMO_VIEWER_TOKEN을 실으면
-#     로그인 없이 읽기 전용(GET만). 비우면 꺼짐(방문자도 로그인 화면). 운영자 쪽(관리자 터널)은 헤더를 지움
-#   · AI 리포트(ADR 0014): 엔진은 Claude Haiku 5.5 하나만(AI_ENGINES), 키는 .env의 ANTHROPIC_API_KEY(비우면 AI 꺼짐).
-#     데모 열람의 쓰기는 POST /api/ai/report 하나만 열리고, 방문자 전체가 하루 AI_DEMO_DAILY_LIMIT건(기본 20,
-#     메모리 — 재시작하면 0부터)을 함께 씀. 앞단 Caddy 공개 쪽도 이 경로 하나만 POST를 통과시켜야 함
-#   · DB 연결 수를 줄임(RDS db.t4g.micro 한 대를 세 프로젝트가 나눠 씀)
-# 필요한 값(.env, 이름은 .env.aws.example): RDS_HOST · PUBLIC_ORIGIN · DATABASE_USER · DATABASE_PASSWORD ·
-#   DEMO_VIEWER_TOKEN(32자 이상, 앞단 Caddy와 같은 값) · ANTHROPIC_API_KEY · AI_DEMO_DAILY_LIMIT(선택) 외 기존 값
+#   · 앞단 caddy를 더함(deploy/aws/Caddyfile): 127.0.0.1:8201 하나만 열고 /api/*는 backend, 나머지는 frontend로 보냄.
+#     TLS 없음 — 평문은 서버의 루프백과 SSM 터널(암호화) 안에서만 흐름. 화면은 NEXT_PUBLIC_API_BASE=/(같은 출처)
+#   · 로그인은 그대로(ADR 0016): 로컬의 '로그인 없이 운영자로 열기'(DASHBOARD_LOCAL_NO_LOGIN)를 "false"로 고정
+#   · 세션 쿠키에 Secure(COOKIE_SECURE 기본 true) — Chrome·Firefox는 http://localhost를 안전한 출처로 봐 터널 화면에서도
+#     받습니다. Safari(WebKit)는 받지 않아 로그인이 되풀이되므로, Safari로 열 때만 서버 .env에 COOKIE_SECURE=false
+#   · 허용 출처·메일 링크 주소는 터널 화면(http://localhost:8201)으로 고정, 메일(가입·재설정)은 끔
+#   · 앞단이 넘긴 X-Forwarded-For를 Tomcat이 믿음(내부 대역에서 온 것만). 터널로 들어온 요청은 모두 한 주소로 보여
+#     로그인 제한은 사실상 이메일별 — 사용자 1명이라 그대로 둠(ADR 0019)
+# 바뀌지 않는 것: postgres 컨테이너(볼륨 my_macro_dashboard_v1_postgres-data — 폴더 이름을 따름), 나머지 포트는 기반 파일 그대로
+#   127.0.0.1의 기본값(3000/8080/8000/5432), AI 엔진·모의 매매(PAPER_ENABLED)·읽기 모드는 .env 그대로
+# 서버 .env(이름은 .env.aws.example): 로컬 .env에서 포트 네 줄·COOKIE_SECURE·LOCAL_NO_LOGIN·FRONTEND_ORIGIN·PUBLIC_URL·
+#   AWS_INSTANCE_ID(와 전환 뒤 로컬의 PAPER_ENABLED=false)를 빼고 COMPOSE_FILE·AWS_BACKUP_BUCKET을 더한 것
 # =============================================================================
 services:
-  postgres:
-    profiles: ["local-db"]          # RDS를 쓰므로 띄우지 않음
-
-  collector:
-    depends_on: !reset {}
-    environment:
-      DATABASE_URL: postgresql://${DATABASE_USER:?}:${DATABASE_PASSWORD:?}@${RDS_HOST:?RDS_HOST 필요}:${RDS_PORT:-5432}/${DATABASE_NAME:-macrodash}?sslmode=verify-full&sslrootcert=/etc/rds-ca.pem
-    volumes:
-      - ./certs/rds-ap-northeast-2-bundle.pem:/etc/rds-ca.pem:ro
-
   backend:
-    depends_on: !reset {}
     environment:
-      DATABASE_URL: jdbc:postgresql://${RDS_HOST:?RDS_HOST 필요}:${RDS_PORT:-5432}/${DATABASE_NAME:-macrodash}?sslmode=verify-full&sslrootcert=/etc/rds-ca.pem
-      SPRING_DATASOURCE_HIKARI_MAXIMUMPOOLSIZE: "4"
-      # 허용 출처: 공개 주소(CloudFront)와 관리자 터널(SSM 포트 포워딩, ADR 0012). 터널 화면은 http://localhost:8201로 열려,
-      # 이 둘이 없으면 그 화면의 로그인·쓰기 POST가 '다른 출처'(403)로 막힙니다(QA-136). 메일 링크(PUBLIC_URL)는 공개 주소만.
-      FRONTEND_ORIGIN: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN 필요 (예 https://dxxxx.cloudfront.net)},http://localhost:8201,http://127.0.0.1:8201
-      PUBLIC_URL: ${PUBLIC_ORIGIN}
-      COOKIE_SECURE: "${COOKIE_SECURE:-true}"
-      DASHBOARD_READ_MODE: store_only
-      # 국면 판정 기록 시각(KST, 기본 18). 평일 08:50–18:00 켜기·끄기 일정으로 돌 때 18시 뒤 실행이 오지 않아 기록이 한 건도
-      # 쌓이지 않았음(QA-093). 일정은 지금 꺼 두었지만(ADR 0012) 다시 켜도 걸리게, 운영 창 안에서 수집이 가장 오래 돈 뒤인
-      # 17시 — 30분 주기라 17:2x·17:5x 실행이 걸림.
-      DASHBOARD_SCHEDULER_REGIMERECORDHOURKST: "17"
-      # 앞단(Caddy)이 X-Forwarded-For를 클라이언트 IP 하나로 덮어써 보냄. Tomcat RemoteIpValve는
-      # 내부 대역(기본값: 10/8 · 172.16/12 · 192.168/16 · 127/8)에서 온 요청의 헤더만 믿는다.
-      SERVER_FORWARDHEADERSSTRATEGY: native
-      # 데모 열람 토큰 — 비면 꺼짐, 32자보다 짧으면 백엔드가 기동하지 않음(약한 토큰으로 켜지 않게).
-      DASHBOARD_DEMO_VIEWER_TOKEN: ${DEMO_VIEWER_TOKEN:-}
-      # 웹 데모는 늘 로그인(또는 데모 열람)을 거침 — 보간 없는 값이라 .env의 LOCAL_NO_LOGIN이 끼어들 자리가 없다(ADR 0016)
+      # 늘 로그인 화면을 거침 — 보간 없는 값이라 서버 .env의 LOCAL_NO_LOGIN이 끼어들 자리가 없다(ADR 0016)
       DASHBOARD_LOCAL_NO_LOGIN: "false"
+      # 로그인 쿠키가 붙지 않는 브라우저(Safari)일 때만 서버 .env에 COOKIE_SECURE=false를 적고 ADR 0019에 기록합니다.
+      COOKIE_SECURE: "${COOKIE_SECURE:-true}"
+      # 화면이 열리는 주소는 터널 하나. 이 둘이 없으면 터널 화면의 로그인·쓰기 POST가 '다른 출처'(403)로 막힙니다(QA-136).
+      FRONTEND_ORIGIN: "http://localhost:8201,http://127.0.0.1:8201"
+      # 백엔드는 허용 출처에 'http://*:화면 포트'를 더합니다(ADR 0006). 기본 3000이면 PC에서 3000번으로 뜬 다른 개발 서버
+      # (같은 사이트 localhost라 SameSite=Strict 쿠키도 실림)의 쓰기까지 받으므로 터널 포트로 맞춥니다. 화면 컨테이너의 포트와는 무관.
+      FRONTEND_PORT: "8201"
+      PUBLIC_URL: "http://localhost:8201"
+      # 앞단(Caddy)이 X-Forwarded-For를 접속 주소로 채워 보냄. Tomcat RemoteIpValve는 내부 대역
+      # (기본값: 10/8 · 172.16/12 · 192.168/16 · 127/8 등)에서 온 요청의 헤더만 믿는다 — 같은 compose 네트워크의 컨테이너와
+      # 127.0.0.1의 앱 포트로 붙는 서버 안 프로세스. 바깥에서 닿는 길은 Caddy뿐이고, 서버 안의 위조는 로그인 지연만 우회한다.
+      SERVER_FORWARDHEADERSSTRATEGY: native
       MAIL_HOST: ""
-      # AI 리포트(ADR 0014) — 운영자의 Anthropic 계정으로 Haiku 하나만. 다른 엔진은 키를 비우고 허용 목록에서도 뺌.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      AI_ENGINES: anthropic_haiku
-      AI_DEMO_DAILY_LIMIT: ${AI_DEMO_DAILY_LIMIT:-20}
-      # 앞단 CloudFront 원본 응답 한도(120초)보다 먼저 포기해야 방문자가 오류 페이지 대신 실패 안내를 받는다(번역 단계 포함 한도,
-      # QA-094). 대기 시간 초과는 과금됐을 수 있어 공용 한도를 되돌리지 않는다(ADR 0014, QA-021)
-      AI_TIMEOUT_SECONDS: "110"
-      NVIDIA_API_KEY: ""
-      CEREBRAS_API_KEY: ""
-      CLOUDFLARE_API_TOKEN: ""
-    volumes:
-      - ./certs/rds-ap-northeast-2-bundle.pem:/etc/rds-ca.pem:ro
-    ports: !override
-      - "127.0.0.1:${BACKEND_PORT:-8080}:8080"
 
   frontend:
     build:
       args:
         NEXT_PUBLIC_API_BASE: "/"
-    ports: !override
-      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 128m
+    # 앱 컨테이너와 같은 굳히기(기반 파일의 x-hardening — 다른 파일의 앵커는 쓸 수 없어 풀어 적음).
+    # 이미지의 caddy 실행 파일에 cap_net_bind_service 파일 권한이 붙어 있어, 그 하나는 남겨야 실행됩니다.
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      - backend
+      - frontend
+    # 인증서를 만들지 않아(auto_https off) /data·/config에 남길 것이 없습니다 — 볼륨을 두지 않습니다.
+    volumes:
+      - ./deploy/aws/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:8201:8201"

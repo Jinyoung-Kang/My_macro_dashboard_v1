@@ -313,38 +313,41 @@ make test-frontend     # 자가검증 + 훅 테스트(vitest) + 린트 + 빌드(
 (예전 `WEB_BIND_HOST`로 다른 기기에 여는 방법은 없앴습니다). 이 맥의 다른 웹사이트가 로컬 API를 부르지 못하게, 로그인 없는
 요청은 이 맥의 화면 주소에서 온 것만 받습니다 — 쿠키 없이 curl로 쓰기 요청을 보낼 때는 `Origin: http://localhost:3001`이 필요합니다.
 
-### AWS 데모 배포
+### AWS 개인용 서버
 
-> 이 절은 `Local_macro_dashboard_v3`에서 옮겨 온 공개 데모(EC2 + RDS) 절차입니다. **이 저장소는 이 절차·`compose.aws.yml`로
-> 배포하지 않습니다** — 모의 매매가 공개 데모에 섞입니다([ADR 0018](docs/adr/0018-paper-trading-guardrails.md)). 이 저장소의 AWS 개인용
-> 배포(t4g.medium + Postgres 컨테이너 + Tailscale)는 별도 ADR로 정합니다.
-
-포트폴리오 데모는 AWS(EC2 + RDS PostgreSQL 18)에 올립니다. 로컬 실행과 다른 점은
-덧붙임 파일 [compose.aws.yml](compose.aws.yml) 하나에 있고, 이유는 [ADR 0012](docs/adr/0012-aws-demo-deployment.md)에 있습니다.
+🧪 모의 매매까지 24시간 돌리려고 AWS 서울의 EC2 한 대(`my-macro-app`, t4g.medium ARM · 4 GiB)에 올립니다. DB는 로컬과 같은
+Postgres 컨테이너입니다. 사용자는 1명(운영자)이고 공인 주소로는 아무 포트도 열지 않습니다(보안 그룹 인바운드 0) — 화면은 PC에서
+SSM 포트 포워딩으로만 엽니다. 로컬과 다른 점은 덧붙임 [compose.aws.yml](compose.aws.yml)과 [scripts/aws/](scripts/aws/)에 있고,
+이유는 [ADR 0019](docs/adr/0019-aws-personal-deployment.md)에 있습니다. 월 약 $37.
 
 ```bash
-export APP_VERSION="main@$(git rev-parse --short HEAD)" APP_UPDATED="$(TZ=Asia/Seoul git log -1 --format=%cd --date=format-local:%Y-%m-%d)"   # 화면 왼쪽 아래 버전·최종 수정일
-docker compose -f docker-compose.yml -f compose.aws.yml --env-file .env build --pull   # 베이스 이미지 보안 패치까지
-docker compose -f docker-compose.yml -f compose.aws.yml --env-file .env up -d
-ok=; for i in 1 2 3 4 5 6 7 8 9 10; do docker compose -f docker-compose.yml -f compose.aws.yml --env-file .env \
-  exec -T collector python -c "from app import store; store.init_schema()" && { ok=1; break; }; sleep 3; done; \
-  [ -n "$ok" ] || { echo "⚠️ 스키마를 적용하지 못했습니다 — 수집기 로그(logs collector)를 보세요" >&2; false; }   # 스키마 적용
+bash scripts/aws/tunnel.sh   # PC: 서버 화면을 http://localhost:8201 로 엽니다(로그인: OWNER_EMAIL · 닫기: Ctrl-C)
 ```
 
-- 세 번째 명령은 `make migrate`와 같습니다. 스키마 파일(`db/migrations`)은 수집기가 기동할 때만 적용되는데, 스키마와 백엔드만
-  바뀐 배포에서는 `up -d`가 수집기를 다시 만들지 않아 새 스키마가 빠집니다(QA-016). 이미 적용한 파일은 건너뛰어 여러 번 불러도 안전합니다.
-  10번 모두 실패하면 ⚠️를 찍고 0이 아닌 값으로 끝나 SSM·스크립트도 실패로 봅니다(QA-118). `exit 1` 대신 `false`를 쓴 것은 대화형
-  셸에 붙여 넣어도 창이 닫히지 않게 하려는 것입니다.
-- DB는 postgres 컨테이너 대신 RDS(`RDS_HOST`, TLS)입니다. 화면·API는 `127.0.0.1`에만 열고, 앞단 프록시가 한 주소로 묶습니다.
-- 추가로 필요한 값은 [.env.aws.example](.env.aws.example)에 이름만 있습니다(`RDS_HOST`·`PUBLIC_ORIGIN` 등).
-- 공개 데모에서는 메일 가입·무료 AI 엔진·화면 조회가 일으키는 수집을 끕니다. 운영자 경로와 계정 변경은 앞단에서 막습니다.
-- 방문자는 앞단의 접근 코드만 통과하면 로그인 없이 읽기 전용으로 봅니다(데모 열람, `DEMO_VIEWER_TOKEN` 32자 이상,
-  [ADR 0013](docs/adr/0013-demo-viewer-mode.md)). 값을 비우면 꺼집니다. AWS는 `compose.aws.yml`이 로그인 없는 로컬 모드를 늘 끕니다(`DASHBOARD_LOCAL_NO_LOGIN: "false"`).
-- AI 리포트는 Claude Haiku 5.5 하나로만 만들고(`AI_ENGINES=anthropic_haiku`, 키는 `.env`의 `ANTHROPIC_API_KEY`), 데모 방문자
-  전체가 하루 `AI_DEMO_DAILY_LIMIT`건(기본 20)을 함께 씁니다. 데모 열람의 쓰기는 이 요청 하나만 열려 있습니다
-  ([ADR 0014](docs/adr/0014-aws-demo-ai-report.md)). 앞단 Caddy 공개 쪽도 `POST /api/ai/report`를 통과시켜야 합니다.
-- 🧭 국면 판정 기록은 KST 17시 이후에 씁니다(로컬 18시). 평일 08:50–18:00 켜기·끄기 일정으로 돌 때 18시 뒤 실행이 오지 않아
-  기록이 쌓이지 않았기 때문입니다(QA-093). 일정은 지금 꺼 두었지만, 다시 켜도 기록이 남도록 17시를 유지합니다.
+새 코드를 서버에 올릴 때는 PC에서 서버 셸에 붙어(`aws ssm start-session --region ap-northeast-2 --target <AWS_INSTANCE_ID>`) 이렇게 합니다.
+
+```bash
+sudo -iu ubuntu
+bash ~/My_macro_dashboard_v1/scripts/aws/deploy.sh   # main 받기 → 이미지 하나씩 빌드 → 기동 → 스키마 적용
+```
+
+- 서버에서는 `make up` 대신 `deploy.sh`를 씁니다. 4 GiB라 이미지를 하나씩 빌드하고(backend → frontend → collector), 기동 뒤에는
+  `make migrate`와 같은 스키마 적용을 돌립니다(QA-016). 어느 단계든 실패하면 0이 아닌 값으로 끝납니다.
+- 앞단 Caddy가 서버의 `127.0.0.1:8201` 하나만 열고 `/api/*`는 백엔드, 나머지는 화면으로 보냅니다(같은 출처, `NEXT_PUBLIC_API_BASE=/`).
+  TLS는 없습니다 — 평문은 서버의 루프백과 SSM 터널(암호화) 안에서만 흐릅니다.
+- 로그인 화면은 늘 거칩니다(`compose.aws.yml`이 로그인 없는 로컬 모드를 `"false"`로 고정, [ADR 0016](docs/adr/0016-local-no-login.md)).
+  세션 쿠키에는 `Secure`가 붙습니다 — Chrome·Firefox는 `http://localhost`를 안전한 출처로 봐 받고, Safari는 받지 않습니다
+  (Safari로 열 때만 서버 `.env`에 `COOKIE_SECURE=false`, DEVELOPMENT §7). 메일(가입·재설정)은 꺼 둡니다.
+- 서버 `.env`는 로컬 `.env`에서 포트 네 줄·`COOKIE_SECURE`·`LOCAL_NO_LOGIN`·`FRONTEND_ORIGIN`·`PUBLIC_URL`·`AWS_INSTANCE_ID`를 빼고
+  `COMPOSE_FILE`·`AWS_BACKUP_BUCKET`을 더한 것입니다([.env.aws.example](.env.aws.example)). 빠져야 할 이름이 있으면 `deploy.sh`가 멈춥니다
+  (`COOKIE_SECURE`·`PAPER_ENABLED`는 알리고 계속 — Secure 쿠키를 받지 못하는 브라우저, 서버 정기 작업을 일부러 끈 경우의 자리).
+  전환 뒤 로컬의 `PAPER_ENABLED=false`도 옮기지 않습니다(서버는 비우면 켜짐). PC의 `.env`에는 `AWS_INSTANCE_ID`(서버 인스턴스 ID)만 더합니다.
+- DB는 매일 06:10 KST에 S3로 백업합니다(`scripts/aws/backup-s3.sh`, cron, 60일 보관).
+- 🧪 모의 매매 정기 작업은 **서버 한 곳에서만** 돕니다. 데이터를 서버로 옮긴 뒤 로컬 v1은 `.env`에 `PAPER_ENABLED=false`를 넣고 띄웁니다
+  — 두 곳이 같은 계좌를 따로 결정·체결하면 안 됩니다.
+- 서버 만들기·데이터 전환·SSM 셸 절차는 [docs/DEVELOPMENT.md §7](docs/DEVELOPMENT.md#7-aws-개인용-서버)에 있습니다.
+- v3에서 옮겨 온 공개 데모 배포(RDS·CloudFront·데모 열람, [ADR 0012](docs/adr/0012-aws-demo-deployment.md)~[0014](docs/adr/0014-aws-demo-ai-report.md))는
+  이 저장소에서 쓰지 않습니다.
 
 ---
 
