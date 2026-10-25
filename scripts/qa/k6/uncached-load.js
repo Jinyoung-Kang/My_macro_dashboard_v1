@@ -17,15 +17,15 @@
 //                   되돌려받음). QA-133 뒤로는 한도·원본 텍스트 전에 바로 끝나 그 경로를 재지 않습니다(수정 전·후 비교용)
 //
 // 사용(QA 스택에서만 — 운영 스택 8080에 돌리지 않습니다):
-//   k6 run -e BASE=http://127.0.0.1:18080 -e ORIGIN=http://localhost:13000 \
+//   k6 run -e BASE=http://127.0.0.1:18081 -e ORIGIN=http://localhost:13001 \
 //     -e EMAIL="$(grep ^OWNER_EMAIL= .env.qa | cut -d= -f2-)" -e PASSWORD="$(grep ^APP_PASSWORD= .env.qa | cut -d= -f2-)" \
 //     -e ROUTE=holders-wide -e VUS=20 -e DURATION=60s scripts/qa/k6/uncached-load.js
 //   429는 서버가 덜어 낸 요청(shed)이라 load에서는 실패로 보지 않고 따로 셉니다. health·session은 200만 성공입니다.
 import http from "k6/http";
 import { Counter, Rate, Trend } from "k6/metrics";
 
-const BASE = __ENV.BASE || "http://127.0.0.1:18080";
-const ORIGIN = __ENV.ORIGIN || "http://localhost:13000";
+const BASE = __ENV.BASE || "http://127.0.0.1:18081";
+const ORIGIN = __ENV.ORIGIN || "http://localhost:13001";
 const ROUTE = __ENV.ROUTE || "holders-wide";
 const VUS = Number(__ENV.VUS || 20);
 const DURATION = __ENV.DURATION || "60s";

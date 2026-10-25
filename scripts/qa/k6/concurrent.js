@@ -6,8 +6,8 @@
 import http from 'k6/http';
 import { check } from 'k6';
 
-const BASE = __ENV.BASE || 'http://127.0.0.1:18080';
-const ORIGIN = __ENV.ORIGIN || 'http://localhost:13000';
+const BASE = __ENV.BASE || 'http://127.0.0.1:18081';
+const ORIGIN = __ENV.ORIGIN || 'http://localhost:13001';
 const SCENARIO = __ENV.SCENARIO || 'refresh';
 export const options = { scenarios: { burst: { executor: 'per-vu-iterations', vus: SCENARIO === 'login' ? 30 : 20, iterations: 1 } } };
 

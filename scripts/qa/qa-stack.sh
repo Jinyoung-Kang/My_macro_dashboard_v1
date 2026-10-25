@@ -10,12 +10,13 @@
 #   bash scripts/qa/qa-stack.sh down          컨테이너·볼륨 삭제 (운영 볼륨 my_macro_dashboard_v1_*는 그대로)
 #   QA_NO_LOGIN=1 bash scripts/qa/qa-stack.sh up   로그인 없는 로컬 실행을 시험(기본은 로그인, ADR 0016)
 #
-# compose 프로젝트 이름은 macrodash_qa, 포트는 13000(화면)·18080(API)·18000(수집기)·15432(DB)·18888(프록시).
+# compose 프로젝트 이름은 my_macrodash_qa, 포트는 13001(화면)·18081(API)·18001(수집기)·15433(DB)·18889(프록시) —
+# 같은 맥의 Local_macro_dashboard_v3 QA 스택(macrodash_qa, 13000…)과 컨테이너·볼륨·포트가 겹치지 않습니다.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-export COMPOSE_PROJECT_NAME="${QA_PROJECT:-macrodash_qa}"
+export COMPOSE_PROJECT_NAME="${QA_PROJECT:-my_macrodash_qa}"
 export COMPOSE_FILE="docker-compose.yml:scripts/qa/docker-compose.qa.yml"
 # QA_NO_LOGIN=1이면 로그인 없는 로컬 실행(ADR 0016)을 시험합니다 — 기본은 로그인 경로(auth-probe.sh가 401을 기대).
 if [ "${QA_NO_LOGIN:-}" = "1" ]; then
@@ -62,11 +63,11 @@ COOKIE_SECURE=false
 DATABASE_USER=macro
 DATABASE_PASSWORD=$(random_token 20)
 DATABASE_NAME=macrodash
-DATABASE_PORT=15432
-BACKEND_PORT=18080
-COLLECTOR_PORT=18000
-FRONTEND_PORT=13000
-QA_PROXY_PORT=18888
+DATABASE_PORT=15433
+BACKEND_PORT=18081
+COLLECTOR_PORT=18001
+FRONTEND_PORT=13001
+QA_PROXY_PORT=18889
 BACKUP_KEEP=5
 ENV
   echo "✅ .env.qa 생성(새 비밀값). 비밀번호는 'bash scripts/qa/qa-stack.sh api …'가 파일에서 읽습니다."
@@ -106,11 +107,11 @@ case "$cmd" in
   exec) docker compose exec -T "$@" ;;
   compose) docker compose "$@" ;;
   proxy)
-    port="$(env_value QA_PROXY_PORT)"; port="${port:-18888}"
+    port="$(env_value QA_PROXY_PORT)"; port="${port:-18889}"
     if [ -n "${1:-}" ]; then curl -s "http://127.0.0.1:$port/__mode?set=$1"; else curl -s "http://127.0.0.1:$port/__mode"; fi; echo
     ;;
   api)
-    port="$(env_value BACKEND_PORT)"; port="${port:-18080}"
+    port="$(env_value BACKEND_PORT)"; port="${port:-18081}"
     jar="$(mktemp -t qacookie)"; trap 'rm -f "$jar"' EXIT
     body="$( (env_value OWNER_EMAIL; env_value APP_PASSWORD) | python3 -c 'import json,sys; e,p=sys.stdin.read().split("\n")[:2]; print(json.dumps({"email": e.strip(), "password": p.strip()}))')"
     curl -s -o /dev/null -c "$jar" -H 'Content-Type: application/json' -H "Origin: http://localhost:$(env_value FRONTEND_PORT)" \

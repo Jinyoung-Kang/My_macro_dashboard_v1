@@ -22,7 +22,7 @@ make setup
 # 실행
 make up          # 최초 빌드 5~10분
 make collect     # 첫 데이터 수집 (이걸 해야 화면에 숫자가 찹니다)
-open http://localhost:3000
+open http://localhost:3001
 ```
 
 > **폴더 이름이 DB 볼륨 이름을 정합니다.** 로컬 폴더는 저장소 이름과 같은
@@ -35,9 +35,10 @@ open http://localhost:3000
 > **`Local_macro_dashboard_v3`에서 옮겨 오기** — 이 저장소는 2026-10-25에 v3 저장소의
 > 브랜치 `claude/paper-trading-2026-10`을 그대로 `main`으로 가져와 만들었고, 같은 맥의 v3 스택이
 > 쌓은 데이터(모의 매매 계좌·결정 기록 포함)는 DB 볼륨을 복사해 이어받았습니다. 다시 해야 한다면
-> 새로 clone한 뒤 볼륨을 새 이름으로 복사하세요. 두 스택은 포트(3000/8080/8000/5432)와 DB 이름
-> (`macrodash`·`macrodash_test`)이 같아 **동시에 띄우지 않습니다**. 한 줄씩 붙여 넣고, 오류 없이
-> 끝났는지 본 뒤 다음 줄로 넘어가세요.
+> 새로 clone한 뒤 볼륨을 새 이름으로 복사하세요. v3 폴더는 **모의 매매 개발 전 main 그대로** 두고 v3 볼륨도
+> v3가 계속 씁니다 — 두 프로젝트는 따로 돕니다. 이 저장소는 `.env`의 포트를 3001/8081/8001/5433으로 바꿔
+> v3(3000/8080/8000/5432)와 함께 띄웁니다(compose 프로젝트·볼륨·QA 스택 이름도 다름). 한 줄씩 붙여 넣고,
+> 오류 없이 끝났는지 본 뒤 다음 줄로 넘어가세요.
 > ```bash
 > cd ~/Projects/Local_macro_dashboard_v3 && make backup && make down
 > git clone https://github.com/Jinyoung-Kang/My_macro_dashboard_v1.git ~/Projects/My_macro_dashboard_v1
@@ -47,7 +48,10 @@ open http://localhost:3000
 >        --label com.docker.compose.volume=postgres-data my_macro_dashboard_v1_postgres-data \
 >   && docker run --rm -v local_macro_dashboard_v3_postgres-data:/from:ro \
 >        -v my_macro_dashboard_v1_postgres-data:/to postgres:16-alpine cp -a /from/. /to/
-> cd ~/Projects/My_macro_dashboard_v1 && make up && make doctor
+> cd ~/Projects/My_macro_dashboard_v1 && sed -i -e 's/^DATABASE_PORT=.*/DATABASE_PORT=5433/' -e 's/^BACKEND_PORT=.*/BACKEND_PORT=8081/' \
+>   -e 's/^COLLECTOR_PORT=.*/COLLECTOR_PORT=8001/' -e 's/^FRONTEND_PORT=.*/FRONTEND_PORT=3001/' .env
+> make up && make doctor
+> cd ~/Projects/Local_macro_dashboard_v3 && git switch main && make up   # v3는 개발 전 main으로 다시
 > ```
 > `.env`는 v3 것을 그대로 씁니다(QA 스택용 `.env.qa`가 있으면 같은 방법으로 복사). 내용을 화면에
 > 출력하지 마세요. 볼륨 복사 명령은 성공하면 새 볼륨 이름을 한 줄 출력합니다. 아무것도 나오지 않으면
@@ -243,9 +247,9 @@ make up
 
 | 주소 | 용도 |
 |---|---|
-| <http://localhost:3000> | 화면 — 로그인 없이 운영자로 열림(이 맥에서만, ADR 0016). 운영자 계정은 `.env`의 `OWNER_EMAIL` + `APP_PASSWORD`로 처음 기동 때 만듦 |
-| <http://localhost:8080/api/health> | 백엔드 상태 |
-| <http://localhost:8000/docs> | 수집기 API 문서 (FastAPI 자동 생성) |
+| <http://localhost:3001> | 화면 — 로그인 없이 운영자로 열림(이 맥에서만, ADR 0016). 운영자 계정은 `.env`의 `OWNER_EMAIL` + `APP_PASSWORD`로 처음 기동 때 만듦 |
+| <http://localhost:8081/api/health> | 백엔드 상태 |
+| <http://localhost:8001/docs> | 수집기 API 문서 (FastAPI 자동 생성) |
 
 ### 첫 데이터 수집
 
@@ -337,7 +341,7 @@ java -version           # 21 이상인지 먼저 확인하세요
 # DB 주소(.env의 DATABASE_PORT)와 수집기 토큰(.env의 COLLECTOR_API_TOKEN)은 make가 넘깁니다.
 DATABASE_USER="macro" DATABASE_PASSWORD="macro" \
 OWNER_EMAIL="로그인용_이메일" APP_PASSWORD="원하는_비밀번호" \
-COLLECTOR_URL="http://localhost:8000" \
+COLLECTOR_URL="http://localhost:8001" \
   make dev-backend
 ```
 
@@ -442,7 +446,7 @@ make test-frontend     # 자가검증 + 훅 테스트 + 린트 + 빌드 (Node 24
 make db-test           # 테스트 전용 DB 준비 (위 명령들이 자동으로 부릅니다)
 ```
 
-`make test`는 `localhost:5432`의 PostgreSQL을 씁니다. Docker로 띄운 상태라면
+`make test`는 `.env`의 `DATABASE_PORT`(이 저장소 기본 5433) PostgreSQL을 씁니다. Docker로 띄운 상태라면
 그대로 돌아가고, 아니면 `make infra`로 DB만 먼저 올리세요.
 
 > ⚠️ **테스트는 평소 쓰는 DB(`macrodash`)를 건드리지 않습니다.**
@@ -475,7 +479,7 @@ make db-test           # 테스트 전용 DB 준비 (위 명령들이 자동으�
 | `Cannot connect to the Docker daemon` | Docker Desktop이 꺼져 있습니다. `open -a Docker` 후 30초 |
 | 포트 5432 충돌 | 맥에 PostgreSQL이 이미 돌고 있습니다. `.env`의 `DATABASE_PORT=5433`으로 바꾸고 `make up` |
 | 포트 3000 충돌 | 다른 개발 서버가 씁니다. `.env`에서 `FRONTEND_PORT=3001`. `FRONTEND_ORIGIN`을 `.env`에 직접 적어 두셨다면 `http://localhost:3001`로 함께 고치거나 그 줄을 지우세요(지우면 포트를 따라감) |
-| `Bind for 127.0.0.1:8080 failed: port is already allocated` | 8080을 **다른 컨테이너**가 잡고 있습니다(다른 프로젝트, IDE에서 띄운 Spring Boot 등). 나머지는 다 떠서 화면은 "백엔드 API에 연결하지 못했습니다"만 보입니다. `bash scripts/ports.sh check`가 누가 잡았는지 보여 줍니다 → `docker stop <이름>`, 또는 `.env`에서 `BACKEND_PORT=18080` 후 `make up`. 잡은 컨테이너가 없는데도 이 오류가 나면 Docker Desktop을 재시작하세요 |
+| `Bind for 127.0.0.1:8081 failed: port is already allocated` | 8081을 **다른 컨테이너**가 잡고 있습니다(다른 프로젝트, IDE에서 띄운 Spring Boot 등 — 같은 맥의 v3는 8080이라 겹치지 않음). 나머지는 다 떠서 화면은 "백엔드 API에 연결하지 못했습니다"만 보입니다. `bash scripts/ports.sh check`가 누가 잡았는지 보여 줍니다 → `docker stop <이름>`, 또는 `.env`에서 `BACKEND_PORT=18080` 후 `make up`. 잡은 컨테이너가 없는데도 이 오류가 나면 Docker Desktop을 재시작하세요 |
 | 로그인은 되는데 화면이 계속 401 | `127.0.0.1`로 접속했는데 `FRONTEND_ORIGIN`은 `localhost`입니다(또는 반대). 브라우저는 둘을 **다른 오리진**으로 보고 쿠키를 막습니다. 주소를 하나로 통일하세요 |
 | 화면은 뜨는데 전부 "데이터 없음" | 아직 수집을 하지 않았습니다. `make collect` |
 | `make collect`가 "수집기에 연결하지 못했습니다" | `make logs S=collector`로 기동 여부 확인 |

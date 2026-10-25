@@ -287,10 +287,11 @@ fi
 title "다음 단계"
 
 if [ "$DOCKER_READY" -eq 1 ]; then
-  cat <<'NEXT'
+  front_port="$(grep -s '^FRONTEND_PORT=' .env | cut -d= -f2)"
+  cat <<NEXT
     make up        # 전체 스택 기동 (최초 빌드 5~10분)
     make collect   # 첫 데이터 수집 (없으면 화면이 비어 있습니다)
-    open http://localhost:3000
+    open http://localhost:${front_port:-3001}
 NEXT
 else
   cat <<'NEXT'

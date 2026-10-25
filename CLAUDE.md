@@ -19,13 +19,13 @@ PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너
 - 테스트: `make test` (= `test-collector` + `test-backend` + `test-frontend`). CI와 같은 명령.
 - 백업·복원: `make backup` · `make restore F=backups/….sql` (ADR 0003)
 - 코드 받기는 `make update`. `git pull`은 쓰지 않는다(다른 브랜치의 작업을 조용히 놓침).
-- QA·실험용 별도 스택: `bash scripts/qa/qa-stack.sh up|restore F=…|down` (compose 프로젝트 `macrodash_qa`,
-  포트 13000/18080/18000/15432, 새 비밀값 `.env.qa`, 외부 호출은 차단 프록시). 성능 측정: `ENV_FILE=.env.qa bash scripts/bench-api.sh`(QA 스택), `scripts/qa/k6/`.
+- QA·실험용 별도 스택: `bash scripts/qa/qa-stack.sh up|restore F=…|down` (compose 프로젝트 `my_macrodash_qa`,
+  포트 13001/18081/18001/15433 — v3 QA(`macrodash_qa`, 13000…)와 겹치지 않음, 새 비밀값 `.env.qa`, 외부 호출은 차단 프록시). 성능 측정: `ENV_FILE=.env.qa bash scripts/bench-api.sh`(QA 스택), `scripts/qa/k6/`.
 
 ## 절대 규칙
 - **운영 DB(`macrodash`)로 테스트하지 않는다.** 테스트는 `macrodash_test`만 쓴다
   (`make test-*`가 맞춰 줌). 백엔드 통합 테스트는 시작할 때 `snapshots`를 비운다.
-  부하·장애·브라우저 시험도 운영 스택(3000/8080/8000/5432)이 아니라 QA 스택에서 한다.
+  부하·장애·브라우저 시험도 운영 스택(3001/8081/8001/5433)이 아니라 QA 스택에서 한다.
 - **비밀값은 `.env`에만.** 이 저장소는 공개하지 않는다(모의매매 프롬프트·투자 OS 원문 포함). 그래도 비밀값은 `.env`에만 —
   키·토큰·비밀번호를 코드·문서·로그·커밋에 넣지 않는다. 예시 이메일 같은 자리표시 값도 코드 기본값으로 두지 않는다.
 - **없는 숫자를 만들지 않는다.** 표본 부족·수집 실패는 `null`→화면 `—`. 0으로 채우지 않는다.
@@ -56,6 +56,8 @@ PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너
 - GitHub 인증은 HTTPS + 키체인 토큰. 403이면 docs/DEVELOPMENT.md §5의 해결 순서.
 
 ## 이 환경의 함정
+- 같은 맥에서 `Local_macro_dashboard_v3`(모의 매매 개발 전 main, 3000/8080/8000/5432, compose 프로젝트 `local_macro_dashboard_v3`)가
+  따로 돈다. 이 저장소는 `.env`의 포트 3001/8081/8001/5433을 쓰고, 명령은 이 폴더에서만 친다. v3 폴더·볼륨·스택은 건드리지 않는다.
 - Claude Code 셸의 `grep`·`find`는 ugrep·bfs로 바뀌어 있어 `.gitignore` 대상(`.venv`, `.next`,
   `node_modules`, `.git`)을 건너뛴다. 파일 시스템 전체를 훑을 때는 `/usr/bin/grep`을 쓴다.
 - 테스트 DB·백업 스크립트는 `docker compose exec -T postgres`로 컨테이너 안의 psql을 쓴다.

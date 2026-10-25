@@ -1,13 +1,13 @@
 // scripts/qa/k6/api-load.js — 핵심 API 부하 시험 (QA 스택). 로그인 뒤 세션 쿠키로 호출.
-// 사용: k6 run -e BASE=http://127.0.0.1:18080 -e EMAIL="$(grep ^OWNER_EMAIL= .env.qa | cut -d= -f2-)" -e PASSWORD="$(grep ^APP_PASSWORD= .env.qa | cut -d= -f2-)" \
-//        -e ORIGIN=http://localhost:13000 -e VUS=10 -e DURATION=60s scripts/qa/k6/api-load.js
+// 사용: k6 run -e BASE=http://127.0.0.1:18081 -e EMAIL="$(grep ^OWNER_EMAIL= .env.qa | cut -d= -f2-)" -e PASSWORD="$(grep ^APP_PASSWORD= .env.qa | cut -d= -f2-)" \
+//        -e ORIGIN=http://localhost:13001 -e VUS=10 -e DURATION=60s scripts/qa/k6/api-load.js
 // 결과: p95·처리량·오류율. 임계값(thresholds)을 넘으면 종료 코드가 0이 아닙니다.
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Trend } from 'k6/metrics';
 
-const BASE = __ENV.BASE || 'http://127.0.0.1:18080';
-const ORIGIN = __ENV.ORIGIN || 'http://localhost:13000';
+const BASE = __ENV.BASE || 'http://127.0.0.1:18081';
+const ORIGIN = __ENV.ORIGIN || 'http://localhost:13001';
 const ENDPOINTS = [
   '/api/macro/overview', '/api/macro/risk', '/api/liquidity?years=3', '/api/sector/momentum',
   '/api/sec13f/portfolio?cik=0001608046&quarters=8&topN=30', '/api/sec13f/consensus?minHolders=2',

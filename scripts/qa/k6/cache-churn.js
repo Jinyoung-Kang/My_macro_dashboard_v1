@@ -53,7 +53,7 @@
 //
 // 사용(QA 스택에서만 — 운영 스택 8080에 돌리지 않습니다):
 //   bash scripts/qa/qa-stack.sh up && bash scripts/qa/qa-stack.sh restore F=backups/….sql   # .env.qa 기본값: 수집 스케줄 꺼짐
-//   k6 run -e BASE=http://127.0.0.1:18080 -e ORIGIN=http://localhost:13000 \
+//   k6 run -e BASE=http://127.0.0.1:18081 -e ORIGIN=http://localhost:13001 \
 //     -e EMAIL="$(grep ^OWNER_EMAIL= .env.qa | cut -d= -f2-)" -e PASSWORD="$(grep ^APP_PASSWORD= .env.qa | cut -d= -f2-)" \
 //     -e RATE=5 -e DURATION=120s scripts/qa/k6/cache-churn.js
 //   선택: -e HOT_VUS=10 -e RARE_EVERY=20 -e CAL_N=7 -e MISS_K=3 -e MISS_D=20
@@ -82,8 +82,8 @@ import exec from 'k6/execution';
 import { sleep } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
-const BASE = __ENV.BASE || 'http://127.0.0.1:18080';
-const ORIGIN = __ENV.ORIGIN || 'http://localhost:13000';
+const BASE = __ENV.BASE || 'http://127.0.0.1:18081';
+const ORIGIN = __ENV.ORIGIN || 'http://localhost:13001';
 const RATE = Number(__ENV.RATE || 0);
 const DURATION = __ENV.DURATION || '120s';
 const HOT_VUS = Number(__ENV.HOT_VUS || 10);

@@ -55,8 +55,8 @@ make test-frontend     # 자가검증 + 훅 테스트(vitest) + 린트 + 빌드(
 
 ```bash
 # 직접 실행할 때
-cd backend  && TEST_DATABASE_URL=jdbc:postgresql://localhost:5432/macrodash_test mvn test
-cd collector && TEST_DATABASE_URL=postgresql://macro:macro@localhost:5432/macrodash_test pytest
+cd backend  && TEST_DATABASE_URL=jdbc:postgresql://localhost:5433/macrodash_test mvn test      # 5433 = 이 저장소 .env의 DATABASE_PORT
+cd collector && TEST_DATABASE_URL=postgresql://macro:macro@localhost:5433/macrodash_test pytest
 ```
 
 백엔드에는 `guardAgainstRealDatabase()`가 있어 DB 이름이 `_test`로 끝나지 않으면
