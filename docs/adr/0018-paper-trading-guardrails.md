@@ -194,9 +194,32 @@
   `sec_13f_track_record`), 경로 29개, `/paper` 일곱 탭을 더했습니다. 단계별 결과·운영 상태는 [설계 §9-1](../specs/2026-10-24-paper-trading-design-plan.md)입니다.
 - **[확인 필요]** 장중 저장본의 마지막 봉이 그날 지연 시세인지 아직 재지 않았습니다. 10-26(월) KST 22:30 뒤 `paper_job_runs`(job `risk`)의 `detail`로 확인합니다
   (설계 §13 첫 행). 장중 봉이 없어도 체결 조건 2 때문에 `NEXT_OBSERVATION`이 다음 확정 종가 체결이 될 뿐, 룩어헤드는 생기지 않습니다.
-- 재무제표가 패킷에 없습니다. 사용자 OS의 엔진 E3·E4·E5와 E8-R4는 재무 수치를 요구합니다. 모델은 이를 '확인 필요'로 다룰 것으로 봅니다(추정).
-  XBRL 수집은 2단계입니다(설계 §14-1).
+- 재무제표는 D28(2026-10-25)로 Claude 계좌 패킷 `8b_fundamentals`에 들어갔습니다(SEC XBRL Company Facts, 공시일 ≤ 기준일 — 설계 §4-5).
+  사용자 OS 엔진 E3·E4·E5·E8-R4가 묻는 TTM·마진·FCF·ROE를 싣습니다. 재무로 거는 **필터**(검증기·규칙 계좌)는 동결 대조군을 바꾸지 않으려고 하지
+  않습니다(설계 §14-1).
 - `AI_ENGINES` 허용 목록([0014](0014-aws-demo-ai-report.md))은 `AiService.structured`를 거르지 않습니다. 로컬 전용이라 지금은 상관없지만, main·AWS로 옮기면 먼저 고칩니다.
 - 트랙레코드는 복제 수익률이지 기관의 실제 수익률이 아닙니다. 후보 목록에는 생존 편향이 있고, 순위는 커버리지에 민감합니다(매핑 445개 → 498개에서
   3위·6위가 자리를 바꿈, 설계 §13).
 - 몇 달치 결과로는 통계적 결론을 낼 수 없습니다. Claude 계좌는 같은 입력에도 답이 달라지며, 재현은 기록으로만 합니다(명세 §6).
+
+### 2단계 (2026-10-25, [2단계 명세](../specs/2026-10-25-paper-trading-phase2-spec.md))
+
+새 ADR 없이 이 문서의 원칙을 그대로 적용했습니다 — 2단계 네 항목은 **Claude 계좌의 입력(패킷)과 프레임 갱신 통로에만** 닿고, 규칙 계좌·검증기·
+벤치마크는 바꾸지 않았습니다(D35). 외부 글(헤드라인·복기 입력)은 구분자로 감싼 자료이고, 일정·사건은 주문을 막거나 강제하지 않습니다(D7과 같음).
+
+- **A 발표·실적 일정** — 수집 `us_calendar`(FRED 릴리스별 발표일 + 연준 FOMC 연간 상수 + yfinance 실적일), 패킷 `1b_calendar`(기준일 뒤 10거래일).
+  지키는 시험: `CalendarWindowTest`(창·휴장·미공개 구간·자료 없음 구분), `CalendarSectionTest`.
+- **D 주간 복기 루프** — `paper_reviews`(V12, 백엔드만 씀), 코드가 만든 입력(체결 뒤 수익률·스탑·200일선·거절 주문 가정 수익률·같은 기간 계좌 수익률),
+  토요일 정기 작업, 프레임 수정은 기존 제안 통로에 **PENDING**(자동 반영 없음 — 결정 7). 지키는 시험: `ReviewFactsTest`(손계산·룩어헤드 없음),
+  `ReviewServiceTest.proposalBecomesPendingAndFrameworkUnchanged`(승인 전 프레임 판 불변)·같은 주 1건, `PaperReviewJobTest`.
+- **B 사건 뉴스** — RSS만·제목·출처·시각만(D29, HTML·본문 없음, 야후는 robots.txt로 제외), 수집 `news_headlines`(feedparser 6.0.14, 7일 보존),
+  패킷 `11b_events`(직전 결정 이후, 보유·후보 티커나 매크로 키워드에 걸린 것만 최대 10건 — 사건 감지형, D30). 지키는 시험: `NewsEventsTest`
+  (티커 오탐·키워드·창·0건과 실패 구분), `EventsSectionTest`, `NewsFeedsParityTest`(수집기 피드 키 대조).
+- **C 어닝 서프라이즈** — 수집 `earnings_surprise`(yfinance 내부 quoteSummary — 버전 고정·모양이 바뀌면 멈춤), 8b 행에 최근 4분기 EPS·서프라이즈
+  (발표일 ≤ 기준일이면서 결정 시각 전 발표만). 지키는 시험: `EarningsHistoryTest`, `PacketBuilderTest.earningsInitialPacket`(10-23 재현).
+- **측정** — 결정 응답 `measure{hasCalendar, calendarItems, hasEvents, eventIds, hasEarnings, earningsRows}`(명세 §6, 0건과 '없음'을 구분 —
+  `DecisionMeasureTest`). 8주 뒤 결정 로그로 인용·과매매·제안 승인율을 봅니다(통계 결론은 내지 않음).
+- 더한 것: 수집 태스크 4개(`sec_fundamentals`(D28)·`us_calendar`·`news_headlines`·`earnings_surprise`, 전체 27), 백엔드 경로 3개(복기), 패킷
+  `PACKET_VERSION` 5·크기 목표 35,500(어림). Claude 계좌 운용 중에 시스템 프롬프트(`ClaudePrompts`의 기존 상수)는 바꾸지 않았습니다.
+- 남은 위험: 인베스팅닷컴 RSS 이용 조건 `[확인 필요]`, yfinance 내부 호출(버전을 올리면 고정본 시험부터), FRED 일정은 그해 말까지만, 실적 보도자료
+  (8-K)는 들어오지 않음, 복기 입력 토큰은 첫 실행으로 다시 잼.
