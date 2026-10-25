@@ -1,8 +1,8 @@
 """
 tests/test_aws_scripts.py
-AWS 개인용 서버(ADR 0019)의 스크립트 시험 — scripts/aws/{bootstrap,deploy,backup-s3,tunnel}.sh.
+AWS 개인용 서버(ADR 0019)의 스크립트 시험 — scripts/aws/{bootstrap,deploy,backup-s3,tunnel,instance}.sh.
 
-서버·AWS·DB 없이 돕니다. 임시 폴더에 스크립트를 복사하고, docker·aws·make·logger·sleep은 PATH 앞에 둔 가짜
+서버·AWS·DB 없이 돕니다. 임시 폴더에 스크립트를 복사하고, docker·aws·make·logger·sleep·date는 PATH 앞에 둔 가짜
 실행 파일로 바꿉니다(부른 인자를 기록 파일에 남김). deploy.sh는 진짜 git으로 임시 원격(bare)과 서버 역할의 클론을
 만들어 받기·멈춤을 확인합니다. 사용자 git 설정은 읽지 않습니다. 실제 AWS를 부르지 않도록 진짜 aws가 PATH에 있어도
 가짜가 먼저 잡히는지까지 각 시험이 기록으로 확인합니다.
@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ["bootstrap.sh", "deploy.sh", "backup-s3.sh", "tunnel.sh"]
+SCRIPTS = ["bootstrap.sh", "deploy.sh", "backup-s3.sh", "tunnel.sh", "instance.sh"]
 INSTANCE = "i-0123456789abcdef0"
 SECRET = "ci-secret-value-must-not-be-printed"
 
@@ -49,6 +49,7 @@ case "$1 $2" in
         [ -z "${FAKE_STS_OK:-}" ] || [ "$n" -le "$FAKE_STS_OK" ] ;;
     "ssm start-session") exit 255 ;;
     "s3 cp") exit "${FAKE_AWS_RC:-0}" ;;
+    "ec2 describe-instances") [ -z "${FAKE_EC2_FAIL:-}" ] || exit 255; echo "${FAKE_EC2_STATE:-}" ;;
     *) exit 0 ;;
 esac
 """
@@ -64,6 +65,8 @@ echo "logger $*" >> "$FAKE_LOG"
 # 바로 돌아옵니다. FAKE_SLEEP_REAL_10이 있으면 `sleep 10`(tunnel.sh의 로그인 재확인 대기)만 실제로 11초 잡니다.
 _FAKE_SLEEP = '#!/usr/bin/env bash\n[ "$1" = 10 ] && [ -n "${FAKE_SLEEP_REAL_10:-}" ] && command -p sleep 11\nexit 0\n'
 _FAKE_PLUGIN = "#!/usr/bin/env bash\nexit 0\n"
+# instance.sh가 묻는 지금(KST 요일+시분, `date +%u%H%M`)만 FAKE_NOW로 바꾸고 나머지는 진짜 date에 넘깁니다.
+_FAKE_DATE = '#!/usr/bin/env bash\nif [ -n "${FAKE_NOW:-}" ] && [ "$*" = "+%u%H%M" ]; then echo "$FAKE_NOW"; exit 0; fi\nfor d in /bin/date /usr/bin/date; do [ -x "$d" ] && exec "$d" "$@"; done\nexit 127\n'
 
 
 def _write_exec(path: Path, text: str) -> None:
@@ -77,7 +80,7 @@ def fakes(tmp_path):
     """가짜 실행 파일 폴더와 기록 파일. 진짜 git·bash·coreutils는 그 뒤의 PATH에서 찾습니다."""
     bin_dir, log = tmp_path / "bin", tmp_path / "calls.log"
     for name, text in {"docker": _FAKE_DOCKER, "aws": _FAKE_AWS, "make": _FAKE_MAKE, "logger": _FAKE_LOGGER,
-                       "sleep": _FAKE_SLEEP, "session-manager-plugin": _FAKE_PLUGIN}.items():
+                       "sleep": _FAKE_SLEEP, "session-manager-plugin": _FAKE_PLUGIN, "date": _FAKE_DATE}.items():
         _write_exec(bin_dir / name, text)
     log.touch()
     return bin_dir, log
@@ -478,3 +481,79 @@ def test_tunnel은_8201을_이미_쓰고_있으면_세션을_열지_않는다(pc
     assert result.returncode != 0
     assert "8201" in result.stderr
     assert not any(c.startswith("aws ssm") for c in _calls(fakes))
+
+
+def test_tunnel은_서버가_꺼져_있으면_세션을_열지_않고_켜는_방법을_알린다(pc_root, fakes):
+    result = _tunnel(pc_root, fakes, FAKE_EC2_STATE="stopped")
+    assert result.returncode != 0
+    assert "instance.sh start" in result.stderr and "21:55" in result.stderr
+    assert not any(c.startswith("aws ssm") for c in _calls(fakes))
+
+
+# --------------------------------------------------------------------------- instance.sh
+@pytest.fixture()
+def pc_instance_root(pc_root):
+    shutil.copy(ROOT / "scripts/aws/instance.sh", pc_root / "scripts/aws/instance.sh")
+    return pc_root
+
+
+def _instance(root: Path, fakes, *args: str, **extra: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", str(root / "scripts/aws/instance.sh"), *args], cwd=root, env=_env(fakes, **extra),
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+
+
+def _ec2_calls(fakes) -> list[str]:
+    return [c for c in _calls(fakes) if c.startswith("aws ec2 ") and not c.startswith("aws ec2 describe-instances")]
+
+
+@pytest.mark.parametrize(("state", "words"), [("running", "켜져 있습니다"), ("stopped", "instance.sh start")])
+def test_instance_status는_지금_상태를_한_줄로_알린다(pc_instance_root, fakes, state, words):
+    result = _instance(pc_instance_root, fakes, "status", FAKE_EC2_STATE=state)
+    assert result.returncode == 0, result.stderr
+    assert state in result.stdout and words in result.stdout and INSTANCE in result.stdout
+    assert _ec2_calls(fakes) == []
+    assert SECRET not in result.stdout + result.stderr
+
+
+def test_instance_start는_켜고_running까지_기다리고_다음_정지_일정을_알린다(pc_instance_root, fakes):
+    result = _instance(pc_instance_root, fakes, "start", FAKE_EC2_STATE="stopped")
+    assert result.returncode == 0, result.stderr
+    assert _ec2_calls(fakes) == [f"aws ec2 start-instances --region ap-northeast-2 --instance-ids {INSTANCE}",
+                                 f"aws ec2 wait instance-running --region ap-northeast-2 --instance-ids {INSTANCE}"]
+    assert "08:00" in result.stdout and "10:00" in result.stdout
+
+
+def test_instance_start는_이미_켜져_있으면_아무것도_하지_않는다(pc_instance_root, fakes):
+    result = _instance(pc_instance_root, fakes, "start", FAKE_EC2_STATE="running")
+    assert result.returncode == 0
+    assert _ec2_calls(fakes) == []
+
+
+# 요일(1=월 … 6=토 … 7=일) + KST 시분
+@pytest.mark.parametrize(("now", "in_window"), [("12300", True), ("20759", True), ("70759", True), ("62155", True),
+                                                ("60930", True), ("20800", False), ("11200", False), ("61000", False),
+                                                ("62154", False), ("70800", False)])
+def test_instance_stop은_정기_가동_시간에는_force_없이_끄지_않는다(pc_instance_root, fakes, now, in_window):
+    result = _instance(pc_instance_root, fakes, "stop", FAKE_EC2_STATE="running", FAKE_NOW=now)
+    stops = [c for c in _ec2_calls(fakes) if c.startswith("aws ec2 stop-instances")]
+    if in_window:
+        assert result.returncode != 0 and "--force" in result.stderr and stops == []
+    else:
+        assert result.returncode == 0, result.stderr
+        assert stops == [f"aws ec2 stop-instances --region ap-northeast-2 --instance-ids {INSTANCE}"]
+
+
+def test_instance_stop은_force면_가동_시간에도_끈다(pc_instance_root, fakes):
+    result = _instance(pc_instance_root, fakes, "stop", "--force", FAKE_EC2_STATE="running", FAKE_NOW="12300")
+    assert result.returncode == 0, result.stderr
+    assert _ec2_calls(fakes) == [f"aws ec2 stop-instances --region ap-northeast-2 --instance-ids {INSTANCE}",
+                                 f"aws ec2 wait instance-stopped --region ap-northeast-2 --instance-ids {INSTANCE}"]
+
+
+def test_instance는_상태를_읽지_못하거나_인스턴스_ID가_없으면_멈춘다(pc_instance_root, fakes):
+    result = _instance(pc_instance_root, fakes, "start", FAKE_EC2_FAIL="1")
+    assert result.returncode != 0 and "aws login" in result.stderr and _ec2_calls(fakes) == []
+    (pc_instance_root / ".env").write_text("APP_PASSWORD=x\n", encoding="utf-8")
+    result = _instance(pc_instance_root, fakes, "status")
+    assert result.returncode != 0 and "AWS_INSTANCE_ID" in result.stderr
+    assert _instance(pc_instance_root, fakes, "reboot").returncode != 0

@@ -16,6 +16,7 @@
 #
 # 사용자는 1명(운영자)이고 공인 주소로는 아무 포트도 열지 않습니다(보안 그룹 인바운드 0). 화면은 PC의 scripts/aws/tunnel.sh가
 # 여는 SSM 포트 포워딩(PC localhost:8201 → 서버 127.0.0.1:8201)으로만 엽니다.
+# 서버는 매일 KST 21:55에 켜지고 08:00(토 10:00)에 꺼집니다 — EventBridge Scheduler(ADR 0019). 그 밖에 볼 때는 scripts/aws/instance.sh start.
 #
 # 바뀌는 것
 #   · 앞단 caddy를 더함(deploy/aws/Caddyfile): 127.0.0.1:8201 하나만 열고 /api/*는 backend, 나머지는 frontend로 보냄.
@@ -26,12 +27,18 @@
 #   · 허용 출처·메일 링크 주소는 터널 화면(http://localhost:8201)으로 고정, 메일(가입·재설정)은 끔
 #   · 앞단이 넘긴 X-Forwarded-For를 Tomcat이 믿음(내부 대역에서 온 것만). 터널로 들어온 요청은 모두 한 주소로 보여
 #     로그인 제한은 사실상 이메일별 — 사용자 1명이라 그대로 둠(ADR 0019)
+#   · 국면 판정 기록은 23시(가동 창 안, 기동 뒤 수집이 한 바퀴 돈 뒤), postgres는 꺼질 때 30초까지 기다림(매일 아침 정지)
 # 바뀌지 않는 것: postgres 컨테이너(볼륨 my_macro_dashboard_v1_postgres-data — 폴더 이름을 따름), 나머지 포트는 기반 파일 그대로
 #   127.0.0.1의 기본값(3000/8080/8000/5432), AI 엔진·모의 매매(PAPER_ENABLED)·읽기 모드는 .env 그대로
 # 서버 .env(이름은 .env.aws.example): 로컬 .env에서 포트 네 줄·COOKIE_SECURE·LOCAL_NO_LOGIN·FRONTEND_ORIGIN·PUBLIC_URL·
 #   AWS_INSTANCE_ID(와 전환 뒤 로컬의 PAPER_ENABLED=false)를 빼고 COMPOSE_FILE·AWS_BACKUP_BUCKET을 더한 것
 # =============================================================================
 services:
+  postgres:
+    # 서버는 매일 아침 EC2 정지로 꺼집니다(OS 종료 → dockerd가 컨테이너를 멈춤). 기본 10초가 지나면 강제 종료돼 다음 기동 때
+    # 복구(WAL 재생)부터 하므로, 깨끗이 끝낼 시간을 줍니다.
+    stop_grace_period: 30s
+
   backend:
     environment:
       # 늘 로그인 화면을 거침 — 보간 없는 값이라 서버 .env의 LOCAL_NO_LOGIN이 끼어들 자리가 없다(ADR 0016)
@@ -49,6 +56,9 @@ services:
       # 127.0.0.1의 앱 포트로 붙는 서버 안 프로세스. 바깥에서 닿는 길은 Caddy뿐이고, 서버 안의 위조는 로그인 지연만 우회한다.
       SERVER_FORWARDHEADERSSTRATEGY: native
       MAIL_HOST: ""
+      # 국면 판정 기록 시각(KST). 기본 18시는 가동 창(21:55~08:00) 밖이라, 켜자마자(21:59) 아침 08:00에 멈춘 저장본으로 기록합니다.
+      # 기동 뒤 수집이 한 바퀴 돈 23시로 둡니다(ADR 0019 — 30분 주기라 23:2x 실행이 걸림, 자정 뒤 실행은 다음 날 몫이라 18시 전처럼 기다림).
+      DASHBOARD_SCHEDULER_REGIMERECORDHOURKST: "23"
 
   frontend:
     build:

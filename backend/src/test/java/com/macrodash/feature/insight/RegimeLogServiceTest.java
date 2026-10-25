@@ -6,6 +6,9 @@ import com.macrodash.read.StoreReader;
 import com.macrodash.store.RegimeLogStore;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.source.ConfigurationPropertySources;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.core.env.SystemEnvironmentPropertySource;
 import tools.jackson.databind.ObjectMapper;
 
 import java.nio.file.Files;
@@ -16,11 +19,14 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Set;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -108,22 +114,23 @@ class RegimeLogServiceTest {
     }
 
     /**
-     * 하루치 정기 실행 — 00:02부터 30분마다 48번, 실행마다 그 시각의 시계로 서비스를 만듭니다.
-     * AWS 개인용 서버(ADR 0019)는 로컬처럼 24시간 켜져 있습니다.
+     * AWS 개인용 서버(ADR 0019)의 하룻밤 — 21:55에 켜지고 백엔드가 3분 안팎에 뜨면 기동 60초 뒤부터 30분마다
+     * 21:59 · 22:29 · … · 07:59에 돌고 08:00에 꺼집니다. 자정을 넘긴 실행은 다음 날 날짜로 봅니다. 실행마다 그 시각의 시계로 서비스를 만듭니다.
      */
-    private static List<RegimeLogService.Outcome> wholeDay(int recordHourKst) {
+    private static List<RegimeLogService.Outcome> awsNight(int recordHourKst) {
         RegimeLogStore regimeLog = mock(RegimeLogStore.class);
         when(regimeLog.ready()).thenReturn(true);
-        AtomicBoolean recorded = new AtomicBoolean();
-        when(regimeLog.exists(TODAY)).thenAnswer(call -> recorded.get());
-        when(regimeLog.insertIfAbsent(any())).thenAnswer(call -> !recorded.getAndSet(true));
+        Set<LocalDate> recorded = new HashSet<>();
+        when(regimeLog.exists(any())).thenAnswer(call -> recorded.contains(call.<LocalDate>getArgument(0)));
+        when(regimeLog.insertIfAbsent(any())).thenAnswer(call -> recorded.add(call.<RegimeLogStore.Entry>getArgument(0).verdictDate()));
         AnalyticsService analytics = mock(AnalyticsService.class);
         when(analytics.regimeNow()).thenReturn(reading("2026-10-02"));
 
         List<RegimeLogService.Outcome> outcomes = new ArrayList<>();
-        for (int run = 0; run < 48; run++) {
-            LocalTime at = LocalTime.of(0, 2).plusMinutes(30L * run);
-            Clock clock = Clock.fixed(TODAY.atTime(at).atZone(Kst.ZONE).toInstant(), ZoneOffset.UTC);
+        for (int run = 0; run < 21; run++) {
+            LocalTime at = LocalTime.of(21, 59).plusMinutes(30L * run);
+            LocalDate date = at.isBefore(LocalTime.of(21, 0)) ? TODAY.plusDays(1) : TODAY;
+            Clock clock = Clock.fixed(date.atTime(at).atZone(Kst.ZONE).toInstant(), ZoneOffset.UTC);
             outcomes.add(new RegimeLogService(analytics, quietStore(), regimeLog, MAPPER, clock, recordHourKst)
                     .recordToday());
         }
@@ -131,19 +138,31 @@ class RegimeLogServiceTest {
     }
 
     @Test
-    @DisplayName("ADR 0019: AWS 개인용 서버(compose.aws.yml)는 기록 시각을 바꾸지 않는다 — 24시간 켜져 있어 로컬과 같은 18시에 하루 한 번")
-    void awsDeploymentKeepsTheDefaultRecordHour() throws Exception {
+    @DisplayName("ADR 0019: AWS 개인용 서버(compose.aws.yml)의 기록 시각이면 가동 창(21:55~08:00) 안, 수집이 한 바퀴 돈 뒤 하룻밤에 한 번 기록한다")
+    void awsDeploymentRecordsInsideTheNightWindow() throws Exception {
         Path compose = Path.of("../compose.aws.yml");
         assumeTrue(Files.exists(compose), "compose.aws.yml을 찾을 수 없습니다");
-        assertThat(Files.readString(compose))
-                .as("v3 데모의 17시(QA-093 — 평일 08:50–18:00 운영 창)는 두지 않음: 로컬에서 쌓은 기록과 같은 시각")
-                .doesNotContain("DASHBOARD_SCHEDULER_REGIME");
+        Matcher setting = Pattern.compile("(DASHBOARD_SCHEDULER_REGIME\\w*):\\s*\"(\\d+)\"")
+                .matcher(Files.readString(compose));
+        assertThat(setting.find()).as("compose.aws.yml backend에 판정 기록 시각 설정이 있어야 함").isTrue();
 
-        List<RegimeLogService.Outcome> day = wholeDay(RegimeLogService.DEFAULT_RECORD_HOUR_KST);
-        assertThat(day).containsOnlyOnce(RegimeLogService.Outcome.RECORDED);
-        assertThat(day.indexOf(RegimeLogService.Outcome.RECORDED)).as("18:02 실행에서 기록").isEqualTo(36);
-        assertThat(day.subList(0, 36)).containsOnly(RegimeLogService.Outcome.TOO_EARLY);
-        assertThat(day.subList(37, 48)).containsOnly(RegimeLogService.Outcome.ALREADY_RECORDED);
+        // 그 환경변수 이름이 실제로 이 설정에 붙는지 — 스프링 부트의 환경변수 이름 규칙으로 풀어 봅니다.
+        StandardEnvironment env = new StandardEnvironment();
+        env.getPropertySources().replace(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME,
+                new SystemEnvironmentPropertySource(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME,
+                        Map.of(setting.group(1), setting.group(2))));
+        ConfigurationPropertySources.attach(env);
+        int hour = Integer.parseInt(env.resolvePlaceholders("${dashboard.scheduler.regime-record-hour-kst:18}"));
+        assertThat(hour).isEqualTo(Integer.parseInt(setting.group(2)));
+
+        List<RegimeLogService.Outcome> night = awsNight(hour);
+        assertThat(night).containsOnlyOnce(RegimeLogService.Outcome.RECORDED);
+        int recordedAt = night.indexOf(RegimeLogService.Outcome.RECORDED);
+        assertThat(recordedAt).as("기동(21:59) 뒤 한 시간 넘게 지난 실행 — 첫 실행이 아님").isGreaterThanOrEqualTo(2);
+        assertThat(night.subList(recordedAt + 1, night.size())).as("자정 뒤는 다음 날 몫이라 아직 이름")
+                .doesNotContain(RegimeLogService.Outcome.RECORDED);
+        assertThat(awsNight(RegimeLogService.DEFAULT_RECORD_HOUR_KST).get(0))
+                .as("기본 18시면 켜자마자(21:59) 아침 08:00에 멈춘 저장본으로 기록해 버림").isEqualTo(RegimeLogService.Outcome.RECORDED);
     }
 
     @Test
