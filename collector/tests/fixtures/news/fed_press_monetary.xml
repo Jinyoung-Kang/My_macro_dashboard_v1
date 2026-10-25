@@ -1,0 +1,33 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<rss version="2.0">
+    <channel>
+        <title>FRB: Press Release - Monetary Policy</title>
+        <link>https://www.federalreserve.gov/feeds/feeds.htm</link>
+        <description>Press releases about monetary policy from the Federal Reserve Board</description>
+        <language>en</language>
+        <item>
+            <title>Minutes of the Board's discount rate meetings on August 17, September 9, and September 16, 2026</title>
+            <link>https://www.federalreserve.gov/newsevents/pressreleases/monetary20261013a.htm</link>
+            <guid>https://www.federalreserve.gov/newsevents/pressreleases/monetary20261013a.htm</guid>
+            <description>Minutes of the Board&amp;#39;s discount rate meetings on August 17, September 9, and September 16, 2026</description>
+            <category>Monetary Policy</category>
+            <pubDate>Tue, 13 Oct 2026 18:00:00 GMT</pubDate>    
+        </item>
+        <item>
+            <title>Minutes of the Federal Open Market Committee, September 15-16, 2026</title>
+            <link>https://www.federalreserve.gov/newsevents/pressreleases/monetary20261007a.htm</link>
+            <guid>https://www.federalreserve.gov/newsevents/pressreleases/monetary20261007a.htm</guid>
+            <description>Minutes of the Federal Open Market Committee, September 15-16, 2026</description>
+            <category>Monetary Policy</category>
+            <pubDate>Wed, 7 Oct 2026 18:00:00 GMT</pubDate>    
+        </item>
+        <item>
+            <title>Federal Reserve issues FOMC statement</title>
+            <link>https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm</link>
+            <guid>https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm</guid>
+            <description>Federal Reserve issues FOMC statement</description>
+            <category>Monetary Policy</category>
+            <pubDate>Wed, 16 Sep 2026 18:00:00 GMT</pubDate>    
+        </item>
+        </channel>
+</rss>

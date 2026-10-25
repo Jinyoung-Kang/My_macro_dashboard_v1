@@ -11,6 +11,7 @@ from .fundamentals import task_sec_fundamentals
 from .korea_public import task_dart_fundamentals, task_fsc_prices, task_kr_holidays
 from .maintenance import task_run_log_retention
 from .markets import task_macro_collected, task_radar_rankings, task_scraper_markets
+from .news import task_news_headlines
 from .paper import task_paper_price_history, task_paper_quotes
 from .series import (
     task_cot_history, task_daum_futures_trend, task_equity_history, task_fed_liquidity,
@@ -37,6 +38,7 @@ ALL_TASKS: tuple[Task, ...] = (
     Task("equity_history", "slow", task_equity_history, "13F 매핑 종목 일별 종가"),
     Task("paper_quotes", "slow", task_paper_quotes, "모의 매매 유니버스 최근 3개월 일봉 (장부 관측치, 로컬 전용)"),
     Task("us_calendar", "slow", task_us_calendar, "미국 발표·실적 일정 — FRED 릴리스·FOMC 상수·yfinance 실적일 (모의 매매 Claude 계좌 패킷, 로컬 전용)"),
+    Task("news_headlines", "slow", task_news_headlines, "사건 뉴스 RSS 헤드라인 — 인베스팅닷컴·연준·BLS·SEC, 7일 보관 (모의 매매 Claude 계좌 패킷, 로컬 전용)"),
     Task("volatility_history", "slow", task_volatility_history, "VIX·MOVE 변동성 시계열"),
     Task("cot_history", "slow", task_cot_history, "CFTC COT (주 1회 발표)"),
     Task("daum_futures_trend", "slow", task_daum_futures_trend, "Daum 선물 투자주체별 수급"),

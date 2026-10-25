@@ -11,5 +11,7 @@ pandas==2.3.3
 numpy==2.4.6
 yfinance==1.7.0
 pykrx==1.2.9
+# RSS·Atom 파싱만(받기는 수집기 세션) — 날짜 형식·인코딩 변형을 직접 다루지 않기 위해(모의 매매 2단계 B, D34)
+feedparser==6.0.14
 
 # 테스트·린트 도구는 requirements-dev.txt에 있습니다(운영 이미지에 넣지 않음).

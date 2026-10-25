@@ -54,6 +54,12 @@ public final class Datasets {
      * 유니버스 종목(ETF 제외)의 다음 실적 발표일(yfinance, 종목당 24시간 캐시). 기준일 창과 보유·후보 고르기는 백엔드가 합니다.
      */
     public static final String SNAP_US_CALENDAR = "calendar.us_events";
+    /**
+     * 모의 매매 Claude 계좌 패킷 {@code 11b_events}(2단계 B)의 수집 상태 — 피드별 성공·실패와 사유({@code feeds}·{@code failedFeeds}),
+     * {@code feedsOk}·{@code feedsTotal}, 7일 보관 건수 {@code stored7d}, 마지막 수집 시각 {@code generatedAt}(UTC). 헤드라인 자체는
+     * {@link #OBS_NEWS_HEADLINE}에 있습니다.
+     */
+    public static final String SNAP_NEWS_STATUS = "news.headlines.status";
 
     /** 변동성 지수는 가장 긴 기간으로 한 번 저장하고 짧은 기간은 잘라 씁니다. */
     public static final String VOLATILITY_STORE_PERIOD = "5y";
@@ -132,6 +138,12 @@ public final class Datasets {
      * 그 시점 값을 고르려면 옛 공시일 행이 있어야 하므로 기간으로 지우지 않습니다. 결정에는 obs_date ≤ 기준일만 씁니다.
      */
     public static final String OBS_US_FUNDAMENTALS = "us.fundamentals";
+    /**
+     * 모의 매매 사건 뉴스 헤드라인(RSS 제목·링크·출처·시각만, 2단계 B·D29). entity = 정규화한 제목의 sha256 앞 16자, obs_date = 발행
+     * 시각의 UTC 날짜, payload {@code {title, link, source, feed, publishedAt, fetchedAt}}(시각은 ISO UTC). 수집기만 쓰고(ADR 0008)
+     * 7일이 지난 행은 수집기가 지웁니다. 거르기(종목·키워드)와 패킷 창은 백엔드가 합니다.
+     */
+    public static final String OBS_NEWS_HEADLINE = "news_headline";
 
     // ------------------------------------------------------------- 신선도(초)
     /** 장중 시세성 데이터 (수집 주기 5분의 3배). */

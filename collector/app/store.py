@@ -562,6 +562,82 @@ def delete_observations_before(dataset: str, before: str) -> int:
         return cur.rowcount or 0
 
 
+def observation_entities_since(dataset: str, since: str) -> set[str]:
+    """
+    그 데이터셋에서 obs_date ≥ since(YYYY-MM-DD)인 행의 entity(중복 없음).
+
+    날짜를 가리지 않는 중복 제거에 씁니다 — 사건 뉴스(news_headline)는 같은 제목이 다른 날짜로 다시 와도(피드가 시각을 고침)
+    7일 안이면 다시 넣지 않습니다. 기본 키는 (데이터셋, 날짜, entity)라 키만으로는 막히지 않습니다.
+    """
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT entity FROM observations WHERE dataset = %s AND obs_date >= %s", (dataset, since),
+        ).fetchall()
+    return {r["entity"] for r in rows}
+
+
+def insert_new_observations(dataset: str, rows: Iterable[tuple[Any, str, dict]]) -> int:
+    """
+    (날짜, entity, payload) 행을 **넣기만** 합니다 — 같은 (날짜, entity)가 이미 있으면 그대로 둡니다. 보낸 행 수(날짜를 읽을 수 없는 행은 뺌).
+
+    put_observations는 payload가 다르면 덮어씁니다. 사건 뉴스는 처음 본 행(처음 받은 시각 fetchedAt)을 지켜야 해서 덮지 않습니다.
+    """
+    params = []
+    for raw_date, entity, payload in rows:
+        day = _coerce_date(raw_date)
+        if day is None or not entity or payload is None:
+            continue
+        params.append((dataset, day, str(entity), Jsonb(payload)))
+    if not params:
+        return 0
+    with connection() as conn, conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO observations (dataset, obs_date, entity, payload, updated_at)
+            VALUES (%s, %s, %s, %s, now())
+            ON CONFLICT (dataset, obs_date, entity) DO NOTHING
+            """,
+            params,
+        )
+    return len(params)
+
+
+# 행이 지금 가진 피드 목록 — ``feeds``가 없는 예전 행(피드 키 하나만 ``feed``에 둔 것)은 그 하나로 시작합니다.
+_HEADLINE_FEEDS = (
+    "(CASE WHEN jsonb_typeof(payload->'feeds') = 'array' THEN payload->'feeds'"
+    " WHEN jsonb_typeof(payload->'feed') = 'string' THEN jsonb_build_array(payload->'feed')"
+    " ELSE '[]'::jsonb END)"
+)
+
+
+def add_headline_feeds(dataset: str, since: str, pairs: Iterable[tuple[str, str]]) -> int:
+    """
+    이미 넣은 헤드라인 행(obs_date ≥ since)의 payload ``feeds``에 피드 키를 더합니다 — 아직 없는 키만, 다른 칸(publishedAt·
+    fetchedAt 등)은 그대로. (entity, 피드 키) 쌍을 받고, 바꾼 행 수를 돌려줍니다.
+
+    같은 제목이 다른 피드에도 실리면 행은 하나지만, 그 피드만 고른 설정(news.feeds)에서도 보여야 해서 실어 온 피드를 모두 남깁니다.
+    insert_new_observations는 덮지 않으므로(처음 받은 시각을 지킴) 목록만 따로 고칩니다.
+    """
+    params = []
+    for entity, feed in dict.fromkeys(pairs):
+        if entity and feed:
+            params.append((str(feed), dataset, str(entity), since, str(feed)))
+    if not params:
+        return 0
+    sql = (
+        "UPDATE observations SET payload = jsonb_set(payload, '{feeds}', "
+        + _HEADLINE_FEEDS + " || jsonb_build_array(%s::text)), updated_at = now() "
+        "WHERE dataset = %s AND entity = %s AND obs_date >= %s AND NOT ("
+        + _HEADLINE_FEEDS + " @> jsonb_build_array(%s::text))"
+    )
+    changed = 0
+    with connection() as conn, conn.cursor() as cur:
+        for row in params:
+            cur.execute(sql, row)
+            changed += cur.rowcount or 0
+    return changed
+
+
 def list_observation_dates(
     dataset: str, *, filters: dict[str, str] | None = None,
 ) -> list[str]:
@@ -949,6 +1025,8 @@ def missing_datasets() -> list[dict]:
         (catalog.SNAP_US_FUNDAMENTALS_STATUS, "모의 매매 미국 재무(SEC XBRL) 수집 상태"),
         # FRED 키가 없어도 FOMC 상수·실적 일정으로 저장본이 생기므로 키와 상관없이 기대합니다.
         (catalog.SNAP_US_CALENDAR, "모의 매매 미국 발표·실적 일정"),
+        # 피드 하나라도 받으면 생깁니다(키 없음). 전부 실패하면 생기지 않아 여기서 '누락'으로 보입니다.
+        (catalog.SNAP_NEWS_STATUS, "모의 매매 사건 뉴스(RSS) 수집 상태"),
     ]
 
     # 키가 있어야 받을 수 있는 데이터셋은 키가 설정된 경우에만 "누락"으로 봅니다.

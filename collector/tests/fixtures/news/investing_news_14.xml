@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<rss version="2.0">
+  <channel>
+    <title>Economy News</title>
+    <link>https://www.investing.com</link>
+    <item>
+      <enclosure url="https://content-media.investing.com/news/moved_LYNXMPEJ550HV_L.jpg" length="60648" type="image/jpeg"/>
+      <title>Should Aggregators block AI Agents?</title>
+      <pubDate>2026-10-25 06:00:53</pubDate>
+      <author>Investing.com</author>
+      <link>https://www.investing.com/news/economy-news/should-aggregators-block-ai-agents-4971047</link>
+    </item>
+    <item>
+      <enclosure url="https://content-media.investing.com/news/LYNXNPEBAI0A8_M.jpg" length="20698" type="image/jpeg"/>
+      <title>Obama attacks Trump over inflation as Democrats fight for Michigan Senate seat</title>
+      <pubDate>2026-10-25 04:07:10</pubDate>
+      <author>Investing.com</author>
+      <link>https://www.investing.com/news/economy-news/obama-attacks-trump-over-inflation-as-democrats-fight-for-michigan-senate-seat-4971031</link>
+    </item>
+    <item>
+      <enclosure url="https://content-media.investing.com/news/LYNXMPEB580P4_M.jpg" length="33271" type="image/jpeg"/>
+      <title>Trump touts $4 billion Audi plant in Georgia as he defends tariffs</title>
+      <pubDate>2026-10-25 03:29:51</pubDate>
+      <author>Investing.com</author>
+      <link>https://www.investing.com/news/economy-news/trump-touts-4-billion-audi-plant-in-georgia-as-he-defends-tariffs-4971027</link>
+    </item>
+    </channel>
+</rss>

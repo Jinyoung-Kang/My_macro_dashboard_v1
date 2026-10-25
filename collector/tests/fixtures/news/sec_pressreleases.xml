@@ -1,0 +1,37 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<rss xmlns:dc="http://purl.org/dc/elements/1.1/" version="2.0" xml:base="https://www.sec.gov/">
+  <channel>
+    <title>Press Releases</title>
+    <link>https://www.sec.gov/</link>
+    <description>Official announcements highlighting recent actions taken by the SEC and other newsworthy information.</description>
+    <language>en</language>
+    
+    <item>
+  <title>    SEC Announces Fiscal Year 2027 Examination Priorities
+</title>
+  <link>https://www.sec.gov/newsroom/press-releases/2026-109-sec-announces-fiscal-year-2027-examination-priorities</link>
+  <description>The Securities and Exchange Commission today announced the Division of Examinations’ Fiscal Year 2027 examination priorities. The annual report identifies key areas of focus as the Division carries out its mission to promote compliance, prevent fraud,…</description>
+  <pubDate>Fri, 23 Oct 2026 10:10:00 -0400</pubDate>
+    <dc:creator> </dc:creator>
+    <guid isPermaLink="false">131a2c47-83da-4baf-9d99-1ae02a0232a3</guid>
+    </item>
+<item>
+  <title>  SEC and AMF Announce Supervisory MOU To Enhance Cooperation for Investment Advisers and Investment Service Providers
+</title>
+  <link>https://www.sec.gov/newsroom/press-releases/2026-108-sec-amf-announce-supervisory-mou-enhance-cooperation-investment-advisers-investment-service</link>
+  <description>The U.S. Securities and Exchange Commission (SEC) and the French Autorité des Marchés Financiers (AMF) announced that they have entered into a Memorandum of Understanding (MOU) designed to facilitate consultation and information-sharing in the…</description>
+  <pubDate>Tue, 20 Oct 2026 09:25:16 -0400</pubDate>
+    <dc:creator> </dc:creator>
+    <guid isPermaLink="false">44a0baea-4550-40e0-a829-123bea4072d6</guid>
+    </item>
+<item>
+  <title>  SEC, FSA Hold Autumn Financial Regulatory Dialogue
+</title>
+  <link>https://www.sec.gov/newsroom/press-releases/2026-107-sec-fsa-hold-autumn-financial-regulatory-dialogue</link>
+  <description>The U.S. Securities and Exchange Commission (SEC) and the Financial Services Agency of Japan (FSA) convened the Autumn SEC-FSA Financial Regulatory Dialogue in Tokyo on Oct. 19, 2026.The SEC–FSA Dialogue builds upon longstanding efforts between the two…</description>
+  <pubDate>Tue, 20 Oct 2026 08:51:00 -0400</pubDate>
+    <dc:creator> </dc:creator>
+    <guid isPermaLink="false">ef7a94bf-a371-4220-949a-66298ffe9db7</guid>
+    </item>
+</channel>
+</rss>

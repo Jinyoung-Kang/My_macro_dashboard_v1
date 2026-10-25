@@ -131,6 +131,9 @@ _sessions: dict[str, requests.Session] = {}
 # 실패로 기록되고 다음 주기에 다시 시도합니다(재시도 수 × 5초가 요청 하나의 대기 상한).
 RETRY_AFTER_MAX_SECONDS = 5
 
+# 공용·FRED·SEC 세션이 다시 보내는 응답 코드. BLS 세션만 403을 뺍니다(get_bls_session).
+RETRY_STATUSES = (403, 408, 429, 500, 502, 503, 504)
+
 
 def _build_session(
     name: str,
@@ -139,12 +142,13 @@ def _build_session(
     total_retries: int,
     backoff: float,
     pool_size: int,
+    status_forcelist: tuple[int, ...] = RETRY_STATUSES,
 ) -> requests.Session:
     session = requests.Session()
     retry = Retry(
         total=total_retries,
         backoff_factor=backoff,
-        status_forcelist=(403, 408, 429, 500, 502, 503, 504),
+        status_forcelist=status_forcelist,
         allowed_methods=("GET", "POST"),
         raise_on_status=False,
         retry_after_max=RETRY_AFTER_MAX_SECONDS,
@@ -191,6 +195,26 @@ def get_sec_session() -> requests.Session:
     return session
 
 
+# BLS(www.bls.gov) RSS — 모의 매매 사건 뉴스(2단계 B). BLS 앞단(Akamai)은 브라우저 User-Agent를 403으로 막고, 무엇을 하는
+# 프로그램인지 밝힌 설명형 UA는 받습니다(단계 0). 연락처는 싣지 않습니다 — 소유자 이메일(SEC_USER_AGENT)은 SEC가 의무로 요구해서
+# 그쪽에만 보내는 값이고, 다른 기관에 넘길 이유가 없습니다.
+BLS_HEADERS = {
+    "User-Agent": _UA_PRODUCT,
+    "Accept": "application/atom+xml, application/rss+xml, application/xml;q=0.9, */*;q=0.5",
+}
+
+
+def get_bls_session() -> requests.Session:
+    """
+    BLS 전용 세션 — 설명형 UA, **403은 다시 보내지 않습니다**.
+
+    BLS의 403은 일시 장애가 아니라 차단 판정이라 다시 보내도 같고, 같은 거절을 되풀이하면 차단이 길어질 수 있습니다.
+    429·5xx·연결 오류는 공용 세션처럼 두 번까지 다시 보냅니다.
+    """
+    no_403 = tuple(code for code in RETRY_STATUSES if code != 403)
+    return _get("bls", headers=BLS_HEADERS, retries=2, backoff=0.8, pool=2, status_forcelist=no_403)
+
+
 def get_api_session(name: str) -> requests.Session:
     """
     증권사 Open API(토스·KIS·LS)용 세션 — 연결(TCP·TLS)만 재사용합니다.
@@ -218,7 +242,8 @@ def get_api_session(name: str) -> requests.Session:
 
 
 def _get(
-    name: str, *, headers: dict, retries: int, backoff: float, pool: int
+    name: str, *, headers: dict, retries: int, backoff: float, pool: int,
+    status_forcelist: tuple[int, ...] = RETRY_STATUSES,
 ) -> requests.Session:
     with _lock:
         session = _sessions.get(name)
@@ -229,6 +254,7 @@ def _get(
                 total_retries=retries,
                 backoff=backoff,
                 pool_size=pool,
+                status_forcelist=status_forcelist,
             )
             _sessions[name] = session
         return session

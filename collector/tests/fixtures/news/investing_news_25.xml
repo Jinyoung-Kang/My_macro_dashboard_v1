@@ -1,0 +1,28 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<rss version="2.0">
+  <channel>
+    <title>Stock Market News</title>
+    <link>https://www.investing.com</link>
+    <item>
+      <enclosure url="https://content-media.investing.com/trkd-images/LYNXNPEM9N0OO_L.jpg" length="67060" type="image/jpeg"/>
+      <title>Trump announces Audi will build $4 billion US factory in Georgia</title>
+      <pubDate>2026-10-25 02:48:34</pubDate>
+      <author>Reuters</author>
+      <link>https://www.investing.com/news/stock-market-news/trump-set-to-announce-plan-by-audi-to-build-us-factory-in-georgia-source-says-4970975</link>
+    </item>
+    <item>
+      <enclosure url="https://content-media.investing.com/news/LYNXNPEC9I0KP_M.jpg" length="32985" type="image/jpeg"/>
+      <title>HSBC sees cautious optimism in VC and PE activity</title>
+      <pubDate>2026-10-25 02:48:10</pubDate>
+      <author>Investing.com</author>
+      <link>https://www.investing.com/news/stock-market-news/hsbc-sees-cautious-optimism-in-vc-and-pe-activity-4971023</link>
+    </item>
+    <item>
+      <enclosure url="https://content-media.investing.com/news/LYNXNPEB7U0BG_M.jpg" length="49212" type="image/jpeg"/>
+      <title>Chinese equities face prolonged downturn as earnings forecasts tumble</title>
+      <pubDate>2026-10-25 01:37:10</pubDate>
+      <author>Investing.com</author>
+      <link>https://www.investing.com/news/stock-market-news/chinese-equities-face-prolonged-downturn-as-earnings-forecasts-tumble-4971016</link>
+    </item>
+    </channel>
+</rss>

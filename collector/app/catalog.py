@@ -34,6 +34,9 @@ SNAP_US_FUNDAMENTALS_STATUS = "us.fundamentals.status"  # 모의 매매 미국 �
 # 모의 매매 Claude 계좌 패킷 1b_calendar의 원자료(2단계 A) — 거시 발표일(FRED 릴리스·FOMC 상수, 앞으로 45일)과 유니버스 종목
 # (ETF 제외)의 다음 실적 발표일(yfinance). 기준일 창·보유·후보 고르기는 백엔드가 합니다.
 SNAP_US_CALENDAR = "calendar.us_events"
+# 모의 매매 Claude 계좌 패킷 11b_events(2단계 B)의 수집 상태 — 피드별 성공·실패와 사유, 7일 보관 건수, 마지막 수집 시각.
+# 헤드라인 자체는 observations news_headline에 있습니다.
+SNAP_NEWS_STATUS = "news.headlines.status"
 
 # 변동성 지수(^VIX / ^MOVE)는 가장 긴 기간으로 한 번 저장하고, 짧은 기간
 # 요청은 잘라 씁니다 (13F에서 q1을 q8에서 유도하는 것과 같은 방식).
@@ -102,8 +105,12 @@ TS_EQUITY_CLOSE = "equity_close"        # 모의 매매 유니버스 10년 일�
 # 모의 매매 미국 종목 재무(SEC XBRL Company Facts, 명세 D28). entity = 티커, obs_date = 공시일(filed) —
 # payload {"cik": [...], "facts": [...]}는 그날 처음 낸(또는 값이 바뀐) 사실 묶음. 백엔드는 obs_date ≤ 기준일만 읽습니다.
 OBS_US_FUNDAMENTALS = "us.fundamentals"
+# 모의 매매 사건 뉴스 헤드라인(RSS 제목·링크·출처·시각만, 2단계 B·D29). entity = 정규화한 제목(공백 하나로·앞뒤 공백 제거·casefold)의
+# sha256 앞 16자, obs_date = 발행 시각의 UTC 날짜, payload {title, link, source, feed, publishedAt, fetchedAt}.
+# 같은 제목은 7일 안에 다시 넣지 않고(날짜가 달라도), 7일이 지난 행은 태스크가 지웁니다. 거르기·패킷 창은 백엔드가 합니다.
+OBS_NEWS_HEADLINE = "news_headline"
 
-# 기간으로 지워도 되는 누적 데이터셋은 태스크가 스스로 보존 기한을 두는 fsc_price·toss_stock_flow(각 400일)뿐입니다(QA-070).
+# 기간으로 지워도 되는 누적 데이터셋은 태스크가 스스로 보존 기한을 두는 fsc_price·toss_stock_flow(각 400일)·news_headline(7일)뿐입니다(QA-070).
 # radar_ranking(다시 받을 수 없음, ADR 0005)·fred·fed_liquidity(증분 적재, 판정 성과가 전 구간을 씀, ADR 0009)·
 # krx_futures(원천이 최근 40일만 줌)·fsc_market(보충은 최근 7일만 함)·equity_close(모의 매매 트랙레코드가 10년 창을 통째로 쓰고,
 # 상장폐지되면 야후가 그 종목의 과거 종가를 더 주지 않음)·us.fundamentals(사실은 공시로 쌓이기만 하고, 그 시점 값을 고르려면
