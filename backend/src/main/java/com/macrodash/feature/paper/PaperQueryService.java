@@ -1,6 +1,7 @@
 package com.macrodash.feature.paper;
 
 import com.macrodash.Kst;
+import com.macrodash.analytics.CalendarWindow;
 import com.macrodash.analytics.PaperStats;
 import com.macrodash.analytics.TrailingStop;
 import com.macrodash.analytics.UsMarketCalendar;
@@ -271,6 +272,29 @@ public class PaperQueryService {
         out.put("settingsFallbacks", fallbacks);
         out.put("apiUsage", apiUsage());
         out.put("fundamentals", fundamentalsStatus());
+        out.put("calendar", calendarStatus());
+        return out;
+    }
+
+    /**
+     * 발표·실적 일정 수집 범위(2단계 A) — 수집기 저장본 {@code calendar.us_events}의 요약
+     * {@code {available, macroCount, earningsCovered, universe, generatedAtKst, fredStatus}}. macroCount = 수집 창(앞으로 45일)의
+     * 거시 일정 수(FOMC + FRED 발표일 — 패킷 창 10거래일보다 넓음), earningsCovered = 실적 일정을 받아 둔 종목 수, universe = 실적
+     * 일정 대상(유니버스 주식 — ETF 제외) 수, fredStatus = FRED 부분 상태(ok·키 미설정·실패 — 키가 없어도 FOMC 상수는 macroCount에
+     * 셈). 저장본이 없으면 숫자·시각·상태가 모두 null(0으로 채우지 않음). 수집 요청 없이 저장본만 읽습니다(화면이 수집기를 깨우지
+     * 않게). 저장본 모양 읽기는 패킷과 같은 함수({@link CalendarSection#stored})라 두 곳이 같은 칸을 다르게 읽지 않습니다.
+     */
+    private Map<String, Object> calendarStatus() {
+        Optional<Snapshot> found = reader.readStored(Datasets.SNAP_US_CALENDAR);
+        CalendarWindow.Stored stored = CalendarSection.stored(found.map(Snapshot::payload).orElse(null));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("available", stored != null);
+        out.put("macroCount", stored == null ? null : stored.macroEvents().size());
+        out.put("earningsCovered", stored == null ? null : stored.covered());
+        out.put("universe", stored == null ? null : stored.universe());
+        out.put("generatedAtKst", stored == null || found.get().collectedAt() == null ? null
+                : Kst.stamp(found.get().collectedAt()));
+        out.put("fredStatus", stored == null ? null : stored.fredStatus());
         return out;
     }
 

@@ -82,6 +82,7 @@ import java.util.function.Function;
  * 🧪 Claude 재량 책의 입력 패킷(명세 C5·C6·C11, 설계 §5-2) — 섹션 0~12(와 6b·8b)를 사람이 읽는 순서의 JSON 하나로 묶습니다.
  *
  * <p><b>섹션</b>: {@code 0_instructions} 지시 · {@code 1_basis} 기준(거래일·다음 세션·확정 종가·버전·선정 기준일) ·
+ * {@code 1b_calendar} 다음 10거래일의 거시 발표일·대상 종목 실적일(2단계 A — {@link CalendarSection}) ·
  * {@code 2_macroCards} 매크로 카드 18장과 환율 일봉 · {@code 3_fred} FRED 9개 · {@code 4_regime} 국면 · {@code 5_gate} OS 게이트
  * 지표(참고) · {@code 6_trackRecord} 트랙레코드(그룹 A 상위 10·그룹 B 12곳·신호 풀) · {@code 6b_institutionProfiles} 신호 풀 기관의
  * 전략 프로필(D27) · {@code 7_13fChanges} 13F 변화와 교집합 후보 · {@code 8_prices} 가격·모멘텀(≤ 60종목) ·
@@ -100,7 +101,8 @@ import java.util.function.Function;
  * <p><b>Point-in-Time</b>(초기 결정, 명세 C6·설계 §5-6): {@code initial=true}면 가격은 기준일까지({@link DailySeries#until}), FRED는
  * 기준일에 <b>알려진</b> 값({@link PointInTime} — 2026-10-23 결정의 10년물은 10-22 관측), 환율은 기준일 이하 일봉, 13F·트랙레코드·
  * 선정은 기준일 이하 선정(그 선정 기준일까지 낸 공시)만, 재무는 공시일 ≤ 기준일인 사실만 씁니다. 매크로 카드는 이력이 없어
- * 지금 수집본을 싣고 {@code asOfMismatch:true}와 "기준값 없음 — 현재 수집본, 참고만"을 붙입니다. 게이트 지표는 그날 기록 대신
+ * 지금 수집본을 싣고 {@code asOfMismatch:true}와 "기준값 없음 — 현재 수집본, 참고만"을 붙입니다(앞날 일정 {@code 1b_calendar}도
+ * 지금 수집본뿐이라 같음). 게이트 지표는 그날 기록 대신
  * 기준일에 알려진 값으로 다시 계산합니다(기록은 결정 작업이 돈 시각의 카드 값이라 늦게 돌았으면 기준일 뒤 값일 수 있음). 정기
  * 결정도 가격·FRED는 같은 규칙으로 기준 거래일에서 자릅니다 — 다음 세션 장중에 늦게 돌아도 다음 세션 봉이 섞이지 않게.
  *
@@ -125,8 +127,10 @@ public class PacketBuilder {
      * @param text    body를 들여쓰기 없이 직렬화한 문자열 — Claude에게 보내는 사용자 메시지 그대로
      * @param sha256  text(UTF-8)의 SHA-256(소문자 16진수)
      * @param noteIds 섹션 11에 넣은 메모 번호(결정 기록의 {@code note_ids}, 최신 순 — 없으면 빈 목록)
+     * @param measure 결정 기록의 측정 태그(2단계 명세 §6 — {@link DecisionMeasure}). 패킷 본문(text)에는 넣지 않습니다 — Claude에게
+     *                보낼 자료가 아니라 기록용이고, 본문에 두면 같은 섹션을 두 번 세는 글자가 됩니다. 모르면 null(시험용 가짜 패킷)
      */
-    public record Packet(JsonNode body, String text, String sha256, List<Long> noteIds) {
+    public record Packet(JsonNode body, String text, String sha256, List<Long> noteIds, DecisionMeasure measure) {
         public Packet {
             noteIds = noteIds == null ? List.of() : List.copyOf(noteIds);
         }
@@ -135,6 +139,7 @@ public class PacketBuilder {
     // ------------------------------------------------------------------ 섹션 키(읽는 순서)
     static final String INSTRUCTIONS = "0_instructions";
     static final String BASIS = "1_basis";
+    static final String CALENDAR = "1b_calendar";
     static final String MACRO = "2_macroCards";
     static final String FRED = "3_fred";
     static final String REGIME = "4_regime";
@@ -148,15 +153,20 @@ public class PacketBuilder {
     static final String DECISIONS = "10_recentDecisions";
     static final String NOTES = "11_notes";
     static final String HARD_RULES = "12_hardRules";
-    static final List<String> SECTION_KEYS = List.of(INSTRUCTIONS, BASIS, MACRO, FRED, REGIME, GATE, TRACK_RECORD,
-            PROFILES, CHANGES, PRICES, FUNDAMENTALS, PORTFOLIO, DECISIONS, NOTES, HARD_RULES);
+    static final List<String> SECTION_KEYS = List.of(INSTRUCTIONS, BASIS, CALENDAR, MACRO, FRED, REGIME, GATE,
+            TRACK_RECORD, PROFILES, CHANGES, PRICES, FUNDAMENTALS, PORTFOLIO, DECISIONS, NOTES, HARD_RULES);
 
-    /** 패킷 모양의 판 — 섹션·칸을 바꾸면 올립니다(결정 기록끼리 비교할 때 같은 모양인지 알게). 2 = 재무 섹션 8b(D28). */
-    static final int PACKET_VERSION = 2;
+    /**
+     * 패킷 모양의 판 — 섹션·칸을 바꾸면 올립니다(결정 기록끼리 비교할 때 같은 모양인지 알게). 2 = 재무 섹션 8b(D28), 3 = 일정 섹션
+     * 1b(2단계 A).
+     */
+    static final int PACKET_VERSION = 3;
     /**
      * 목표 크기(설계 §5-2). {@link #estimateTokens}의 어림으로 잽니다. D28 전 25,000 — 재무 25종목 × 약 30칸을 더해 올렸고, 메모
      * 6,000자를 포함한 최대치 기준입니다. 상한을 꽉 채운 시험 패킷은 D28 전 약 24,900 → 약 29,100토큰(8b 약 4,200 — 줄마다 계산
-     * 메모가 80자까지 차는 경우)입니다.
+     * 메모가 80자까지 차는 경우)이고, 일정 섹션 1b를 가장 크게(거시 6건 + 실적 25종목 + 미공개 릴리스 넷 + 이어받은 줄) 더하면 약
+     * 29,900토큰(1b 약 800)으로 목표 안입니다 — 여유가 100토큰 남짓이라 2단계 B·C의 섹션을 더할 때는 목표를 다시 정해야 합니다.
+     * 1b는 실적 대상을 8b와 같은 25종목으로 두어 따로 늘지 않습니다({@link #calendar}).
      */
     static final int TARGET_TOKENS = 30_000;
 
@@ -368,10 +378,16 @@ public class PacketBuilder {
         Map<String, String> shownPrices = new LinkedHashMap<>();
         priceTickers.entrySet().stream().limit(MAX_PRICE_ROWS).forEach(e -> shownPrices.put(e.getKey(), e.getValue()));
         Map<String, DailySeries> prices = prices(shownPrices.keySet(), asOf, quotes, initial);
+        List<DecisionSummary> prior = priorDecisions(asOf, kind, initial);
+        // 재무(8b)와 일정(1b)의 종목 대상은 같은 목록입니다 — 보유·후보·watchlist를 두 섹션이 따로 고르면 "재무는 있는데 실적일은
+        // 없는" 종목이 생기고, 1b가 상한 없는 목록을 받으면 패킷이 목표 크기를 넘습니다.
+        FundamentalsTargets stockTargets = fundamentalsTargets(ledger, context, universe, prior, paper, ruleSettings);
+        CalendarSection.Built calendar = calendar(asOf, initial, stockTargets);
 
         Map<String, Object> root = new LinkedHashMap<>();
         root.put(INSTRUCTIONS, instructions(asOf, initial));
         root.put(BASIS, basis(asOf, kind, initial, quotes, frameworkVersion, settingsVersion, chosen));
+        root.put(CALENDAR, calendar.section());
         root.put(MACRO, macroCards(asOf, initial, macro, fx));
         root.put(FRED, fredSection(fred));
         root.put(REGIME, regime(asOf));
@@ -382,8 +398,7 @@ public class PacketBuilder {
         root.put(PROFILES, profiles(chosen, pool, names, trackA, trackB));
         root.put(CHANGES, changes(chosen, context, ruleSettings, names, universe, ledger, lockedOut));
         root.put(PRICES, priceSection(shownPrices, prices, asOf, initial, noPrice));
-        List<DecisionSummary> prior = priorDecisions(asOf, kind, initial);
-        root.put(FUNDAMENTALS, fundamentals(asOf, ledger, context, universe, prior, paper, ruleSettings));
+        root.put(FUNDAMENTALS, fundamentals(asOf, stockTargets));
         root.put(PORTFOLIO, portfolio(asOf, initial, ledger, paper, limits));
         root.put(DECISIONS, recentDecisions(prior));
         // 메모는 기준일(as_of) ≤ 기준 거래일인 것만 — 초기 결정 패킷도 같은 거름으로 출발일 이하 메모만 봅니다(PIT, 계약 보충 §5).
@@ -399,7 +414,7 @@ public class PacketBuilder {
             log.warn("Claude 패킷이 목표보다 큽니다: {} {} 약 {}토큰(목표 {}) — 목록 상한을 확인하세요", asOf, kind, tokens,
                     TARGET_TOKENS);
         }
-        return new Packet(body, text, sha256(text), packetNotes.ids());
+        return new Packet(body, text, sha256(text), packetNotes.ids(), calendar.measure());
     }
 
     // ------------------------------------------------------------------ 0·1 지시·기준
@@ -457,6 +472,23 @@ public class PacketBuilder {
         out.put("selectionAsOf", chosen == null ? null : chosen.asOfDate().toString());
         out.put("currency", "USD");
         return out;
+    }
+
+    // ------------------------------------------------------------------ 1b 일정
+    /**
+     * 일정 섹션(2단계 명세 A4, {@link CalendarSection}) — 기준일 다음 세션부터 10거래일 창의 거시 발표일(FRED 릴리스·FOMC 상수)과
+     * 실적일. 실적 대상은 재무 섹션 8b와 같은 목록({@link #fundamentalsTargets}의 {@code shown} — 보유 → 섹션 7 교집합 후보 → 직전
+     * watchlist, ETF·현금성 제외, 25종목)입니다. 명세의 "보유·후보 최대 60개"보다 좁은 것은 패킷 크기 때문이고(이 섹션 없이 목표
+     * 30,000토큰까지 약 900토큰 — {@link #TARGET_TOKENS}), 수집기는 유니버스 주식 전부를 받아 두므로 대상이 바뀌어도 다시 수집할
+     * 일이 없습니다.
+     *
+     * <p>저장본은 {@code quietly} 안에서 읽어(이 메서드는 {@link #assemble} 안) 수집을 깨우지 않습니다. 앞날 일정은 지금 수집본뿐이라
+     * 초기 결정 패킷은 매크로 카드처럼 {@code asOfMismatch:true}입니다. 저장본이 없으면 일정을 지어내지 않고 "자료 없음"입니다.
+     */
+    private CalendarSection.Built calendar(LocalDate asOf, boolean initial, FundamentalsTargets targets) {
+        Optional<Snapshot> snapshot = reader.read(Datasets.SNAP_US_CALENDAR, Datasets.MAX_AGE_SLOW, "us_calendar");
+        List<String> tickers = targets.shown().stream().map(FundamentalsSection.Target::ticker).toList();
+        return CalendarSection.build(Datasets.SNAP_US_CALENDAR, snapshot, asOf, tickers, initial);
     }
 
     // ------------------------------------------------------------------ 2 매크로 카드·환율
@@ -1470,9 +1502,30 @@ public class PacketBuilder {
      * <p>저장본은 기준일까지 공시만 읽고({@code obs_date ≤ asOf}), 계산({@code Fundamentals.compute})이 같은 규칙으로 한 번 더
      * 거릅니다 — 읽기 범위가 틀려도 기준일 뒤 정정값이 섞이지 않게(초기 결정은 공시일 ≤ 2026-10-23).
      */
-    private Map<String, Object> fundamentals(LocalDate asOf, LedgerView ledger, SignalContext context,
-                                             Set<String> universe, List<DecisionSummary> prior, PaperSettings paper,
-                                             RuleSettings ruleSettings) {
+    private Map<String, Object> fundamentals(LocalDate asOf, FundamentalsTargets targets) {
+        List<FundamentalsSection.Target> shown = targets.shown();
+        Map<String, List<JsonNode>> stored = shown.isEmpty() ? Map.of()
+                : repository.readObservationsUntil(Datasets.OBS_US_FUNDAMENTALS,
+                        shown.stream().map(FundamentalsSection.Target::ticker).toList(), asOf);
+        return FundamentalsSection.section(asOf, shown, targets.all().size() - shown.size(), targets.excluded(),
+                stored);
+    }
+
+    /**
+     * 재무(8b)·일정(1b)의 종목 대상.
+     *
+     * @param all      ETF·현금성을 뺀 대상 전부(역할 순)
+     * @param shown    그중 싣는 앞 {@value FundamentalsSection#MAX_ROWS}종목
+     * @param excluded 재무·실적이 없어 뺀 ETF·현금성
+     */
+    record FundamentalsTargets(List<FundamentalsSection.Target> all, List<FundamentalsSection.Target> shown,
+                               List<String> excluded) {
+    }
+
+    /** 대상 고르기(위 {@link #fundamentals} 설명의 순서·제외·상한). */
+    private FundamentalsTargets fundamentalsTargets(LedgerView ledger, SignalContext context, Set<String> universe,
+                                                    List<DecisionSummary> prior, PaperSettings paper,
+                                                    RuleSettings ruleSettings) {
         Map<String, String> roles = new LinkedHashMap<>();
         ledger.positions().forEach(p -> roles.putIfAbsent(p.ticker(), FundamentalsSection.HOLDING));
         if (context != null) {
@@ -1498,10 +1551,7 @@ public class PacketBuilder {
             }
         });
         List<FundamentalsSection.Target> shown = targets.stream().limit(FundamentalsSection.MAX_ROWS).toList();
-        Map<String, List<JsonNode>> stored = shown.isEmpty() ? Map.of()
-                : repository.readObservationsUntil(Datasets.OBS_US_FUNDAMENTALS,
-                        shown.stream().map(FundamentalsSection.Target::ticker).toList(), asOf);
-        return FundamentalsSection.section(asOf, shown, targets.size() - shown.size(), excluded, stored);
+        return new FundamentalsTargets(List.copyOf(targets), shown, List.copyOf(excluded));
     }
 
     /**

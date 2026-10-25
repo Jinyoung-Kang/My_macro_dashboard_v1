@@ -416,5 +416,44 @@ class PaperQueryServiceTest {
                 "staleCompanies", "note");
     }
 
+    @Test
+    @DisplayName("상태의 일정 수집 범위(2단계 A): 저장본에서 거시 일정 수(수집 창 45일, FOMC 포함)·실적 받은 종목/대상·갱신 시각(KST)·FRED 상태 — 없으면 null")
+    void calendarStatus() {
+        var mapper = PaperFixtures.MAPPER;
+        tools.jackson.databind.JsonNode missing = mapper.valueToTree(query.status().get("calendar"));
+        assertThat(missing.path("available").asBoolean(true)).isFalse();
+        assertThat(missing.path("macroCount").isNull()).as("저장본이 없으면 0이 아니라 null").isTrue();
+        assertThat(missing.path("earningsCovered").isNull()).isTrue();
+        assertThat(missing.path("generatedAtKst").isNull()).isTrue();
+        assertThat(missing.path("fredStatus").isNull()).isTrue();
+
+        com.macrodash.read.StoreReader reader = PaperFixtures.quietReader();
+        tools.jackson.databind.JsonNode payload = mapper.valueToTree(Map.of(
+                "macro", Map.of(
+                        "events", List.of(
+                                Map.of("name", "FOMC 성명", "date", "2026-10-28", "kind", "FOMC", "source", "fed"),
+                                Map.of("name", "FOMC 성명 (경제전망 SEP 포함)", "date", "2026-12-09", "kind", "FOMC",
+                                        "source", "fed")),
+                        "fred", Map.of("status", "키 미설정", "lastKnownDate", Map.of())),
+                "earnings", Map.of("items", Map.of(), "covered", 120, "universe", 576, "budget", 120)));
+        when(reader.readStored(com.macrodash.store.Datasets.SNAP_US_CALENDAR)).thenReturn(Optional.of(
+                new com.macrodash.store.Snapshot(com.macrodash.store.Datasets.SNAP_US_CALENDAR, payload, "json", "ok",
+                        null, Instant.parse("2026-10-25T06:40:00Z"))));
+        PaperQueryService withCalendar = new PaperQueryService(store, marketData, reader, PaperFixtures.settings(store),
+                PaperFixtures.config(), NOW);
+
+        tools.jackson.databind.JsonNode view = mapper.valueToTree(withCalendar.status().get("calendar"));
+        assertThat(view.path("available").asBoolean()).isTrue();
+        assertThat(view.path("macroCount").asInt()).as("키가 없어도 FOMC 상수는 셈").isEqualTo(2);
+        assertThat(view.path("earningsCovered").asInt()).isEqualTo(120);
+        assertThat(view.path("universe").asInt()).isEqualTo(576);
+        assertThat(view.path("generatedAtKst").asString()).isEqualTo("2026-10-25 15:40 KST");
+        assertThat(view.path("fredStatus").asString()).isEqualTo("키 미설정");
+        List<String> keys = new ArrayList<>();
+        view.propertyNames().forEach(keys::add);
+        assertThat(keys).containsExactly("available", "macroCount", "earningsCovered", "universe", "generatedAtKst",
+                "fredStatus");
+    }
+
     private static final java.time.LocalDate TUE_EXPIRY = java.time.LocalDate.of(2026, 10, 29);
 }

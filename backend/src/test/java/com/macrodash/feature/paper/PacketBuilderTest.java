@@ -1,5 +1,6 @@
 package com.macrodash.feature.paper;
 
+import com.macrodash.analytics.CalendarWindow;
 import com.macrodash.analytics.DailySeries;
 import com.macrodash.analytics.PointInTime;
 import com.macrodash.analytics.Signal13F;
@@ -68,7 +69,8 @@ import static org.mockito.Mockito.when;
 /**
  * Claude 패킷 — 결정적(같은 입력 같은 해시), 초기 패킷의 Point-in-Time(기준일 뒤 날짜 값 없음, 카드는 asOfMismatch), 게이트 문구·
  * 재구성, 트랙레코드·전략 프로필·13F 변화 섹션(그룹별 기관 상한), 하드 규칙 문구, 정기 패킷의 장부·대기 주문·최근 결정, 검증기와 같은
- * 가격 없음·묵은 입력 표시, 재무 섹션 8b(대상 순서·ETF 제외·공시일 ≤ 기준일·단위·개념 범례), 크기 목표(30,000토큰).
+ * 가격 없음·묵은 입력 표시, 재무 섹션 8b(대상 순서·ETF 제외·공시일 ≤ 기준일·단위·개념 범례), 일정 섹션 1b(10거래일 창·8b와 같은
+ * 대상·자료 없음·FRED 키 미설정·측정 태그), 크기 목표(30,000토큰).
  *
  * <p>저장소·리더는 가짜이고, 시계열 가짜는 읽기 범위(from·to)를 <b>일부러 무시</b>합니다 — 기준일 뒤 값(10-26 가격·FRED, 11-13에
  * 낸 3분기 13F, 10-30에 낸 재무 10-K)이 들어와도 패킷이 스스로 자르는지 봅니다. 선정은 출발일(2026-10-23) 하나: 그룹 A = F1·F2, 그룹 B = F1·버크셔
@@ -552,10 +554,114 @@ class PacketBuilderTest {
         appleLike("CCC", 1, false);
         ifrsEuro("BBB");
 
+        // 일정(1b): 수집기 us_calendar 모양(collector/app/tasks/us_calendar.py) — 10-27 06:40 KST 수집, 단계 0 날짜.
+        snapshot(Datasets.SNAP_US_CALENDAR, calendarPayload("ok"), CALENDAR_AT);
+
         regimeEntries.add(new RegimeLogStore.Entry(MON, "RISK_ON", "위험 선호",
                 MAPPER.valueToTree(Map.of("curve", Map.of("value", 0.5, "asOf", "2026-10-23"))), List.of(), "v1"));
         regimeEntries.add(new RegimeLogStore.Entry(LocalDate.of(2026, 10, 22), "NEUTRAL", "중립",
                 MAPPER.valueToTree(Map.of("curve", Map.of("value", 0.4, "asOf", "2026-10-21"))), List.of(), "v1"));
+    }
+
+    private static final Instant CALENDAR_AT = Instant.parse("2026-10-26T21:40:00Z");
+    private static final String FOMC_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm";
+    private static final String YF = "yfinance quoteSummary calendarEvents";
+
+    private static Map<String, Object> macroEvent(String name, String date, String kind, Integer releaseId, String key,
+                                                  String agency) {
+        Map<String, Object> e = new LinkedHashMap<>();
+        e.put("name", name);
+        e.put("date", date);
+        e.put("kind", kind);
+        e.put("releaseId", releaseId);
+        if (key != null) {
+            e.put("key", key);
+            e.put("agency", agency);
+            e.put("source", "FRED release/dates (api.stlouisfed.org) — " + agency + " 일정");
+        } else {
+            e.put("source", FOMC_URL);
+            e.put("sep", name.contains("SEP"));
+        }
+        return e;
+    }
+
+    private static Map<String, Object> earningsItem(String date, String lastDate, String session, boolean estimated) {
+        Map<String, Object> i = new LinkedHashMap<>();
+        i.put("date", date);
+        i.put("session", session);
+        i.put("isEstimated", estimated);
+        i.put("epoch", date == null ? null : 1_761_768_000L);
+        i.put("source", YF);
+        i.put("fetchedAt", "2026-10-26T21:39:00+00:00");
+        i.put("checkedAt", "2026-10-26T21:39:00+00:00");
+        if (date == null) {
+            i.put("note", "다음 일정 미정");
+            i.put("lastDate", lastDate);
+        }
+        return i;
+    }
+
+    /**
+     * 일정 저장본(수집 창 10-27~12-10). 기준일 10-26(정기) 창 = 10-27~11-09, 10-23(초기) 창 = 10-26~11-06 — 둘 다 CPI(11-10)·
+     * SEP 회의(12-09)·EEE(11-20)는 창 밖. AAA는 대상이 아님(보유·후보·watchlist 밖), XLK는 ETF. 키가 없으면 수집기처럼 릴리스
+     * 일정 없이 lastKnownDate가 모두 null.
+     */
+    private static Map<String, Object> calendarPayload(String fredStatus) {
+        boolean keyed = "ok".equals(fredStatus);
+        List<Map<String, Object>> events = new ArrayList<>();
+        events.add(macroEvent("FOMC 성명", "2026-10-28", "FOMC", null, null, null));
+        if (keyed) {
+            events.add(macroEvent("GDP (Gross Domestic Product)", "2026-10-29", "RELEASE", 53, "GDP", "BEA"));
+            events.add(macroEvent("PCE (Personal Income and Outlays)", "2026-10-29", "RELEASE", 54, "PCE", "BEA"));
+            events.add(macroEvent("Employment Situation (고용보고서)", "2026-11-06", "RELEASE", 50, "EMPLOYMENT", "BLS"));
+            events.add(macroEvent("CPI (Consumer Price Index)", "2026-11-10", "RELEASE", 10, "CPI", "BLS"));
+        }
+        events.add(macroEvent("FOMC 성명 (경제전망 SEP 포함)", "2026-12-09", "FOMC", null, null, null));
+        Map<String, Object> known = new LinkedHashMap<>();
+        known.put("CPI", keyed ? "2026-12-10" : null);
+        known.put("PCE", keyed ? "2026-11-25" : null);
+        known.put("EMPLOYMENT", keyed ? "2026-12-04" : null);
+        known.put("GDP", keyed ? "2026-11-25" : null);
+        Map<String, Object> fred = new LinkedHashMap<>();
+        fred.put("status", fredStatus);
+        fred.put("source", "FRED release/dates (api.stlouisfed.org)");
+        fred.put("lastKnownDate", known);
+        Map<String, Object> fomc = new LinkedHashMap<>();
+        fomc.put("source", FOMC_URL);
+        fomc.put("checkedAt", "2026-10-25");
+        fomc.put("pageUpdated", "2026-10-07");
+        fomc.put("through", "2027-12-08");
+        fomc.put("status", "ok");
+        Map<String, Object> macro = new LinkedHashMap<>();
+        macro.put("events", events);
+        macro.put("horizon", Map.of("from", "2026-10-26", "to", "2026-12-10"));
+        macro.put("fred", fred);
+        macro.put("fomc", fomc);
+        Map<String, Object> items = new LinkedHashMap<>();
+        items.put("AAA", earningsItem("2026-10-28", null, "AMC", false));
+        items.put("BBB", earningsItem("2026-10-29", null, "AMC", false));
+        items.put("CCC", earningsItem("2026-11-03", null, null, true));
+        items.put("EEE", earningsItem("2026-11-20", null, "BMO", false));
+        items.put("DDD", earningsItem(null, "2026-10-20", null, false));
+        Map<String, Object> earnings = new LinkedHashMap<>();
+        earnings.put("source", "Yahoo Finance quoteSummary calendarEvents (yfinance 1.7.0 내부 호출 Ticker._quote._fetch)");
+        earnings.put("items", items);
+        earnings.put("covered", 5);
+        earnings.put("upcoming", 4);
+        earnings.put("universe", 576);
+        earnings.put("budget", 120);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("generatedAt", "2026-10-26T21:40:00+00:00");
+        out.put("macro", macro);
+        out.put("earnings", earnings);
+        return out;
+    }
+
+    /** 1b_calendar의 표(macro·earnings) 한 열의 값. */
+    private static List<String> calendarColumn(JsonNode body, String table, int column) {
+        List<String> out = new ArrayList<>();
+        body.get(PacketBuilder.CALENDAR).get(table).get("rows").forEach(r -> out.add(r.get(column).asString()));
+        return out;
     }
 
     /** 객체·배열을 훑어 문자열 안의 날짜를 모읍니다 — asOfMismatch:true인 객체와 달력 키는 건너뜀. */
@@ -1458,9 +1564,87 @@ class PacketBuilderTest {
         assertThat(FundamentalsSection.FIELD_CODES.values()).doesNotHaveDuplicates();
     }
 
+    // ------------------------------------------------------------------ 1b 일정
+    @Test
+    @DisplayName("일정(1b): 1_basis 바로 뒤, 기준일 다음 세션부터 10거래일(10-27~11-09) 안의 FOMC·발표일과 대상(8b와 같은 보유·후보) 실적일만 — 창 밖·대상 밖 없음, 출처·갱신 시각, 측정 태그")
+    void calendarSection() {
+        activeClaude();   // 보유 BBB, 후보 CCC·BBB
+        Packet packet = builder.build(MON, RuleBookService.SCHEDULED, false);
+        JsonNode body = packet.body();
+        List<String> keys = new ArrayList<>();
+        body.propertyNames().forEach(keys::add);
+        assertThat(keys.indexOf(PacketBuilder.CALENDAR)).isEqualTo(keys.indexOf(PacketBuilder.BASIS) + 1);
+
+        JsonNode section = body.get(PacketBuilder.CALENDAR);
+        assertThat(section.get("source").asString()).isEqualTo("snapshot " + Datasets.SNAP_US_CALENDAR);
+        assertThat(section.get("generatedAtKst").asString()).isEqualTo("2026-10-27 06:40 KST");
+        assertThat(section.get("window").toString()).isEqualTo("{\"from\":\"2026-10-27\",\"to\":\"2026-11-09\"}");
+        assertThat(section.get("note").asString()).isEqualTo("일정이 매매를 막지 않는다. 판단에 쓸 뿐");
+        assertThat(section.get("asOfMismatch").asBoolean()).isFalse();
+        assertThat(section.get("fredStatus").asString()).isEqualTo("ok");
+        assertThat(section.has("unpublishedAfter")).as("창 끝(11-09)이 모든 릴리스의 lastKnownDate 앞").isFalse();
+
+        // 창 밖(CPI 11-10·SEP 회의 12-09)은 없음, 날짜 → FOMC → 발표일 → 이름 순.
+        assertThat(calendarColumn(body, "macro", 2)).containsExactly("FOMC 성명", "GDP (Gross Domestic Product)",
+                "PCE (Personal Income and Outlays)", "Employment Situation (고용보고서)");
+        assertThat(calendarColumn(body, "macro", 0)).containsExactly("2026-10-28", "2026-10-29", "2026-10-29",
+                "2026-11-06");
+        // 실적: 보유 BBB·후보 CCC만(AAA는 대상 밖), 장 구분·추정 여부는 저장본 그대로.
+        JsonNode earnings = section.get("earnings");
+        assertThat(earnings.get("rows").toString())
+                .isEqualTo("[[\"2026-10-29\",\"BBB\",\"AMC\",false],[\"2026-11-03\",\"CCC\",null,true]]");
+        assertThat(earnings.get("source").asString()).as("실적 출처는 범례 코드로 한 번").startsWith("s");
+        assertThat(section.get("sources").get(earnings.get("source").asString()).asString()).isEqualTo(YF);
+        assertThat(section.get("sources").toString()).contains(FOMC_URL);
+        assertThat(packet.text()).doesNotContain("AAA\",\"AMC").doesNotContain("2026-12-09");
+
+        assertThat(packet.measure()).isEqualTo(new DecisionMeasure(true, 6, null, null));
+        assertThat(body.has(DecisionMeasure.KEY)).as("측정 태그는 Claude에게 보내는 본문 밖").isFalse();
+        assertThat(packet.text()).doesNotContain("hasCalendar");
+        // 같은 입력이면 같은 섹션(결정적) — 시계를 읽지 않음.
+        assertThat(newBuilder(Clock.fixed(Instant.parse("2026-10-27T05:00:00Z"), ZoneOffset.UTC))
+                .build(MON, RuleBookService.SCHEDULED, false).body().get(PacketBuilder.CALENDAR)).isEqualTo(section);
+    }
+
+    @Test
+    @DisplayName("일정(1b) 초기 패킷: 앞날 일정은 현재 수집본이라 asOfMismatch:true, 창은 출발일 다음 세션부터(10-26~11-06), 대상은 교집합 후보")
+    void calendarInitialPacket() {
+        Packet packet = builder.build(FRI, RuleBookService.INITIAL, true);
+        JsonNode section = packet.body().get(PacketBuilder.CALENDAR);
+        assertThat(section.get("asOfMismatch").asBoolean()).isTrue();
+        assertThat(section.get("asOfNote").asString()).isEqualTo(CalendarSection.AS_OF_NOTE);
+        assertThat(section.get("window").toString()).isEqualTo("{\"from\":\"2026-10-26\",\"to\":\"2026-11-06\"}");
+        assertThat(calendarColumn(packet.body(), "earnings", 1)).containsExactly("BBB", "CCC");
+        assertThat(packet.measure().hasCalendar()).isTrue();
+    }
+
+    @Test
+    @DisplayName("일정(1b): 저장본이 없으면 '자료 없음'(빈 표 없음, 일정을 지어내지 않음), FRED 키 미설정이면 거시는 FOMC만·fredStatus 키 미설정·실적은 그대로")
+    void calendarMissingAndKeyless() {
+        activeClaude();
+        snapshots.remove(Datasets.SNAP_US_CALENDAR);
+        Packet missing = builder.build(MON, RuleBookService.SCHEDULED, false);
+        JsonNode empty = missing.body().get(PacketBuilder.CALENDAR);
+        assertThat(empty.get("missing").asString()).isEqualTo(CalendarWindow.NO_SNAPSHOT + "(" + Datasets.SNAP_US_CALENDAR + ")");
+        assertThat(empty.has("macro")).isFalse();
+        assertThat(empty.has("earnings")).isFalse();
+        assertThat(empty.get("generatedAtKst").isNull()).isTrue();
+        assertThat(missing.measure()).as("저장본이 없으면 줄 수는 0이 아니라 null")
+                .isEqualTo(new DecisionMeasure(false, null, null, null));
+
+        snapshot(Datasets.SNAP_US_CALENDAR, calendarPayload("키 미설정"), CALENDAR_AT);
+        Packet keyless = builder.build(MON, RuleBookService.SCHEDULED, false);
+        JsonNode section = keyless.body().get(PacketBuilder.CALENDAR);
+        assertThat(section.get("fredStatus").asString()).isEqualTo("키 미설정");
+        assertThat(section.has("unpublishedAfter")).as("키가 없는 것은 미공개가 아님 — fredStatus가 말함").isFalse();
+        assertThat(calendarColumn(keyless.body(), "macro", 1)).containsExactly("FOMC");
+        assertThat(calendarColumn(keyless.body(), "earnings", 1)).containsExactly("BBB", "CCC");
+        assertThat(keyless.measure()).isEqualTo(new DecisionMeasure(true, 3, null, null));
+    }
+
     // ------------------------------------------------------------------ 크기
     @Test
-    @DisplayName("크기: 상한을 꽉 채운 패킷(재무 25종목·메모 6,000자 포함)도 30,000토큰(어림) 이하")
+    @DisplayName("크기: 상한을 꽉 채운 패킷(재무 25종목·일정 거시 6건 + 실적 25종목·메모 6,000자 포함)도 30,000토큰(어림) 이하")
     void fitsTokenBudget() {
         largeFixture();
         // 섹션 11을 글자 상한(6,000자 — 구분자·제목 포함)까지 채운 시황 메모 둘(한글 1자 ≈ 1토큰이라 가장 비싼 글).
@@ -1490,7 +1674,14 @@ class PacketBuilderTest {
             assertThat(r.get(FundamentalsSection.COLUMNS.size() - 1).asString()).as("계산 메모도 찬 줄(상한에서 자름)")
                     .hasSizeBetween(40, FundamentalsSection.MAX_NOTE_CHARS);
         });
-        assertThat(tokens).as("큰 패킷 %d자", packet.text().length()).isLessThanOrEqualTo(PacketBuilder.TARGET_TOKENS);
+        JsonNode calendar = body.get(PacketBuilder.CALENDAR);
+        assertThat(calendar.get("macro").get("rows")).hasSize(6);
+        assertThat(calendar.get("earnings").get("rows")).as("실적 대상은 8b와 같은 25종목")
+                .hasSize(FundamentalsSection.MAX_ROWS);
+        assertThat(calendar.has("unpublishedAfter")).isTrue();
+        assertThat(calendar.has("stale")).isTrue();
+        assertThat(tokens).as("큰 패킷 %d자 · 일정 섹션 약 %d토큰", packet.text().length(),
+                PacketBuilder.estimateTokens(calendar.toString())).isLessThanOrEqualTo(PacketBuilder.TARGET_TOKENS);
         assertThat(PacketBuilder.estimateTokens("가나다abc")).isEqualTo(4);
     }
 
@@ -1602,5 +1793,43 @@ class PacketBuilderTest {
             }
             fredColumns.put(spec.id(), columns(points));
         }
+        snapshot(Datasets.SNAP_US_CALENDAR, largeCalendar(), CALENDAR_AT);
+    }
+
+    /**
+     * 가장 큰 일정 섹션 — 창(10-27~11-09) 안 거시 6건(실제로는 넷·다섯이 많음), 모든 릴리스가 창 끝 전에 lastKnownDate가 끝나
+     * 미공개 구간 넷, FRED 일부 이어받음, 유니버스 600종목 모두 창 안 실적일(장 구분·추정 섞임).
+     */
+    private static Map<String, Object> largeCalendar() {
+        Map<String, Object> payload = calendarPayload("ok");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> macro = (Map<String, Object>) payload.get("macro");
+        List<Map<String, Object>> events = new ArrayList<>();
+        events.add(macroEvent("FOMC 성명", "2026-10-28", "FOMC", null, null, null));
+        events.add(macroEvent("GDP (Gross Domestic Product)", "2026-10-29", "RELEASE", 53, "GDP", "BEA"));
+        events.add(macroEvent("PCE (Personal Income and Outlays)", "2026-10-29", "RELEASE", 54, "PCE", "BEA"));
+        events.add(macroEvent("FOMC 성명 (경제전망 SEP 포함)", "2026-11-04", "FOMC", null, null, null));
+        Map<String, Object> stale = macroEvent("Employment Situation (고용보고서)", "2026-11-06", "RELEASE", 50,
+                "EMPLOYMENT", "BLS");
+        stale.put("isStale", true);
+        events.add(stale);
+        events.add(macroEvent("CPI (Consumer Price Index)", "2026-11-09", "RELEASE", 10, "CPI", "BLS"));
+        macro.put("events", events);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> fred = (Map<String, Object>) macro.get("fred");
+        fred.put("isStale", true);
+        fred.put("lastKnownDate", new LinkedHashMap<>(Map.of("CPI", "2026-11-09", "PCE", "2026-10-29",
+                "EMPLOYMENT", "2026-11-06", "GDP", "2026-10-29")));
+        Map<String, Object> items = new LinkedHashMap<>();
+        List<LocalDate> days = tradingDays(LocalDate.of(2026, 10, 27), LocalDate.of(2026, 11, 9));
+        for (int i = 0; i < 600; i++) {
+            items.put(String.format("T%03d", i), earningsItem(days.get(i % days.size()).toString(), null,
+                    i % 3 == 0 ? "BMO" : i % 3 == 1 ? "AMC" : null, i % 3 == 2));
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> earnings = (Map<String, Object>) payload.get("earnings");
+        earnings.put("items", items);
+        earnings.put("covered", 600);
+        return payload;
     }
 }

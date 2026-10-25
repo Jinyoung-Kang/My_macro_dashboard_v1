@@ -63,7 +63,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * (성공·실패 모두 호출 +1, 토큰·추정 비용 합산) → ⑥ 스키마 전체 검사({@link StructuredSchema#validate} — API에는 보낼 수 없는 범위·길이·개수
  * 제약까지, D26) → ⑦ 검증기({@link OrderValidator}) → 통과 주문은 대기(PENDING, 출처 CLAUDE, 시점은 응답대로), 거절 주문은 사유와
  * 함께 REJECTED → ⑧ 결정 기록(패킷·해시·원문·검증한 응답·사용량·모델·프레임 판·설정 판·목표 노출·exposureMismatch·메모 번호·지연·
- * 확정 종가). 프레임 판은 Claude를 부른 결정이면 늘 남깁니다(임시 v0 포함 — 응답의 {@code framework = {version, status, title}}).
+ * 확정 종가·측정 태그 {@code response.measure}). 프레임 판은 Claude를 부른 결정이면 늘 남깁니다(임시 v0 포함 — 응답의 {@code framework = {version, status, title}}).
  *
  * <p><b>실패</b>(C3·C7): 401·403·404·429·5xx·연결·시간 초과는 {@code API_ERROR}, 안전 분류기 거절은 {@code REFUSED}, JSON이 아니거나
  * 스키마 밖이면 {@code FORMAT_ERROR}. 출력 한도로 잘린 응답({@code MAX_TOKENS})과 200인데 텍스트가 없는 응답({@code EMPTY})도 모델이
@@ -819,7 +819,27 @@ public class ClaudeBookService {
         response.put("asOfTradingDate", asOf.toString());
         response.set("framework", mapper.valueToTree(FrameworkService.decisionView(attempt.frame())));
         response.set("settings", mapper.valueToTree(settingsView(claude, limits, paper)));
+        putMeasure(response, attempt);
         return new Plan(verdicts, planned, target, expected, mismatch, accepted, status, response);
+    }
+
+    /**
+     * 결정 기록의 측정 태그(2단계 명세 §6, {@link DecisionMeasure}) — 그 결정의 패킷에 일정(1b)·사건·서프라이즈가 있었는지. 패킷을
+     * 보낸 결정이면 정기·수동·초기·미리보기·실패 모두 같은 자리({@code response.measure})에 남깁니다. 패킷을 만들지 않은 결정(일시정지·
+     * 호출 상한 — {@link #recordSkipped})에는 없습니다 — "패킷이 없었다"와 "섹션이 비었다"가 섞이지 않게.
+     */
+    private void putMeasure(ObjectNode response, Attempt attempt) {
+        DecisionMeasure measure = attempt.packet().measure();
+        if (measure != null) {
+            response.set(DecisionMeasure.KEY, mapper.valueToTree(measure.toMap()));
+        }
+    }
+
+    private void putMeasure(Map<String, Object> response, Attempt attempt) {
+        DecisionMeasure measure = attempt.packet().measure();
+        if (measure != null) {
+            response.put(DecisionMeasure.KEY, measure.toMap());
+        }
     }
 
     /**
@@ -1033,6 +1053,7 @@ public class ClaudeBookService {
         response.put("failure", failure);
         response.put("framework", FrameworkService.decisionView(attempt.frame()));
         response.put("settings", claudeView(claude));
+        putMeasure(response, attempt);
         Decision d = decisionRow(retrying == null ? 0 : retrying.id(), asOf, kind, attempt.status(), row, claude, attempt,
                 null, mapper.valueToTree(response), attempt.error(), pricesFinal);
         Decision saved = store.atomically(() -> {
@@ -1078,6 +1099,7 @@ public class ClaudeBookService {
             response.put("failure", failure);
             response.put("framework", FrameworkService.decisionView(attempt.frame()));
             response.put("settings", claudeView(claude));
+            putMeasure(response, attempt);
             Decision d = decisionRow(retrying == null ? 0 : retrying.id(), asOf, kind, STATUS_API_ERROR, row, claude,
                     attempt, null, mapper.valueToTree(response), message, pricesFinal, 1);
             store.atomically(() -> {

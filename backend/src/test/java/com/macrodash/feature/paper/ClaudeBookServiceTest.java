@@ -75,6 +75,10 @@ class ClaudeBookServiceTest {
             + "\"cache_read_input_tokens\":7800,\"cache_creation_input_tokens\":0}";
     private static final String RATE_LIMITED =
             "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"slow down\"}}";
+    /** 가짜 패킷의 측정 태그(2단계 §6) — 일정 섹션 3줄, 사건·서프라이즈는 아직 없음(null). */
+    private static final DecisionMeasure MEASURE = new DecisionMeasure(true, 3, null, null);
+    private static final String MEASURE_JSON =
+            "{\"hasCalendar\":true,\"calendarItems\":3,\"hasEvents\":null,\"hasEarnings\":null}";
 
     private FakePaperStore store;
     private StoreReader reader;
@@ -108,7 +112,8 @@ class ClaudeBookServiceTest {
                 FRI_CLOSE)));
         packets = mock(PacketBuilder.class);
         when(packets.build(any(), anyString(), anyBoolean(), any(), any())).thenReturn(new PacketBuilder.Packet(
-                MAPPER.readTree("{\"1_basis\":{\"selectionAsOf\":\"2026-10-23\"}}"), PACKET_TEXT, "hash-abc", List.of()));
+                MAPPER.readTree("{\"1_basis\":{\"selectionAsOf\":\"2026-10-23\"}}"), PACKET_TEXT, "hash-abc", List.of(),
+                MEASURE));
         settings = PaperFixtures.settings(store);
         store.initSettingsIfAbsent(settings.defaultsJson());
         ledger = new PaperLedgerService(store, marketData, settings, MAPPER);
@@ -267,6 +272,9 @@ class ClaudeBookServiceTest {
         // 예상 노출 = HELD 5 + 매수 증가분 AAA 8 + HELD 5 = 18 → 목표 60과 15%p 넘게 다름(숫자를 맞추지 않고 표시만)
         assertThat(d.response().path("expectedExposurePct").asDouble()).isEqualTo(18.0);
         assertThat(d.response().path("exposureMismatch").asBoolean()).isTrue();
+        assertThat(d.response().path("measure").toString()).as("패킷의 측정 태그 그대로(null 키도 남김)")
+                .isEqualTo(MEASURE_JSON);
+        assertThat(d.packet().has("measure")).as("측정 태그는 기록용 — Claude에게 보낸 패킷 본문에는 없음").isFalse();
 
         List<Order> pending = claudeOrders("PENDING");
         assertThat(pending).extracting(Order::ticker).containsExactly("AAA", "HELD");
@@ -377,7 +385,7 @@ class ClaudeBookServiceTest {
             passed.add(call.getArgument(4));
             store.saveSettings(later, List.of("maxWeightStockPct"));   // 결정이 행을 읽은 뒤 설정 탭에서 저장
             return new PacketBuilder.Packet(MAPPER.readTree("{\"1_basis\":{\"selectionAsOf\":\"2026-10-23\"}}"),
-                    PACKET_TEXT, "hash-abc", List.of());
+                    PACKET_TEXT, "hash-abc", List.of(), null);
         });
         answerJson(decision(5, "오늘은 주문 없음"));
 
@@ -425,6 +433,7 @@ class ClaudeBookServiceTest {
         assertThat(d.targetExposurePct()).isNull();
         assertThat(d.response().path("failure").path("violations").size()).isPositive();
         assertThat(d.response().has("stance")).as("검사를 지나지 못한 응답은 결정 응답으로 싣지 않음").isFalse();
+        assertThat(d.response().path("measure").toString()).as("실패한 결정도 보낸 패킷의 측정 태그").isEqualTo(MEASURE_JSON);
         assertThat(store.ordersOf(PaperBooks.CLAUDE)).isEmpty();
         assertThat(store.states.get(PaperBooks.CLAUDE).cash()).isEqualTo(95_000);
         assertThat(callsToday()).isEqualTo(1);
@@ -572,6 +581,7 @@ class ClaudeBookServiceTest {
         Decision d = service().decide(MON, RuleBookService.SCHEDULED, true);
         assertThat(d.status()).isEqualTo(ClaudeBookService.STATUS_SKIPPED);
         assertThat(d.response().path("summary").asString()).contains("일시정지");
+        assertThat(d.response().has("measure")).as("패킷을 만들지 않은 결정에는 측정 태그가 없음").isFalse();
         assertThat(hits.get()).isZero();
         assertThatThrownBy(() -> service().decide(MON, RuleBookService.INITIAL, true))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -650,6 +660,7 @@ class ClaudeBookServiceTest {
                 .allSatisfy(v -> assertThat(v.path("accepted").asBoolean()).isTrue());
         assertThat(((JsonNode) preview.get("response")).path("stance").asString()).isEqualTo("RISK_ON");
         assertThat(preview.get("exposureMismatch")).isEqualTo(false);
+        assertThat(((JsonNode) preview.get("response")).path("measure").toString()).isEqualTo(MEASURE_JSON);
         assertThat((String) preview.get("note")).as("무엇을 남겼는지 그대로 — 사용량만이 아님")
                 .contains("장부·결정·주문 기록은 바꾸지 않았습니다", "사용량", "출발일 기관 선정", "출발일 종가")
                 .doesNotContain("사용량만");
@@ -682,6 +693,8 @@ class ClaudeBookServiceTest {
         assertThat(d.status()).isEqualTo(ClaudeBookService.STATUS_OK);
         assertThat(d.targetExposurePct()).isEqualTo(60.0);
         assertThat(d.response().path("fills")).hasSize(2);
+        assertThat(d.response().path("measure").toString()).as("초기 결정도 같은 자리(체결을 덧붙인 뒤에도 남음)")
+                .isEqualTo(MEASURE_JSON);
 
         double aaaPrice = PaperLedger.fillPrice(50.0, PaperLedger.Side.BUY, 5);
         double shyPrice = PaperLedger.fillPrice(82.5, PaperLedger.Side.BUY, 5);
@@ -887,6 +900,7 @@ class ClaudeBookServiceTest {
         assertThat(d.packetText()).isEqualTo(PACKET_TEXT);
         assertThat(d.error()).contains("응답을 받은 뒤", "paper_book_state");
         assertThat(d.response().path("failure").path("stage").asString()).isEqualTo("AFTER_RESPONSE");
+        assertThat(d.response().path("measure").toString()).isEqualTo(MEASURE_JSON);
         assertThat(store.ordersOf(PaperBooks.CLAUDE)).isEmpty();
         assertThat(callsToday()).isEqualTo(1);
 
@@ -963,7 +977,7 @@ class ClaudeBookServiceTest {
         notStartedWithStartPrices();
         when(packets.build(any(), anyString(), anyBoolean(), any(), any())).thenReturn(new PacketBuilder.Packet(
                 MAPPER.readTree("{\"1_basis\":{\"selectionAsOf\":\"2026-10-23\"},\"12_hardRules\":{\"universe\":\"AAA,SHY\"}}"),
-                PACKET_TEXT, "hash-abc", List.of()));
+                PACKET_TEXT, "hash-abc", List.of(), null));
         when(marketData.sourcedCloseOn(eq("XLK"), eq(FRI)))
                 .thenReturn(Optional.of(new PaperMarketData.SourcedClose(200.0, "equity_close")));
         answerJson(decision(20, null, order("AAA", "BUY", 10.0, null, "NEXT_OBSERVATION"),
