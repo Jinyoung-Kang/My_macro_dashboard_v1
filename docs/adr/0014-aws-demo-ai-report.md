@@ -1,6 +1,7 @@
 # 0014. AWS 데모의 AI 리포트 — 엔진 허용 목록 · 데모 공용 하루 한도
 
 - 상태: 채택 (2026-10). ADR 0012의 "공개 데모에서는 유료 AI 키를 비움"과 ADR 0013의 "데모 열람은 AI 리포트 생성을 막음"을 바꿉니다.
+  **v3 데모 전용** — 이 저장소(My_macro_dashboard_v1)의 AWS 배포는 [ADR 0019](0019-aws-personal-deployment.md)입니다(본문은 v3 데모 기록 그대로).
 - 지키는 방법:
   - `AiServiceAllowListTest`: 비면 지금과 같음, 목록 밖은 키가 있어도 `not_allowed`, 허용됐지만 키가 없으면 `no_key`,
     `auto`는 키가 있는 허용 엔진이 둘 이상일 때만, 모르는 ID·`auto`는 기동 실패(ID 모양이 아닌 값은 문구에 없음),

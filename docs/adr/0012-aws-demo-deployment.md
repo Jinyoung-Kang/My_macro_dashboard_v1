@@ -2,9 +2,10 @@
 
 - 상태: 채택 (2026-10). 방문자 로그인(결정 4의 마지막 줄)은 [ADR 0013](0013-demo-viewer-mode.md) 데모 열람이 대체합니다.
   공개 데모의 AI(결정 4의 "유료 AI 키"·"AI 쓰기")는 [ADR 0014](0014-aws-demo-ai-report.md)가 바꿉니다.
+  **v3 데모 전용** — 이 저장소(My_macro_dashboard_v1)의 AWS 배포는 [ADR 0019](0019-aws-personal-deployment.md)입니다(본문은 v3 데모 기록 그대로).
 - 지키는 방법: `compose.aws.yml`, `frontend/src/lib/__tests__/api.test.ts`(`NEXT_PUBLIC_API_BASE=/`),
   CI `images` 잡의 'AWS 덧붙임 해석' 단계(가짜 값으로 `compose.aws.yml`을 합쳐 해석 — 포트는 모두 `127.0.0.1`,
-  backend의 `COOKIE_SECURE=true`·`DASHBOARD_READ_MODE=store_only`·`MAIL_HOST` 빈 값)
+  backend의 `COOKIE_SECURE=true`·`DASHBOARD_READ_MODE=store_only`·`MAIL_HOST` 빈 값) — v3 시절. 이 저장소의 CI는 ADR 0019 항목을 확인합니다.
 
 ## 배경
 

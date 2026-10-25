@@ -2,6 +2,7 @@
 
 - 상태: 채택 (2026-10). ADR 0012의 "방문자는 데모 member 계정으로 로그인"을 대체합니다.
   읽기 전용의 예외 하나(AI 리포트 생성)는 [ADR 0014](0014-aws-demo-ai-report.md)가 더합니다.
+  **v3 데모 전용** — 이 저장소(My_macro_dashboard_v1)의 AWS 배포는 [ADR 0019](0019-aws-personal-deployment.md)입니다(본문은 v3 데모 기록 그대로).
 - 지키는 방법:
   - `SessionFilterTest`(데모 열람): 꺼지면 헤더 무시, 틀린 값 401, 회원·유료 GET 통과, 운영 경로 403, GET 밖(쓰기·HEAD) 403
     (`POST /api/ai/report`만 예외 — ADR 0014), 세션 우선

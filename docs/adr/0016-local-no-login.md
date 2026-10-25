@@ -2,6 +2,7 @@
 
 - 상태: 채택 (2026-10). [ADR 0013](0013-demo-viewer-mode.md)의 "로컬 사용은 지금처럼 로그인이 필요해야 합니다"와
   [ADR 0006](0006-frontend-api-base-at-runtime.md)의 휴대폰·LAN 접속(CORS는 화면 포트의 모든 호스트)을 로컬에서는 대체합니다.
+  이 저장소의 AWS는 [ADR 0019](0019-aws-personal-deployment.md) — 잠금 화면 없이 SSM 터널 + 로그인(덧붙임이 `"false"` 고정은 그대로).
 - 지키는 방법:
   - `LocalNoLoginTest`: 꺼짐이 기본, 켜졌는데 웹 배포 신호(데모 토큰·`COOKIE_SECURE`·앞단 헤더 신뢰 — 클라우드 플랫폼이 스스로 켜는
     경우 포함·이 맥이 아닌 `FRONTEND_ORIGIN`)가 하나라도 있으면 기동 실패(문구에 값 없음), '이 맥 요청' 판정(Host·프록시 헤더)
