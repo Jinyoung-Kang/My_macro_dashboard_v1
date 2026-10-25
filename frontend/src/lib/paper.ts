@@ -38,6 +38,10 @@ import type {
   PaperProposeResult,
   PaperQuotesSummary,
   PaperRerankResult,
+  PaperReviewDetail,
+  PaperReviewSummary,
+  PaperReviewVerdictCounts,
+  PaperRunReviewResult,
   PaperRiskOutcome,
   PaperRiskResult,
   PaperRunDecisionResult,
@@ -84,6 +88,8 @@ export const PAPER_SOURCES = {
   proposals: "대시보드 프레임 제안 (PostgreSQL paper_framework_proposals — 평가·변경 제안은 Claude 응답, Anthropic API)",
   notes: "사용자가 쓴 메모 (PostgreSQL paper_notes)",
   boundaries: "대시보드 결정 기록 (PostgreSQL paper_decisions.framework_version — Claude 계좌 결정이 판마다 처음 쓴 거래일)",
+  reviews: "대시보드 주간 복기 (PostgreSQL paper_reviews — 수익률·낙폭·스탑·200일선·무효화 평가는 대시보드 백엔드 계산(장부·Yahoo Finance "
+    + "equity_close 수정주가), 판정·반복 오류·제안은 Claude 응답, Anthropic API)",
 } as const;
 
 /**
@@ -3869,6 +3875,10 @@ export function proposalView(
   if (proposal.decidedAtKst) meta.push({ key: "decidedAt", label: "승인·거절 시각", value: formatKst(proposal.decidedAtKst) });
   if (proposal.model) meta.push({ key: "model", label: "모델", value: proposal.model });
   if (isNumber(proposal.noteId)) meta.push({ key: "noteId", label: "근거 메모", value: `#${proposal.noteId}` });
+  // 주간 복기가 낸 제안 — 근거는 메모가 아니라 그 주 복기(결정 로그 탭의 주간 복기)입니다.
+  if (textOf(proposal.reviewWeekEnding)) {
+    meta.push({ key: "review", label: "근거", value: `주간 복기 ${proposal.reviewWeekEnding}` });
+  }
   meta.push({ key: "baseVersion", label: "기준 판", value: base === null ? EMPTY : `v${base}` });
   if (isNumber(proposal.resultVersion)) meta.push({ key: "resultVersion", label: "만든 판", value: `v${proposal.resultVersion}` });
 
@@ -4279,4 +4289,280 @@ export function frameworkBoundaryView(boundaries: unknown, dates: readonly strin
     markers: entries.filter((entry) => known.has(entry.date)).map((entry) => ({ x: entry.date, label: `프레임 v${entry.version}` })),
     text: `프레임 경계(Claude 계좌 결정이 그 판을 처음 쓴 거래일) — ${parts.join(" · ")}`,
   };
+}
+
+// ---------------------------------------------------------------- 주간 복기(2단계 명세 §3 D1~D6)
+
+/** 결정 로그 탭 안의 보기 — 거래일마다의 결정 기록과 주마다의 복기(Claude 계좌). */
+export const DECISION_VIEWS = [
+  { key: "decisions", label: "결정 기록" },
+  { key: "reviews", label: "주간 복기" },
+] as const;
+
+export type DecisionViewKey = (typeof DECISION_VIEWS)[number]["key"];
+
+/**
+ * 수동 복기의 비용 안내 — 기본 모델(Sonnet 5.5) 한 번. 입력은 지난 4주 결정의 사실(코드가 계산)이라 결정 1회(약 $0.1)와 같은 규모로
+ * 어림합니다(화면이 단가로 다시 계산하지 않음). 결정·제안과 같은 하루 상한을 씁니다(D4).
+ */
+export const REVIEW_COST_NOTE = "Sonnet 5.5 호출 1회(약 $0.1), 하루 호출 상한에 포함 — 기본 모델 기준(설정 탭에서 모델을 바꿨으면 그 "
+  + "모델). 이 주 복기가 이미 있으면 부르지 않고 그 기록을 보여 줍니다.";
+
+/** 복기가 언제 생기는지 한 문단 — 정기 작업의 조건(서버 PaperReviewJob)을 사람이 읽는 말로. */
+export const REVIEW_SCHEDULE_NOTE = "매주 토요일 09:00(KST) 뒤 그 주 마지막 거래일(금요일, 휴장이면 목요일)의 확정 종가가 들어오면 한 번 "
+  + "— 지난 4주(입력이 크면 2주) Claude 계좌 결정을 그 뒤 가격과 대조합니다. 수익률·낙폭·스탑·200일선·무효화 평가는 서버가 계산하고 "
+  + "Claude는 판정만 합니다. 제안은 프레임 탭에 '승인 대기'로 들어가고 자동 반영은 없습니다. 규칙 계좌는 바꾸지 않습니다.";
+
+const REVIEW_STATUS: Record<string, { label: string; tone: BadgeTone }> = {
+  OK: { label: "복기 완료", tone: "ok" },
+  FORMAT_ERROR: { label: "응답 형식 오류", tone: "warn" },
+  API_ERROR: { label: "API 오류", tone: "warn" },
+  REFUSED: { label: "모델 거절", tone: "warn" },
+  SKIPPED: { label: "건너뜀 · 결정 없음", tone: "muted" },
+};
+
+/** 복기 상태 배지. 모르는 상태는 받은 글자 그대로(지어내지 않음). */
+export function reviewStatusBadge(status: string | null | undefined): Badge {
+  const known = status ? REVIEW_STATUS[status] : undefined;
+  return { key: `review-${status ?? "unknown"}`, label: known?.label ?? status ?? EMPTY, className: TONE[known?.tone ?? "muted"] };
+}
+
+/** 논거 판정의 색 — 유지는 그대로, 반증은 고칠 것, 판단불가는 회색. */
+const THESIS_HELD: Record<string, BadgeTone> = { 유지: "ok", 반증: "warn", 판단불가: "muted" };
+
+export function thesisHeldBadge(value: unknown): Badge {
+  const label = textOf(value) ?? EMPTY;
+  return { key: `thesis-${label}`, label, className: TONE[THESIS_HELD[label] ?? "muted"] };
+}
+
+/** 판정 수 — "유지 2 · 반증 1 · 판단불가 0". 서버가 null(형식을 지난 복기가 아님)이면 "—"(0으로 채우지 않음). */
+export function verdictCountsText(counts: PaperReviewVerdictCounts | null | undefined): string {
+  if (!counts) return EMPTY;
+  return (["유지", "반증", "판단불가"] as const)
+    .map((key) => `${key} ${formatNumber(numberOf(counts[key]), 0)}`)
+    .join(" · ");
+}
+
+/** 창 — "4주", 줄였으면 "2주(입력이 커서 줄임)". 모르면 "—". */
+export function reviewWindowText(weeks: number | null | undefined, trimmed = false): string {
+  if (!isNumber(weeks)) return EMPTY;
+  return `${formatNumber(weeks, 0)}주${trimmed ? "(입력이 커서 줄임)" : ""}`;
+}
+
+/** 연결된 제안 — "제안 #12 · 승인 대기". 없으면 "—". */
+export function reviewProposalText(id: number | null | undefined, status: string | null | undefined): string {
+  if (!isNumber(id)) return EMPTY;
+  return status ? `제안 #${id} · ${proposalStatusBadge(status).label}` : `제안 #${id}`;
+}
+
+export interface ReviewRow {
+  key: string;
+  weekEnding: string;
+  status: Badge;
+  window: string;
+  counts: string;
+  proposalId: number | null;
+  proposal: string;
+  createdAt: string;
+  model: string;
+  /** 오류·재시도 안내(없으면 null). */
+  note: string | null;
+}
+
+/** 복기 목록 → 표 행(서버 순서 — 주 최근 순). 숫자는 서버 값 그대로. */
+export function reviewRows(reviews: readonly PaperReviewSummary[]): ReviewRow[] {
+  return reviews.map((review) => ({
+    key: review.weekEnding,
+    weekEnding: review.weekEnding,
+    status: reviewStatusBadge(review.status),
+    window: reviewWindowText(review.windowWeeks, review.windowWeeks === 2),
+    counts: verdictCountsText(review.verdictCounts),
+    proposalId: numberOf(review.proposalId),
+    proposal: reviewProposalText(review.proposalId, review.proposalStatus),
+    createdAt: formatKst(textOf(review.createdAtKst)),
+    model: textOf(review.model) ?? EMPTY,
+    note: review.retryable
+      ? "API 오류 — 다음 실행(정기 30분 주기 또는 수동)이 같은 주를 한 번 더 부릅니다."
+      : textOf(review.error),
+  }));
+}
+
+/** 목록에서 펼쳐 볼 주 — 고른 주가 목록에 있으면 그것, 아니면 가장 최근 주. 목록이 비면 null. */
+export function resolveReviewWeek(picked: string | null, reviews: readonly PaperReviewSummary[]): string | null {
+  if (picked && reviews.some((review) => review.weekEnding === picked)) return picked;
+  return reviews[0]?.weekEnding ?? null;
+}
+
+/** 펼친 주와 그 주 목록 행의 서명({@link reviewRowSignature}). */
+export interface ReviewDetailKey {
+  week: string | null;
+  signature: string | null;
+}
+
+/**
+ * 목록 행의 서명 — 상태·남긴 시각·재시도 수·연결된 제안(번호·상태). 상세는 입력·응답 원본까지 실어 커서 주기 갱신하지 않고, 60초마다
+ * 갱신되는 목록에서 이 값이 바뀔 때만 다시 읽습니다(정기 재시도가 API 오류를 OK로 바꿈·프레임 탭에서 제안을 승인). 그 주가 목록에
+ * 없으면 null.
+ */
+export function reviewRowSignature(reviews: readonly PaperReviewSummary[], week: string | null): string | null {
+  if (!week) return null;
+  const row = reviews.find((review) => review.weekEnding === week);
+  if (!row) return null;
+  return [row.status, row.createdAtKst, row.retryCount, row.proposalId, row.proposalStatus]
+    .map((value) => String(value ?? ""))
+    .join("|");
+}
+
+/**
+ * 상세를 다시 읽을지 — 같은 주의 서명이 바뀌었을 때만. 주가 바뀌면 상세 경로가 바뀌어 이미 새로 읽고, 처음 본 서명(이전이 없음)도
+ * 그렇습니다. 예전에는 펼친 상세를 한 번만 읽어, 목록 행이 '복기 완료 · 제안 #n'으로 바뀐 뒤에도 상세가 'API 오류'로 남았습니다.
+ */
+export function shouldReloadReviewDetail(previous: ReviewDetailKey | null, next: ReviewDetailKey): boolean {
+  return previous !== null && previous.week !== null && previous.week === next.week
+    && previous.signature !== null && next.signature !== null && previous.signature !== next.signature;
+}
+
+/**
+ * 수동 실행 카드의 한 줄 — 가장 최근 복기 주와 정기 복기 시각, 그 주 행이 이미 있는지. 이미 끝난 행이면 실행해도 부르지 않는다고 적습니다
+ * (서버가 그 행을 돌려줌). 최근 주를 모르면 null.
+ */
+export function latestReviewNote(latestWeekEnding: string | null | undefined, opensAtKst: string | null | undefined,
+  reviews: readonly PaperReviewSummary[]): string | null {
+  const week = textOf(latestWeekEnding);
+  if (!week) return null;
+  const head = `가장 최근 복기 주 ${week} · 정기 복기 ${formatKst(textOf(opensAtKst))}`;
+  const existing = reviews.find((review) => review.weekEnding === week);
+  if (!existing) return `${head} — 아직 복기 없음.`;
+  if (existing.retryable) return `${head} — API 오류로 끝나 한 번 더 부를 수 있습니다.`;
+  return `${head} — 이미 남김(${reviewStatusBadge(existing.status).label}). 실행해도 부르지 않고 그 기록을 보여 줍니다.`;
+}
+
+export interface ReviewVerdictRow {
+  key: string;
+  decision: string;
+  asOf: string;
+  kind: string;
+  thesisHeld: Badge;
+  note: string;
+}
+
+export interface ReviewDetailView {
+  title: string;
+  status: Badge;
+  meta: DecisionMetaCell[];
+  /** 상태 안내(오류·건너뜀·재시도·줄인 창). 없으면 빈 목록. */
+  notices: string[];
+  counts: string;
+  verdicts: ReviewVerdictRow[];
+  /** 입력에 있는데 판정이 없는 결정 — "판정 없음: #3 · #5". 없으면 null. */
+  missing: string | null;
+  recurringErrors: string[];
+  keep: string[];
+  proposal: { id: number; label: string; summary: string | null; detail: string } | null;
+  /** 형식을 지난 응답인데 제안이 없음 — "제안 없음"을 보일지. */
+  noProposal: boolean;
+  usage: DecisionMetaCell[];
+  input: string | null;
+  response: string | null;
+}
+
+/**
+ * 복기 한 건 → 화면. 판정 표의 날짜·종류는 서버가 입력의 결정에서 찾아 붙인 값이고, 화면은 이름만 붙입니다. 판정·반복 오류·지킬 것은
+ * 형식을 지난(OK) 복기에만 있습니다(서버가 그 밖에는 빈 목록).
+ */
+export function reviewDetailView(review: PaperReviewDetail): ReviewDetailView {
+  const status = textOf(review.status);
+  const notices: string[] = [];
+  const error = textOf(review.error);
+  if (error) notices.push(status === "SKIPPED" ? error : `오류 — ${error}`);
+  if (review.retryable) notices.push("API 오류로 끝났습니다 — 다음 실행(정기 또는 수동)이 같은 주를 한 번 더 부릅니다.");
+  if (textOf(review.trimmedReason)) notices.push(`입력을 줄였습니다 — ${review.trimmedReason}`);
+  if (status === "FORMAT_ERROR" || status === "REFUSED") {
+    notices.push("이 주 복기는 이것으로 끝입니다(같은 입력이면 같은 답일 가능성이 커 다시 부르지 않음).");
+  }
+  const meta: DecisionMetaCell[] = [
+    { key: "weekEnding", label: "복기 주", value: review.weekEnding },
+    { key: "window", label: "창", value: reviewWindowText(review.windowWeeks, textOf(review.trimmedReason) !== null) },
+    { key: "model", label: "모델", value: textOf(review.model) ?? EMPTY },
+    { key: "framework", label: "기준 프레임", value: isNumber(review.frameworkVersion) ? `v${review.frameworkVersion}` : EMPTY },
+    { key: "createdAt", label: "남긴 시각", value: formatKst(textOf(review.createdAtKst)) },
+  ];
+  if (isNumber(review.retryCount) && review.retryCount > 0) {
+    meta.push({ key: "retry", label: "재시도", value: `${formatNumber(review.retryCount, 0)}회` });
+  }
+  const verdicts = listOf(review.verdicts).filter(isRecord).map((entry, index) => {
+    const id = numberOf(entry.decisionId);
+    return {
+      key: `${index}`,
+      decision: id === null ? EMPTY : `#${id}`,
+      asOf: textOf(entry.asOf) ?? EMPTY,
+      kind: decisionKindLabel(textOf(entry.kind)),
+      thesisHeld: thesisHeldBadge(entry.thesisHeld),
+      note: textOf(entry.note) ?? EMPTY,
+    };
+  });
+  const missingIds = listOf(review.missingDecisionIds).filter(isNumber);
+  const proposal = review.proposal && isNumber(review.proposal.id)
+    ? {
+      id: review.proposal.id,
+      label: reviewProposalText(review.proposal.id, review.proposal.status),
+      summary: textOf(review.proposal.summary),
+      detail: [
+        isNumber(review.proposal.operationsCount) ? `변경 ${formatNumber(review.proposal.operationsCount, 0)}건` : null,
+        isNumber(review.proposal.baseVersion) ? `기준 판 v${review.proposal.baseVersion}` : null,
+        isNumber(review.proposal.resultVersion) ? `만든 판 v${review.proposal.resultVersion}` : null,
+        textOf(review.proposal.error) ? `오류 — ${review.proposal.error}` : null,
+      ].filter((part): part is string => part !== null).join(" · ") || EMPTY,
+    }
+    : null;
+  const usage = isRecord(review.usage) ? review.usage : null;
+  const count = (value: unknown) => formatNumber(numberOf(value), 0);
+  return {
+    title: `${review.weekEnding} 주 복기`,
+    status: reviewStatusBadge(status),
+    meta,
+    notices,
+    counts: verdictCountsText(review.verdictCounts),
+    verdicts,
+    missing: missingIds.length > 0 ? `판정 없음: ${missingIds.map((id) => `#${id}`).join(" · ")}` : null,
+    recurringErrors: listOf(review.recurringErrors).filter((entry): entry is string => typeof entry === "string"),
+    keep: listOf(review.keep).filter((entry): entry is string => typeof entry === "string"),
+    proposal,
+    noProposal: status === "OK" && proposal === null,
+    usage: usage === null ? [] : [
+      { key: "inputTokens", label: "입력 토큰", value: count(usage.inputTokens) },
+      { key: "inputTokensEst", label: "입력 어림", value: count(usage.inputTokensEst) },
+      { key: "outputTokens", label: "출력 토큰", value: count(usage.outputTokens) },
+      { key: "estCost", label: "추정 비용", value: formatUsdEstimate(numberOf(usage.estCostUsd)) },
+      { key: "latency", label: "소요", value: isNumber(usage.latencyMs) ? formatLatency(usage.latencyMs) : EMPTY },
+    ],
+    input: prettyJson(review.input),
+    response: prettyJson(review.response),
+  };
+}
+
+/** 수동 복기 결과 한 줄. 이미 있던 행이면 부르지 않았다고 적습니다. */
+export function reviewRunResultView(result: PaperRunReviewResult): { tone: "info" | "warn"; text: string } {
+  if (!result.ok) return { tone: "warn", text: result.message ?? "복기를 실행하지 못했습니다." };
+  const week = result.review?.weekEnding ?? EMPTY;
+  const status = reviewStatusBadge(result.review?.status).label;
+  if (result.outcome === "ALREADY_REVIEWED") {
+    return { tone: "info", text: `${week} 주 복기가 이미 있습니다(${status}) — Claude를 부르지 않았습니다.` };
+  }
+  if (result.outcome === "SKIPPED") {
+    return { tone: "info", text: `${week} 주: 창 안에 복기할 Claude 결정이 없어 부르지 않고 '건너뜀'으로 남겼습니다.` };
+  }
+  const ok = result.review?.status === "OK";
+  return { tone: ok ? "info" : "warn", text: `${week} 주 복기를 남겼습니다 — ${status}.` };
+}
+
+/**
+ * 프레임 탭에서 찾을 제안 — 결정 로그의 주간 복기에서 "제안으로 이동"을 누르면 그 번호를 강조합니다. 목록(최근 50건)에 없으면 그렇다고
+ * 적습니다. 찾을 번호가 없으면 note가 null.
+ */
+export function proposalFocusView(proposals: readonly PaperFrameworkProposal[], id: number | null | undefined):
+  { found: boolean; note: string | null } {
+  if (!isNumber(id)) return { found: false, note: null };
+  if (proposals.some((proposal) => proposal.id === id)) return { found: true, note: null };
+  return { found: false, note: `제안 #${id}가 최근 제안 목록(50건)에 없습니다 — 오래된 제안이면 목록에서 빠졌을 수 있습니다.` };
 }

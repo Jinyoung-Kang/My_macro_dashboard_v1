@@ -23,6 +23,8 @@ import {
   decisionOrdersText,
   decisionRunBlocked,
   decisionStatusBadge,
+  DECISION_VIEWS,
+  type DecisionViewKey,
   formatRatioPercent,
   jsonTitle,
   orderReasonText,
@@ -54,6 +56,7 @@ import type {
 } from "@/lib/types";
 import { ClaudeDecisionBody } from "./ClaudeDecisionBody";
 import { GateIndicatorBody } from "./GateIndicatorBody";
+import { ReviewsSection } from "./ReviewsSection";
 
 /** 결정 목록에 보일 최근 건수. */
 const RECENT_LIMIT = 50;
@@ -67,17 +70,24 @@ const RECENT_LIMIT = 50;
  *
  * 숫자는 결정 기록(서버 계산) 그대로이고, 화면은 기관 이름을 붙이고 표로 늘어놓기만 합니다(ADR 0004). 책 목록은 개요 응답에서
  * 받습니다(page.tsx) — 수동 결정이 성공하면 이 탭의 목록과 개요(onChanged)를 함께 다시 읽습니다(결정이 주문을 내면 책 카드가 바뀜).
+ *
+ * 탭 맨 위의 '결정 기록 · 주간 복기'로 Claude 계좌의 주간 복기({@link ReviewsSection}, 2단계 D)를 봅니다 — 복기는 계좌를 고르지 않습니다
+ * (Claude 계좌만). 복기가 낸 제안을 누르면 프레임 탭으로 옮겨 그 제안을 강조합니다(onOpenProposal, page.tsx).
  */
 export function DecisionsSection({
   books,
   onChanged,
   initialBook = "",
+  onOpenProposal,
 }: {
   books: PaperBookSummary[];
   onChanged: () => void;
   /** 처음 고를 계좌 코드(개요의 계좌 상세에서 넘어올 때). 목록에 없으면 기본 계좌로 엽니다. */
   initialBook?: string;
+  /** 주간 복기의 제안 링크 — 프레임 탭으로 옮겨 그 제안을 강조합니다. */
+  onOpenProposal?: (id: number) => void;
 }) {
+  const [view, setView] = useState<DecisionViewKey>("decisions");
   const [picked, setPicked] = useState(initialBook);
   const code = resolveDecisionBook(picked, books);
   const list = useApi<PaperDecisionsResponse>(code ? endpoints.paper.decisions(code, RECENT_LIMIT) : null, 60_000);
@@ -95,6 +105,35 @@ export function DecisionsSection({
 
   if (!code) {
     return <Banner tone="info">결정을 내는 계좌가 아직 없습니다 — 개요 탭에서 초기화하면 규칙 계좌·Claude 계좌가 생깁니다.</Banner>;
+  }
+
+  const views = (
+    <div role="group" aria-label="결정 로그 보기" className="inline-flex w-fit overflow-hidden rounded-md border border-border">
+      {DECISION_VIEWS.map((entry) => {
+        const active = entry.key === view;
+        return (
+          <button
+            key={entry.key}
+            type="button"
+            aria-pressed={active}
+            onClick={() => setView(entry.key)}
+            className={`px-3 py-1.5 text-xs transition focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent ${
+              active ? "bg-accent/15 font-semibold text-accent" : "text-muted hover:bg-surface-hover hover:text-body"
+            }`}
+          >
+            {entry.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+  if (view === "reviews") {
+    return (
+      <>
+        {views}
+        <ReviewsSection onOpenProposal={onOpenProposal} />
+      </>
+    );
   }
 
   const book = books.find((entry) => entry.code === code) ?? null;
@@ -118,6 +157,7 @@ export function DecisionsSection({
 
   return (
     <>
+      {views}
       <Card title="결정" source={PAPER_SOURCES.decisions} actions={<Freshness refreshError={list.refreshError} />}>
         <div className="flex flex-wrap items-end gap-4">
           <Select

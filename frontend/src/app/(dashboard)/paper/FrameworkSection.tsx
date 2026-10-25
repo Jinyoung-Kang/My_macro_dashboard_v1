@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Banner, Button, Card, ErrorState, Loading, Select, Table } from "@/components/ui";
 import { useApi } from "@/hooks/useApi";
 import { useAsyncAction } from "@/hooks/useAsyncAction";
@@ -40,6 +40,7 @@ import {
   type ProposalAssessmentRow,
   type ProposalOperationRow,
   proposalBaseToFetch,
+  proposalFocusView,
   proposalView,
   proposeResultView,
   rejectResultView,
@@ -74,12 +75,23 @@ const INPUT = "w-full rounded-md border border-border bg-canvas px-3 py-2 text-s
  *
  * 렌더링·토큰 어림·예산 초과는 서버가 정합니다(화면은 다시 세지 않음). 제안 요청만 Claude를 부르고(비용·하루 상한 공유 — 확인 단계),
  * 승인·거절·수동 편집은 부르지 않습니다. 어느 쪽이든 판이 바뀌면 지금 판과 제안 목록을 다시 읽습니다. 규칙 책은 프레임을 쓰지 않습니다.
+ *
+ * 결정 로그 탭의 주간 복기에서 제안 링크를 누르고 오면({@code focusProposalId}) 제안 목록의 그 제안으로 스크롤하고 테두리로 강조합니다
+ * (2단계 D — 복기가 낸 제안도 같은 목록·같은 승인 흐름).
  */
-export function FrameworkSection() {
+export function FrameworkSection({ focusProposalId = null }: { focusProposalId?: number | null }) {
   const framework = useApi<PaperFrameworkResponse>(endpoints.paper.framework);
   const proposals = useApi<PaperProposalsResponse>(endpoints.paper.proposals);
   // 예산(frameworkTokenBudget)이 판 응답에 없을 때만 설정 값을 씁니다(계약에 없는 필드) — 실패해도 토큰 어림은 그대로 보입니다.
   const settings = useApi<PaperSettingsResponse>(endpoints.paper.settings);
+  const proposalList = proposals.data?.available ? proposals.data.proposals ?? [] : [];
+  const focus = proposalFocusView(proposalList, focusProposalId);
+  const frameworkReady = Boolean(framework.data?.available);
+  // 목록이 그려진 뒤에 옮깁니다(판 응답이 늦으면 목록이 아직 없음). jsdom에는 scrollIntoView가 없어 있을 때만 부릅니다.
+  useEffect(() => {
+    if (!focus.found || focusProposalId === null || !frameworkReady) return;
+    document.getElementById(`paper-proposal-${focusProposalId}`)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  }, [focus.found, focusProposalId, frameworkReady]);
 
   if (framework.loading && !framework.data) return <Loading label="프레임을 읽는 중…" />;
   if (framework.error) return <ErrorState message={framework.error} onRetry={framework.reload} />;
@@ -88,7 +100,6 @@ export function FrameworkSection() {
 
   const current = framework.data.current ?? null;
   const view = frameworkCurrentView(current, frameworkBudgetFrom(framework.data, settings.data?.available ? settings.data.body : null));
-  const proposalList = proposals.data?.available ? proposals.data.proposals ?? [] : [];
   const sourceCard = frameworkSourceCardView(current?.status);
   const reloadAll = () => {
     void framework.reload();
@@ -111,12 +122,20 @@ export function FrameworkSection() {
         {proposals.data && !proposals.data.available && (
           <Banner tone="warn">{proposals.data.message ?? "제안을 읽을 수 없습니다."}</Banner>
         )}
+        {proposals.data?.available && focus.note && <div className="mb-3"><Banner tone="info">{focus.note}</Banner></div>}
         {proposals.data?.available && (proposalList.length === 0 ? (
           <p className="text-sm text-muted">{`아직 제안이 없습니다 — 위 '${sourceCard.title}'에서 요청하면 생깁니다.`}</p>
         ) : (
           <div className="flex flex-col gap-4">
             {proposalList.map((proposal) => (
-              <ProposalItem key={proposal.id} proposal={proposal} current={current} onChanged={reloadAll} />
+              <ProposalItem
+                key={proposal.id}
+                proposal={proposal}
+                current={current}
+                onChanged={reloadAll}
+                anchor
+                highlighted={proposal.id === focusProposalId}
+              />
             ))}
           </div>
         ))}
@@ -335,10 +354,16 @@ function ProposalItem({
   proposal,
   current,
   onChanged,
+  anchor = false,
+  highlighted = false,
 }: {
   proposal: PaperFrameworkProposal;
   current: PaperFrameworkVersion | null;
   onChanged: () => void;
+  /** 제안 목록의 항목이면 id를 붙입니다(주간 복기에서 찾아옴) — 요청 카드에 같은 제안이 한 번 더 보여도 id가 겹치지 않게. */
+  anchor?: boolean;
+  /** 주간 복기에서 이 제안을 눌러 왔음 — 테두리로 강조. */
+  highlighted?: boolean;
 }) {
   const baseToFetch = proposalBaseToFetch(proposal, current);
   const baseFrame = useApi<PaperFrameworkVersionResponse>(baseToFetch === null ? null : endpoints.paper.frameworkVersion(baseToFetch));
@@ -364,10 +389,18 @@ function ProposalItem({
   };
 
   return (
-    <article aria-label={view.title} className="flex flex-col gap-3 rounded-lg border border-border bg-canvas px-4 py-3">
+    <article
+      id={anchor ? `paper-proposal-${proposal.id}` : undefined}
+      aria-label={view.title}
+      aria-current={highlighted ? "true" : undefined}
+      className={`flex scroll-mt-4 flex-col gap-3 rounded-lg border bg-canvas px-4 py-3 ${
+        highlighted ? "border-accent ring-2 ring-accent/60" : "border-border"
+      }`}
+    >
       <header className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-semibold text-bright">{view.title}</h3>
         <BadgeChip badge={view.status} />
+        {highlighted && <span className="text-[11px] text-accent">주간 복기에서 연 제안</span>}
       </header>
       <dl className="flex flex-wrap gap-x-5 gap-y-1 text-xs">
         {view.meta.map((cell) => <Meta key={cell.key} label={cell.label} value={cell.value} />)}

@@ -26,18 +26,27 @@ import { SettingsSection } from "./SettingsSection";
  * 실리는 메모의 기준일 안내). 한계 문구는 어느 탭에서든 맨 위에 둡니다.
  *
  * <p>개요의 계좌 상세에서 "보유·체결 탭에서 전체 보기"·"결정 로그 보기"를 누르면 그 탭으로 바꾸며 그 계좌를 미리 고릅니다(preselect —
- * 탭이 처음 그려질 때의 선택). 탭 단추로 직접 옮기면 미리 고름을 지워, 그 탭의 기본 계좌로 엽니다(예전과 같음).
+ * 탭이 처음 그려질 때의 선택). 탭 단추로 직접 옮기면 미리 고름을 지워, 그 탭의 기본 계좌로 엽니다(예전과 같음). 결정 로그의 주간 복기에서
+ * 제안을 누르면 프레임 탭으로 바꾸며 그 제안 번호를 넘깁니다(focusProposal — 같은 규칙으로 탭 단추가 지움).
  */
 export default function PaperPage() {
   const [tab, setTab] = useState<PaperTabKey>("overview");
   const [preselect, setPreselect] = useState("");
+  // 결정 로그의 주간 복기에서 누른 제안 번호 — 프레임 탭이 그 제안으로 스크롤해 강조합니다(탭 단추로 옮기면 지움).
+  const [focusProposal, setFocusProposal] = useState<number | null>(null);
   const { data, loading, error, reload, refreshError } = useApi<PaperOverviewResponse>(endpoints.paper.overview, 60_000);
   const current = PAPER_TABS.find((entry) => entry.key === tab) ?? PAPER_TABS[0];
   const openTab = (key: "holdings" | "decisions", code: string) => {
     setPreselect(code);
+    setFocusProposal(null);
     setTab(key);
     // 누른 단추는 개요와 함께 사라지므로, 초점을 새 탭 단추로 옮겨 키보드 위치와 화면 위치를 맞춥니다.
     document.getElementById(`paper-tab-${key}`)?.focus();
+  };
+  const openProposal = (id: number) => {
+    setFocusProposal(id);
+    setTab("framework");
+    document.getElementById("paper-tab-framework")?.focus();
   };
 
   return (
@@ -84,6 +93,7 @@ export default function PaperPage() {
                   aria-controls="paper-tabpanel"
                   onClick={() => {
                     setPreselect("");
+                    setFocusProposal(null);
                     setTab(entry.key);
                   }}
                   className={`rounded-md px-3 py-1.5 text-xs transition focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent ${
@@ -101,8 +111,10 @@ export default function PaperPage() {
             {current.key === "overview" && <OverviewSection overview={data} onChanged={reload} onOpenTab={openTab} />}
             {current.key === "selection" && <SelectionSection />}
             {current.key === "holdings" && <HoldingsSection books={data.books ?? []} onChanged={reload} initialBook={preselect} />}
-            {current.key === "decisions" && <DecisionsSection books={data.books ?? []} onChanged={reload} initialBook={preselect} />}
-            {current.key === "framework" && <FrameworkSection />}
+            {current.key === "decisions" && (
+              <DecisionsSection books={data.books ?? []} onChanged={reload} initialBook={preselect} onOpenProposal={openProposal} />
+            )}
+            {current.key === "framework" && <FrameworkSection focusProposalId={focusProposal} />}
             {current.key === "notes" && <NotesSection startDate={data.startDate ?? null} />}
             {current.key === "settings" && <SettingsSection />}
             {current.opensIn && (

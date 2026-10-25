@@ -125,6 +125,7 @@ const CASES: Case[] = [
     after: endpoints.paper.notes(includeExpired),
   })),
   { name: "paper.archiveNote", before: `/api/paper/notes/${9}`, after: endpoints.paper.archiveNote(9) },
+  { name: "paper.review", before: `/api/paper/reviews/${"2026-10-30"}`, after: endpoints.paper.review("2026-10-30") },
 ];
 
 describe("API 경로 — 예전 조립식과 서버가 받는 값이 같다", () => {
@@ -166,6 +167,14 @@ describe("모의 매매 프레임·메모 경로", () => {
   });
 });
 
+describe("모의 매매 주간 복기 경로", () => {
+  it("목록 아래에 주(날짜)별 한 건과 수동 실행", () => {
+    expect(endpoints.paper.reviews).toBe("/api/paper/reviews");
+    expect(endpoints.paper.review("2026-10-30")).toBe("/api/paper/reviews/2026-10-30");
+    expect(endpoints.paper.runReview).toBe("/api/paper/reviews/run");
+  });
+});
+
 /** endpoints의 잎(문자열 경로·경로를 만드는 함수)을 모읍니다. */
 function leaves(value: unknown, out = { strings: [] as string[], functions: 0 }) {
   if (typeof value === "string") out.strings.push(value);
@@ -184,7 +193,8 @@ const documentedForm = (url: string) => new URL(url, "http://backend").pathname
   .replace(/^\/api\/paper\/decisions\/[^/]+$/, "/api/paper/decisions/{id}")
   .replace(/^\/api\/paper\/framework\/versions\/[^/]+$/, "/api/paper/framework/versions/{version}")
   .replace(/^\/api\/paper\/framework\/proposals\/[^/]+\/(approve|reject)$/, "/api/paper/framework/proposals/{id}/$1")
-  .replace(/^\/api\/paper\/notes\/[^/]+$/, "/api/paper/notes/{id}");
+  .replace(/^\/api\/paper\/notes\/[^/]+$/, "/api/paper/notes/{id}")
+  .replace(/^\/api\/paper\/reviews\/(?!run$)[^/]+$/, "/api/paper/reviews/{weekEnding}");
 
 describe("docs/API.md 백엔드 표와 대조", () => {
   it("화면이 부르는 경로는 모두 문서(= 백엔드 경로 목록 테스트가 대조하는 표)에 있다", () => {
@@ -197,6 +207,6 @@ describe("docs/API.md 백엔드 표와 대조", () => {
     const paths = [...strings, ...CASES.map(({ after }) => after)].map(documentedForm);
     expect(paths.filter((path) => !documented.has(path))).toEqual([]);
     // 경로를 만드는 함수는 모두 위 CASES에 한 줄 이상 있습니다. 새 함수를 만들었다면 CASES에 추가하고 이 숫자를 고치세요.
-    expect(functions).toBe(52);
+    expect(functions).toBe(53);
   });
 });

@@ -1246,6 +1246,8 @@ export interface PaperFrameworkProposal {
   baseVersion: number | null;
   /** 그 호출의 토큰·추정 비용(계약 밖, JSON 그대로). */
   usage?: unknown;
+  /** 주간 복기가 낸 제안이면 그 복기 주(YYYY-MM-DD), 아니면 null(2단계 D3). */
+  reviewWeekEnding?: string | null;
 }
 
 /** GET /api/paper/framework/proposals — 최근 순. */
@@ -1313,5 +1315,111 @@ export interface PaperNotesResponse {
 export interface PaperNoteCreateResult {
   ok: boolean;
   note?: PaperNote | null;
+  message?: string;
+}
+
+// ------------------------------------------------------------------ 주간 복기(2단계 명세 §3 D1~D6)
+
+/**
+ * 복기 상태 — OK(형식 통과) · FORMAT_ERROR(형식 위반, 그 주는 끝) · API_ERROR(호출 실패, 같은 행에서 한 번 다시) · REFUSED(모델 거절, 끝) ·
+ * SKIPPED(창 안에 복기할 결정이 없어 부르지 않음).
+ */
+export type PaperReviewStatus = "OK" | "FORMAT_ERROR" | "API_ERROR" | "REFUSED" | "SKIPPED";
+
+/** 논거 판정(review.schema.json verdicts[].thesisHeld). */
+export type PaperReviewThesisHeld = "유지" | "반증" | "판단불가";
+
+/** 판정 수 — OK 행만(그 밖의 행은 서버가 null). */
+export interface PaperReviewVerdictCounts {
+  유지: number | null;
+  반증: number | null;
+  판단불가: number | null;
+}
+
+/** 복기 목록의 한 줄. */
+export interface PaperReviewSummary {
+  /** 복기 주 — 그 ISO 주의 마지막 미국 거래일(금요일, 휴장이면 목요일). */
+  weekEnding: string;
+  status: PaperReviewStatus | string;
+  /** 입력에 넣은 주 수(4, 입력 어림이 25,000토큰을 넘으면 2). */
+  windowWeeks: number | null;
+  model: string | null;
+  verdictCounts: PaperReviewVerdictCounts | null;
+  proposalId: number | null;
+  /** 연결된 프레임 제안의 지금 상태(PENDING·APPROVED·REJECTED·FAILED). */
+  proposalStatus: PaperProposalStatus | string | null;
+  createdAtKst: string | null;
+  error: string | null;
+  retryCount: number | null;
+  /** API 오류이고 아직 다시 부르지 않음 — 다음 실행이 같은 행에서 한 번 더 부릅니다. */
+  retryable: boolean | null;
+  frameworkVersion: number | null;
+}
+
+/** GET /api/paper/reviews */
+export interface PaperReviewsResponse {
+  available: boolean;
+  message?: string;
+  reviews?: PaperReviewSummary[];
+  /** 지금 마감이 끝난 가장 최근 복기 주 — 수동 실행이 도는 주. */
+  latestWeekEnding?: string | null;
+  /** 그 주 정기 복기가 열리는 시각(토요일 09:00 KST). */
+  latestOpensAtKst?: string | null;
+}
+
+/** 판정 한 줄 — 날짜·종류·상태는 서버가 입력의 결정에서 찾아 붙인 값(없는 id면 null). */
+export interface PaperReviewVerdict {
+  decisionId: number | null;
+  asOf: string | null;
+  kind: string | null;
+  status: string | null;
+  thesisHeld: PaperReviewThesisHeld | string | null;
+  note: string | null;
+}
+
+/** 복기가 낸 프레임 제안의 요약(승인·거절은 프레임 탭). */
+export interface PaperReviewProposal {
+  id: number;
+  status: PaperProposalStatus | string;
+  summary: string | null;
+  operationsCount: number | null;
+  baseVersion: number | null;
+  resultVersion: number | null;
+  error: string | null;
+}
+
+/** 복기 한 건(GET /api/paper/reviews/{weekEnding}의 review). */
+export interface PaperReviewDetail extends Omit<PaperReviewSummary, "proposalId" | "proposalStatus"> {
+  trimmedReason: string | null;
+  verdicts: PaperReviewVerdict[];
+  /** 입력에 있는데 판정이 없는 결정. */
+  missingDecisionIds: number[];
+  recurringErrors: string[];
+  keep: string[];
+  proposal: PaperReviewProposal | null;
+  /** 코드가 만든 복기 입력(보낸 키 순서 그대로 — 계약 밖, JSON 그대로). */
+  input?: unknown;
+  /** 검사한 응답(형식 오류면 읽은 그대로, 읽지 못했으면 null). */
+  response?: unknown;
+  /** 토큰·추정 비용·지연·입력 어림(계약 밖, JSON 그대로). */
+  usage?: unknown;
+}
+
+/** GET /api/paper/reviews/{weekEnding} */
+export interface PaperReviewResponse {
+  available: boolean;
+  message?: string;
+  review?: PaperReviewDetail | null;
+}
+
+/**
+ * POST /api/paper/reviews/run — 가장 최근 복기 주를 지금 복기합니다(토요일 시각 조건만 빼고 정기 작업과 같음). 이미 있으면 그 행
+ * (ALREADY_REVIEWED). 계좌·확정 종가·하루 상한 조건은 400, 다른 복기 진행 중은 429(서버 문구).
+ */
+export interface PaperRunReviewResult {
+  ok: boolean;
+  available?: boolean;
+  outcome?: "REVIEWED" | "SKIPPED" | "ALREADY_REVIEWED" | string;
+  review?: PaperReviewDetail | null;
   message?: string;
 }

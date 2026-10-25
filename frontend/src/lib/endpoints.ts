@@ -220,6 +220,12 @@ export const endpoints = {
     createNote: "/api/paper/notes",
     /** 메모 보관 — DELETE(지우지 않고 archived). */
     archiveNote: (id: number) => `/api/paper/notes/${segment(String(id))}`,
+    /** 주간 복기 목록(주 최근 순, 판정 수·연결된 제안 상태). */
+    reviews: "/api/paper/reviews",
+    /** 복기 한 건 — weekEnding은 복기 주(YYYY-MM-DD, 그 주의 마지막 거래일). */
+    review: (weekEnding: string) => `/api/paper/reviews/${segment(weekEnding)}`,
+    /** 수동 복기 — POST(본문 없음). 가장 최근 복기 주를 지금(토요일 시각 조건 없이). Claude를 한 번 부릅니다(하루 상한 공유). */
+    runReview: "/api/paper/reviews/run",
   },
 
   // 🔌 토스증권 연결 테스트 (경로는 /api/ai/toss 이지만 AI와 관계없음)
