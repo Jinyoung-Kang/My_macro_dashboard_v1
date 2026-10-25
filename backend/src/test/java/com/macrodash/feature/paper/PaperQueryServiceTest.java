@@ -455,5 +455,49 @@ class PaperQueryServiceTest {
                 "fredStatus");
     }
 
+    @Test
+    @DisplayName("상태의 사건 뉴스 수집(2단계 B): 상태 저장본에서 7일 보관 건수·마지막 수집(KST)·받은 피드/전체·실패한 피드와 사유 — 없으면 null")
+    void newsStatus() {
+        var mapper = PaperFixtures.MAPPER;
+        tools.jackson.databind.JsonNode missing = mapper.valueToTree(query.status().get("news"));
+        assertThat(missing.path("available").asBoolean(true)).isFalse();
+        for (String key : List.of("stored7d", "lastFetchKst", "feedsOk", "feedsTotal", "failedFeeds")) {
+            assertThat(missing.path(key).isNull()).as(key + " — 저장본이 없으면 0·빈 목록이 아니라 null").isTrue();
+        }
+
+        com.macrodash.read.StoreReader reader = PaperFixtures.quietReader();
+        tools.jackson.databind.JsonNode payload = mapper.valueToTree(Map.of(
+                "generatedAt", "2026-10-25T06:00:12+00:00", "stored7d", 61, "feedsOk", 6, "feedsTotal", 7,
+                "failedFeeds", List.of(Map.of("feed", "bls_cpi", "source", "BLS", "reason", "HTTP 403 — BLS 차단(UA)")),
+                "insertedThisRun", 12, "maybeMissed", List.of()));
+        when(reader.readStored(com.macrodash.store.Datasets.SNAP_NEWS_STATUS)).thenReturn(Optional.of(
+                new com.macrodash.store.Snapshot(com.macrodash.store.Datasets.SNAP_NEWS_STATUS, payload, "json", "ok",
+                        null, Instant.parse("2026-10-25T06:00:20Z"))));
+        PaperQueryService withNews = new PaperQueryService(store, marketData, reader, PaperFixtures.settings(store),
+                PaperFixtures.config(), NOW);
+
+        tools.jackson.databind.JsonNode view = mapper.valueToTree(withNews.status().get("news"));
+        assertThat(view.path("available").asBoolean()).isTrue();
+        assertThat(view.path("stored7d").asInt()).isEqualTo(61);
+        assertThat(view.path("lastFetchKst").asString()).as("수집 시각(generatedAt, UTC) → KST").isEqualTo("2026-10-25 15:00 KST");
+        assertThat(view.path("feedsOk").asInt()).isEqualTo(6);
+        assertThat(view.path("feedsTotal").asInt()).isEqualTo(7);
+        assertThat(view.path("failedFeeds").toString())
+                .isEqualTo("[{\"feed\":\"bls_cpi\",\"source\":\"BLS\",\"reason\":\"HTTP 403 — BLS 차단(UA)\"}]");
+        List<String> keys = new ArrayList<>();
+        view.propertyNames().forEach(keys::add);
+        assertThat(keys).containsExactly("available", "stored7d", "lastFetchKst", "feedsOk", "feedsTotal", "failedFeeds");
+
+        // generatedAt이 없거나 읽을 수 없으면 저장 시각, 숫자가 아닌 칸은 null(0이 아님).
+        tools.jackson.databind.JsonNode odd = mapper.valueToTree(Map.of("stored7d", "many", "feedsOk", 7));
+        when(reader.readStored(com.macrodash.store.Datasets.SNAP_NEWS_STATUS)).thenReturn(Optional.of(
+                new com.macrodash.store.Snapshot(com.macrodash.store.Datasets.SNAP_NEWS_STATUS, odd, "json", "ok",
+                        null, Instant.parse("2026-10-25T06:00:20Z"))));
+        tools.jackson.databind.JsonNode oddView = mapper.valueToTree(withNews.status().get("news"));
+        assertThat(oddView.path("stored7d").isNull()).isTrue();
+        assertThat(oddView.path("lastFetchKst").asString()).isEqualTo("2026-10-25 15:00 KST");
+        assertThat(oddView.path("failedFeeds").isEmpty()).isTrue();
+    }
+
     private static final java.time.LocalDate TUE_EXPIRY = java.time.LocalDate.of(2026, 10, 29);
 }

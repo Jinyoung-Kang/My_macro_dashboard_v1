@@ -90,7 +90,7 @@ public class PaperSettingsService {
     /**
      * GET /api/paper/settings — {@code {available, version, updatedAtKst, body, defaults, keys:[{key, type, min, max, affectsRules,
      * description, options}], fallbacks}}. 행이 없으면(초기화 전) {@code version:null}이고 {@code body}는 기본값입니다.
-     * {@code fallbacks}는 지금 본문에서 없거나 범위 밖이라 기본값으로 읽는 키(장부·섞기·규칙 책 묶음·Claude 책·추정 비용 단가).
+     * {@code fallbacks}는 지금 본문에서 없거나 범위 밖이라 기본값으로 읽는 키(장부·섞기·규칙 책 묶음·Claude 책·추정 비용 단가·사건 뉴스).
      */
     public Map<String, Object> view() {
         if (!store.ready()) {
@@ -104,6 +104,7 @@ public class PaperSettingsService {
         fallbacks.addAll(parsed.rules().fallbacks());
         fallbacks.addAll(ClaudeBookService.ClaudeSettings.from(body).fallbacks());
         fallbacks.addAll(PaperApiCalls.Pricing.from(body).fallbacks());
+        fallbacks.addAll(EventsSection.settings(body).fallbacks());
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("available", true);
         out.put("version", row.map(PaperStore.SettingsRow::version).orElse(null));
@@ -347,6 +348,8 @@ public class PaperSettingsService {
         body.put("frameworkTokenBudget", 8000);
         // 추정 비용 단가(C8, 단계 3b) — 그 전에 만든 설정 행에는 없고, 그 행은 PaperApiCalls.Pricing이 이 기본값으로 읽습니다.
         body.put("pricing", PaperApiCalls.Pricing.defaults().body());
+        // 사건 뉴스(2단계 B, 패킷 11b_events) — 그 전에 만든 설정 행에는 없고, 그 행은 EventsSection.settings가 이 기본값으로 읽습니다.
+        body.put("news", EventsSection.defaultsBody());
         return mapper.valueToTree(body);
     }
 }

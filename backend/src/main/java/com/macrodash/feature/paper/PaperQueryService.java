@@ -273,7 +273,62 @@ public class PaperQueryService {
         out.put("apiUsage", apiUsage());
         out.put("fundamentals", fundamentalsStatus());
         out.put("calendar", calendarStatus());
+        out.put("news", newsStatus());
         return out;
+    }
+
+    /**
+     * 사건 뉴스 수집 상태(2단계 B) — 수집기 상태 저장본 {@code news.headlines.status}의 요약
+     * {@code {available, stored7d, lastFetchKst, feedsOk, feedsTotal, failedFeeds:[{feed, source, reason}]}}. stored7d = 보존 7일 안의
+     * 헤드라인 수(거르기 전 — 패킷에 싣는 것은 그중 대상 종목·키워드에 걸린 것), lastFetchKst = 피드를 하나라도 받은 마지막 수집 시각
+     * (저장본의 {@code generatedAt}, 없으면 저장 시각), feedsOk/feedsTotal = 그 수집에서 받은 피드 수/전체, failedFeeds = 그때 실패한
+     * 피드와 사유. 피드가 모두 실패한 수집은 저장본을 쓰지 않으므로(수집기 규칙 — 직전 저장본 유지) 그때는 시각이 멈춰 보입니다.
+     * 저장본이 없으면 숫자·시각은 null, 목록은 빈 목록이 아니라 null(0으로 채우지 않음). 수집 요청 없이 저장본만 읽습니다.
+     */
+    private Map<String, Object> newsStatus() {
+        Optional<Snapshot> found = reader.readStored(Datasets.SNAP_NEWS_STATUS);
+        JsonNode payload = found.map(Snapshot::payload).filter(JsonNode::isObject).orElse(null);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("available", payload != null);
+        out.put("stored7d", payload == null ? null : integer(payload, "stored7d"));
+        Instant fetched = payload == null ? null : parseInstant(Json.asText(payload, "generatedAt"));
+        if (fetched == null && payload != null) {
+            fetched = found.get().collectedAt();
+        }
+        out.put("lastFetchKst", fetched == null ? null : Kst.stamp(fetched));
+        out.put("feedsOk", payload == null ? null : integer(payload, "feedsOk"));
+        out.put("feedsTotal", payload == null ? null : integer(payload, "feedsTotal"));
+        List<Map<String, Object>> failed = null;
+        if (payload != null) {
+            failed = new ArrayList<>();
+            for (JsonNode f : Json.array(payload, "failedFeeds")) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("feed", Json.asText(f, "feed"));
+                row.put("source", Json.asText(f, "source"));
+                row.put("reason", Json.asText(f, "reason"));
+                failed.add(row);
+            }
+        }
+        out.put("failedFeeds", failed);
+        return out;
+    }
+
+    /** 정수 칸 — 없거나 정수가 아니면 null(0으로 채우지 않음). */
+    private static Integer integer(JsonNode node, String field) {
+        JsonNode v = Json.child(node, field);
+        return v != null && v.isIntegralNumber() && v.canConvertToInt() ? v.intValue() : null;
+    }
+
+    /** ISO 시각(오프셋 포함, 수집기의 {@code datetime.isoformat()}). 없거나 읽을 수 없으면 null. */
+    private static Instant parseInstant(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            return java.time.OffsetDateTime.parse(text.strip()).toInstant();
+        } catch (java.time.format.DateTimeParseException e) {
+            return null;
+        }
     }
 
     /**

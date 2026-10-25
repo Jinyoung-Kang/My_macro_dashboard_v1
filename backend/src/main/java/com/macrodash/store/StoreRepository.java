@@ -500,6 +500,40 @@ public class StoreRepository {
         return out;
     }
 
+    /**
+     * 날짜 범위 {@code [from, to]}(양 끝 포함, {@code to}가 null이면 끝 없음)의 기록 전부(개체를 가리지 않음, 최신 날짜 → 개체 순).
+     *
+     * <p>모의 매매 사건 뉴스(2단계 B, {@link Datasets#OBS_NEWS_HEADLINE})용입니다 — entity가 제목 해시라 개체로 고를 수 없고, obs_date가
+     * 발행 시각의 UTC 날짜라 결정 창(직전 결정 이후)을 덮는 날짜부터만 읽으면 됩니다. 기본키 (dataset, obs_date, entity)의 앞 두 열로 범위를
+     * 좁힙니다. 보존이 7일이라 끝을 열어 둬도 수천 행 안입니다.
+     *
+     * @return 각 payload에 {@code obsDate}·{@code entity}를 더한 목록. 없으면 빈 목록. 시작이 없거나 범위가 거꾸로면 빈 목록
+     */
+    public List<JsonNode> readObservationsBetween(String dataset, LocalDate from, LocalDate to) {
+        if (from == null || to != null && from.isAfter(to)) {
+            return List.of();
+        }
+        StringBuilder sql = new StringBuilder(
+                "SELECT entity, obs_date, payload FROM observations WHERE dataset = ? AND obs_date >= ?");
+        List<Object> params = new ArrayList<>(List.of(dataset, java.sql.Date.valueOf(from)));
+        if (to != null) {
+            sql.append(" AND obs_date <= ?");
+            params.add(java.sql.Date.valueOf(to));
+        }
+        sql.append(" ORDER BY obs_date DESC, entity");
+        List<JsonNode> out = new ArrayList<>();
+        jdbc.query(sql.toString(), (RowCallbackHandler) rs -> {
+            JsonNode node = parseJson(rs.getString("payload"));
+            if (node != null && node.isObject()) {
+                ((tools.jackson.databind.node.ObjectNode) node)
+                        .put("obsDate", rs.getDate("obs_date").toLocalDate().toString())
+                        .put("entity", rs.getString("entity"));
+                out.add(node);
+            }
+        }, params.toArray());
+        return out;
+    }
+
     /** 그 데이터셋의 가장 최근 obs_date. 없으면 null. */
     public LocalDate latestObservationDate(String dataset) {
         java.sql.Date date = jdbc.queryForObject(

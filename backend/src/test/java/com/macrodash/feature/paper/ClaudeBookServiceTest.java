@@ -75,10 +75,11 @@ class ClaudeBookServiceTest {
             + "\"cache_read_input_tokens\":7800,\"cache_creation_input_tokens\":0}";
     private static final String RATE_LIMITED =
             "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"slow down\"}}";
-    /** 가짜 패킷의 측정 태그(2단계 §6) — 일정 섹션 3줄, 사건·서프라이즈는 아직 없음(null). */
-    private static final DecisionMeasure MEASURE = new DecisionMeasure(true, 3, null, null);
-    private static final String MEASURE_JSON =
-            "{\"hasCalendar\":true,\"calendarItems\":3,\"hasEvents\":null,\"hasEarnings\":null}";
+    /** 가짜 패킷의 측정 태그(2단계 §6) — 일정 섹션 3줄, 사건 2건(B6 entity 목록), 서프라이즈는 아직 없음(null). */
+    private static final DecisionMeasure MEASURE = new DecisionMeasure(true, 3, 2,
+            List.of("0123456789abcdef", "fedcba9876543210"), null);
+    private static final String MEASURE_JSON = "{\"hasCalendar\":true,\"calendarItems\":3,\"hasEvents\":2,"
+            + "\"eventIds\":[\"0123456789abcdef\",\"fedcba9876543210\"],\"hasEarnings\":null}";
 
     private FakePaperStore store;
     private StoreReader reader;

@@ -1,5 +1,6 @@
 package com.macrodash.feature.paper;
 
+import com.macrodash.analytics.NewsEvents;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.JsonNodeFactory;
@@ -35,10 +36,14 @@ final class PaperSettingKeys {
     /** 규칙 책 영향 키를 바꿨을 때의 경고(명세 S3) — 화면의 확인 문구와 같은 문장입니다. */
     static final String RULES_FROZEN_WARNING = "규칙 계좌는 동결된 대조군입니다 — 이 변경은 실험 조건을 바꿉니다";
 
-    /** 값의 형. {@link #wire}는 화면에 보내는 이름(frontend lib/paper.ts settingKind가 읽는 이름). */
+    /**
+     * 값의 형. {@link #wire}는 화면에 보내는 이름(frontend lib/paper.ts settingKind가 읽는 이름). {@code PHRASES}는 낱말·구절 목록
+     * (사건 뉴스 키워드 — "rate decision"처럼 공백이 든 항목)이라 화면이 공백으로 나누지 않게 {@code list}와 다른 이름입니다. {@code FEEDS}는
+     * 정해진 피드 키({@link Spec#options})만 받는 목록입니다 — 화면에는 {@code list}로 보냅니다(선택지가 있으면 화면이 한 값 고르기로 그림).
+     */
     enum Type {
         NUMBER("number"), INTEGER("integer"), BOOLEAN("boolean"), CHOICE("string"), TIME("time"), TICKERS("list"),
-        CIKS("list");
+        CIKS("list"), PHRASES("phrases"), FEEDS("list");
 
         final String wire;
 
@@ -53,7 +58,7 @@ final class PaperSettingKeys {
      * @param key     설정 본문 안의 점 경로(예: {@code trackRecord.windowYears}) — 바뀐 키 목록·이력에도 이 이름
      * @param min     숫자 키의 최솟값(포함). 아니면 null
      * @param max     숫자 키의 최댓값(포함). 아니면 null
-     * @param options 고를 수 있는 값(CHOICE). 아니면 빈 목록
+     * @param options 고를 수 있는 값(CHOICE — 하나, FEEDS — 여럿). 아니면 빈 목록
      */
     record Spec(String key, Type type, Double min, Double max, List<String> options, boolean affectsRules,
                 String description) {
@@ -71,7 +76,9 @@ final class PaperSettingKeys {
             out.put("max", max);
             out.put("affectsRules", affectsRules);
             out.put("description", description);
-            out.put("options", options.isEmpty() ? null : options);
+            // 선택지는 한 값 고르기(CHOICE)에만 보냅니다 — 화면은 선택지가 있으면 선택 상자 하나로 그려, 여럿을 고르는 피드 목록이
+            // 한 값으로 저장됩니다. 피드 키는 설명(description)에 적습니다.
+            out.put("options", type != Type.CHOICE || options.isEmpty() ? null : options);
             return out;
         }
     }
@@ -154,7 +161,15 @@ final class PaperSettingKeys {
             number("gate.brentMax", 0, 500, false, "OS 게이트 참고 — 브렌트 상한(달러) · 구속하지 않음"),
             number("gate.wtiMax", 0, 500, false, "OS 게이트 참고 — WTI 상한(달러) · 구속하지 않음"),
             number("gate.usdjpyMin", 50, 400, false, "OS 게이트 참고 — 달러/엔 하한 · 구속하지 않음"),
-            integer("gate.confirmDays", 1, 60, false, "OS 게이트 참고 — 연속 확인 거래일"));
+            integer("gate.confirmDays", 1, 60, false, "OS 게이트 참고 — 연속 확인 거래일"),
+            of("news.enabled", Type.BOOLEAN, false,
+                    "Claude 계좌 패킷에 사건 뉴스 섹션 11b_events를 넣음(2단계 B) — 꺼도 수집은 계속, 패킷에서만 뺌"),
+            integer("news.maxPerDay", 0, NewsEvents.MAX_PER_DAY_LIMIT, false,
+                    "패킷에 싣는 사건 헤드라인 상한(직전 결정 이후 — 평일 24시간, 주말·휴장 뒤는 그 사이 전부, 최신순 — B4)"),
+            of("news.keywords", Type.PHRASES, false,
+                    "매크로 키워드(영어 낱말·구절, 대소문자 무시, 쉼표·줄바꿈으로 나눔 — B3). 보유·후보·watchlist 티커는 따로 잡음"),
+            new Spec("news.feeds", Type.FEEDS, null, null, NewsEvents.DEFAULT_FEEDS, false,
+                    "패킷에 넣을 피드 키(수집은 일곱 피드 모두) — " + String.join(" · ", NewsEvents.DEFAULT_FEEDS)));
 
     private static final Map<String, Spec> BY_KEY;
 
@@ -172,6 +187,13 @@ final class PaperSettingKeys {
     private static final Pattern TICKER = Pattern.compile("[A-Z0-9][A-Z0-9.\\-]{0,9}");
     private static final int MAX_TICKERS = 50;
     private static final int MAX_CIKS = 100;
+    /** 키워드 수·한 항목 글자 수 상한 — 기본 사전이 24개라 넉넉하고, 패킷의 걸린 이유(matched)에 그대로 실리는 글이라 짧게. */
+    private static final int MAX_PHRASES = 100;
+    private static final int MAX_PHRASE_CHARS = 60;
+    /** 키워드 안 공백·보이지 않는 글자 묶음 — 한 칸으로 접습니다(NewsEvents가 낱말 사이를 공백 하나로 읽음). */
+    private static final Pattern PHRASE_SPACES = Pattern.compile("[\\s\\p{Z}\\p{Cf}]+");
+    /** 키워드에 받지 않는 글자 — 꺾쇠(패킷 구분자 모양)·제어 문자. */
+    private static final Pattern PHRASE_FORBIDDEN = Pattern.compile("[<>\\uFF1C\\uFF1E\\uFE64\\uFE65\\p{Cc}]");
 
     static Optional<Spec> find(String key) {
         return Optional.ofNullable(BY_KEY.get(key));
@@ -272,6 +294,59 @@ final class PaperSettingKeys {
                 }
                 ArrayNode out = f.arrayNode();
                 ciks.forEach(out::add);
+                return new Checked(out, null);
+            }
+            case PHRASES -> {
+                if (!value.isArray()) {
+                    return error(key + ": 글자 목록이어야 합니다");
+                }
+                List<String> phrases = new ArrayList<>();
+                Set<String> seen = new LinkedHashSet<>();
+                for (JsonNode item : value) {
+                    if (!item.isString()) {
+                        return error(key + ": 글자 목록이어야 합니다 — " + shown(item.toString()));
+                    }
+                    // 공백(줄바꿈·탭 포함)을 먼저 한 칸으로 접고 남은 글자를 봅니다.
+                    String text = PHRASE_SPACES.matcher(item.asString("")).replaceAll(" ").strip();
+                    if (PHRASE_FORBIDDEN.matcher(text).find()) {
+                        return error(key + ": 꺾쇠(<>)·제어 문자는 쓸 수 없습니다 — " + shown(text));
+                    }
+                    if (text.isEmpty()) {
+                        continue;
+                    }
+                    if (text.length() > MAX_PHRASE_CHARS) {
+                        return error(key + ": 한 항목은 " + MAX_PHRASE_CHARS + "자까지입니다 — " + shown(text));
+                    }
+                    // 대소문자만 다른 항목은 앞의 것만 — 맞추기가 대소문자를 무시해 같은 키워드입니다.
+                    if (seen.add(text.toLowerCase(Locale.ROOT))) {
+                        phrases.add(text);
+                    }
+                }
+                if (phrases.size() > MAX_PHRASES) {
+                    return error(key + ": 항목은 " + MAX_PHRASES + "개까지입니다");
+                }
+                ArrayNode out = f.arrayNode();
+                phrases.forEach(out::add);
+                return new Checked(out, null);
+            }
+            case FEEDS -> {
+                if (!value.isArray()) {
+                    return error(key + ": 피드 키 목록이어야 합니다 — " + String.join(" · ", spec.options()));
+                }
+                Set<String> feeds = new LinkedHashSet<>();
+                for (JsonNode item : value) {
+                    String text = item.isString() ? item.asString("").strip().toLowerCase(Locale.ROOT) : "";
+                    if (!spec.options().contains(text)) {
+                        return error(key + ": 모르는 피드 키 — " + shown(item.toString()) + " (" + String.join(" · ",
+                                spec.options()) + ")");
+                    }
+                    feeds.add(text);
+                }
+                // 빈 목록도 받습니다 — 패킷 섹션이 '꺼짐(설정) — 고른 피드 없음'으로 적습니다(수집은 계속).
+                // 저장은 피드 순서(선택지 순)로 맞춥니다 — 고른 피드는 묶음이라 순서에 뜻이 없는데, 받은 순서대로 두면 같은 묶음이 다른
+                // 값으로 비교돼 설정 버전·이력이 늘고 화면이 '기본값과 다름'으로 봅니다.
+                ArrayNode out = f.arrayNode();
+                spec.options().stream().filter(feeds::contains).forEach(out::add);
                 return new Checked(out, null);
             }
             default -> {

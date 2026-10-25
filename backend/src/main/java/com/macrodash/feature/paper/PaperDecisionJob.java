@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Clock;
@@ -499,9 +500,18 @@ public class PaperDecisionJob {
      */
     Times times() {
         var body = store.settings().map(PaperStore.SettingsRow::body).orElse(null);
-        LocalTime decision = time(Json.asText(body, "decisionTimeKst"), DEFAULT_DECISION_TIME);
+        LocalTime decision = decisionTime(body);
         LocalTime deadline = time(Json.asText(body, "decisionDeadlineKst"), DEFAULT_DEADLINE);
         return new Times(decision, deadline.isBefore(decision) ? decision : deadline);
+    }
+
+    /**
+     * 설정 본문의 결정 시각({@code decisionTimeKst}) — 없거나 틀리면 07:30. 패킷의 사건 창({@code 11b_events})도 이 값으로 양 끝을
+     * 정합니다: 결정 작업이 실제로 그 거래일 결정을 내는 시각과 같은 규칙이어야 창이 "직전 결정 이후(평일 24시간, 주말·휴장 뒤는
+     * 그 사이 전부)"가 됩니다.
+     */
+    static LocalTime decisionTime(JsonNode body) {
+        return time(Json.asText(body, "decisionTimeKst"), DEFAULT_DECISION_TIME);
     }
 
     private static LocalTime time(String text, LocalTime fallback) {

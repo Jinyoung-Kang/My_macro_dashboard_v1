@@ -5,6 +5,7 @@ import com.macrodash.analytics.DailySeries;
 import com.macrodash.analytics.GateIndicator;
 import com.macrodash.analytics.GuruStyle;
 import com.macrodash.analytics.HoldingsDiff;
+import com.macrodash.analytics.NewsEvents;
 import com.macrodash.analytics.OrderValidator;
 import com.macrodash.analytics.PointInTime;
 import com.macrodash.analytics.SeriesMath;
@@ -88,7 +89,8 @@ import java.util.function.Function;
  * 전략 프로필(D27) · {@code 7_13fChanges} 13F 변화와 교집합 후보 · {@code 8_prices} 가격·모멘텀(≤ 60종목) ·
  * {@code 8b_fundamentals} 미국 종목 재무(D28, ≤ 25종목 — {@link FundamentalsSection}) · {@code 9_portfolio} 장부 ·
  * {@code 10_recentDecisions} 최근 결정 5건 · {@code 11_notes} 유효한 시황 메모(구분자로 감싼 자료 — {@link NoteService#activeMarketNotes}) ·
- * {@code 12_hardRules} 하드 규칙.
+ * {@code 11b_events} 직전 결정 이후(평일 24시간, 주말·휴장 뒤는 그 사이 전부)의 사건 헤드라인(2단계 B — 대상 종목·매크로 키워드에
+ * 걸린 것만, 구분자로 감싼 자료 — {@link EventsSection}) · {@code 12_hardRules} 하드 규칙.
  *
  * <p><b>결정적</b>: 같은 저장 상태면 같은 문자열·같은 해시입니다 — 결정 기록의 패킷 해시로 "같은 입력이었나"를 말할 수 있어야 하고
  * (명세 C5, "재현은 기록으로만"), 해시가 매번 달라지면 그 기록이 쓸모없어집니다. 그래서 맵은 모두 넣은 순서를 지키는 것으로 만들고
@@ -102,11 +104,12 @@ import java.util.function.Function;
  * 기준일에 <b>알려진</b> 값({@link PointInTime} — 2026-10-23 결정의 10년물은 10-22 관측), 환율은 기준일 이하 일봉, 13F·트랙레코드·
  * 선정은 기준일 이하 선정(그 선정 기준일까지 낸 공시)만, 재무는 공시일 ≤ 기준일인 사실만 씁니다. 매크로 카드는 이력이 없어
  * 지금 수집본을 싣고 {@code asOfMismatch:true}와 "기준값 없음 — 현재 수집본, 참고만"을 붙입니다(앞날 일정 {@code 1b_calendar}도
- * 지금 수집본뿐이라 같음). 게이트 지표는 그날 기록 대신
+ * 지금 수집본뿐이라 같고, 사건 {@code 11b_events}는 창이 기준일로 정해지지만 제목이 지금 저장본에서 고른 것이라 같음). 게이트 지표는 그날 기록 대신
  * 기준일에 알려진 값으로 다시 계산합니다(기록은 결정 작업이 돈 시각의 카드 값이라 늦게 돌았으면 기준일 뒤 값일 수 있음). 정기
  * 결정도 가격·FRED는 같은 규칙으로 기준 거래일에서 자릅니다 — 다음 세션 장중에 늦게 돌아도 다음 세션 봉이 섞이지 않게.
  *
- * <p><b>크기</b>: 목표 30,000토큰 이하(설계 §5-2 — D28 전 25,000에 재무 25종목을 더함, {@link #TARGET_TOKENS}). 목록마다
+ * <p><b>크기</b>: 목표 32,500토큰 이하(설계 §5-2 — D28 전 25,000에 재무 25종목, 2단계 일정·사건·서프라이즈를 더함,
+ * {@link #TARGET_TOKENS}). 목록마다
  * 상한을 둡니다(카드 18·프로필 8곳·13F 변화 10곳·기관당 변화 15·후보 20·가격 60·재무 25·결정 5). 기관 상한은 그룹마다 먼저
  * 절반씩 채우고({@link #capByGroup}) 자르면 몇 곳을 뺐는지 적습니다. 줄이 많은 표(13F 변화·가격·재무)는 열 이름을 한 번만
  * 두고 줄은 값 배열로 둡니다 — 상한을 꽉 채운 시험 패킷이 키 반복만으로 목표를 넘었습니다(약 26,000 → 20,000토큰). 넘으면 경고
@@ -152,23 +155,28 @@ public class PacketBuilder {
     static final String PORTFOLIO = "9_portfolio";
     static final String DECISIONS = "10_recentDecisions";
     static final String NOTES = "11_notes";
+    static final String EVENTS = "11b_events";
     static final String HARD_RULES = "12_hardRules";
     static final List<String> SECTION_KEYS = List.of(INSTRUCTIONS, BASIS, CALENDAR, MACRO, FRED, REGIME, GATE,
-            TRACK_RECORD, PROFILES, CHANGES, PRICES, FUNDAMENTALS, PORTFOLIO, DECISIONS, NOTES, HARD_RULES);
+            TRACK_RECORD, PROFILES, CHANGES, PRICES, FUNDAMENTALS, PORTFOLIO, DECISIONS, NOTES, EVENTS, HARD_RULES);
 
     /**
      * 패킷 모양의 판 — 섹션·칸을 바꾸면 올립니다(결정 기록끼리 비교할 때 같은 모양인지 알게). 2 = 재무 섹션 8b(D28), 3 = 일정 섹션
-     * 1b(2단계 A).
+     * 1b(2단계 A), 4 = 사건 섹션 11b(2단계 B).
      */
-    static final int PACKET_VERSION = 3;
+    static final int PACKET_VERSION = 4;
     /**
      * 목표 크기(설계 §5-2). {@link #estimateTokens}의 어림으로 잽니다. D28 전 25,000 — 재무 25종목 × 약 30칸을 더해 올렸고, 메모
      * 6,000자를 포함한 최대치 기준입니다. 상한을 꽉 채운 시험 패킷은 D28 전 약 24,900 → 약 29,100토큰(8b 약 4,200 — 줄마다 계산
      * 메모가 80자까지 차는 경우)이고, 일정 섹션 1b를 가장 크게(거시 6건 + 실적 25종목 + 미공개 릴리스 넷 + 이어받은 줄) 더하면 약
-     * 29,900토큰(1b 약 800)으로 목표 안입니다 — 여유가 100토큰 남짓이라 2단계 B·C의 섹션을 더할 때는 목표를 다시 정해야 합니다.
+     * 29,900토큰(1b 약 800)이었습니다. 2단계 B의 사건 섹션 11b와 C의 어닝 서프라이즈(8b 줄마다 4분기)를 담으려고 32,000으로
+     * 올렸다가, 11b의 실제 최대 크기를 다시 재서 32,500으로 맞췄습니다(2단계 명세 §4-4). 11b를 가장 크게 채우면(기본 상한 10건 ×
+     * 300자 + … 제목, 가장 긴 출처, 줄마다 걸린 이유 상한 넷을 기본 사전에서 가장 긴 것으로 + 나머지 수, 수집 공백·실패 피드 메모)
+     * 약 2,370(보통 제목이면 약 600~1,000)이라 시험 패킷이 약 32,280으로 목표 안이고, 여유가 220 남짓이라 C를 더할 때 다시 정해야
+     * 합니다. {@code news.maxPerDay}를 기본보다 올리거나 {@code news.keywords}에 긴 구절(60자까지)을 넣으면 넘을 수 있습니다(경고 로그만).
      * 1b는 실적 대상을 8b와 같은 25종목으로 두어 따로 늘지 않습니다({@link #calendar}).
      */
-    static final int TARGET_TOKENS = 30_000;
+    static final int TARGET_TOKENS = 32_500;
 
     /** 결정 종류(paper_decisions.kind). */
     static final List<String> KINDS = List.of(RuleBookService.SCHEDULED, RuleBookService.MANUAL,
@@ -383,6 +391,7 @@ public class PacketBuilder {
         // 없는" 종목이 생기고, 1b가 상한 없는 목록을 받으면 패킷이 목표 크기를 넘습니다.
         FundamentalsTargets stockTargets = fundamentalsTargets(ledger, context, universe, prior, paper, ruleSettings);
         CalendarSection.Built calendar = calendar(asOf, initial, stockTargets);
+        EventsSection.Built events = events(asOf, initial, settingsBody, stockTargets);
 
         Map<String, Object> root = new LinkedHashMap<>();
         root.put(INSTRUCTIONS, instructions(asOf, initial));
@@ -404,6 +413,7 @@ public class PacketBuilder {
         // 메모는 기준일(as_of) ≤ 기준 거래일인 것만 — 초기 결정 패킷도 같은 거름으로 출발일 이하 메모만 봅니다(PIT, 계약 보충 §5).
         NoteService.PacketNotes packetNotes = notes.activeMarketNotes(asOf, settingsBody);
         root.put(NOTES, notesSection(packetNotes));
+        root.put(EVENTS, events.section());
         root.put(HARD_RULES, hardRules(asOf, initial, limits, paper, ruleSettings, universe, lockedOut, noPrice,
                 inputsStale, initial ? null : quotes.map(Quotes::collectedAt).orElse(null)));
 
@@ -414,7 +424,7 @@ public class PacketBuilder {
             log.warn("Claude 패킷이 목표보다 큽니다: {} {} 약 {}토큰(목표 {}) — 목록 상한을 확인하세요", asOf, kind, tokens,
                     TARGET_TOKENS);
         }
-        return new Packet(body, text, sha256(text), packetNotes.ids(), calendar.measure());
+        return new Packet(body, text, sha256(text), packetNotes.ids(), calendar.measure().withEvents(events.result()));
     }
 
     // ------------------------------------------------------------------ 0·1 지시·기준
@@ -489,6 +499,33 @@ public class PacketBuilder {
         Optional<Snapshot> snapshot = reader.read(Datasets.SNAP_US_CALENDAR, Datasets.MAX_AGE_SLOW, "us_calendar");
         List<String> tickers = targets.shown().stream().map(FundamentalsSection.Target::ticker).toList();
         return CalendarSection.build(Datasets.SNAP_US_CALENDAR, snapshot, asOf, tickers, initial);
+    }
+
+    // ------------------------------------------------------------------ 11b 사건
+    /**
+     * 사건 섹션(2단계 명세 B3·B4, {@link EventsSection}) — 직전 결정 이후(평일 24시간, 주말·휴장 뒤는 그 사이 전부 —
+     * {@link NewsEvents#window}: 직전 거래일 결정의 cutoff부터 기준일 다음 KST 날짜의 결정 시각 {@code decisionTimeKst}까지, 이 결정이
+     * 읽은 설정 행)의 헤드라인 가운데 대상 종목 티커·매크로 키워드에 걸린 것. 대상은 재무 8b·일정
+     * 1b와 같은 목록의 <b>전부</b>({@link #fundamentalsTargets}의 {@code all} — 보유 → 섹션 7 교집합 후보 → 직전 watchlist, ETF·현금성
+     * 제외)입니다: 25종목 상한은 표 크기 때문이고, 거르기는 줄 수가 늘지 않아(상한 {@code news.maxPerDay}) 자를 이유가 없습니다. 회사
+     * 이름 표(티커 → 이름)는 백엔드에 없어 티커만 맞춥니다 — 13F 종목명(nameOfIssuer)은 제출 기관마다 다른 자유 기재라 제목과 맞출 수 없음.
+     *
+     * <p>설정으로 꺼 두면({@code news.enabled=false}) 저장본을 읽지 않고 "꺼짐(설정)"만 적습니다(수집은 계속 — 명세 B5). 저장본은
+     * {@code quietly} 안에서 읽습니다(이 메서드는 {@link #assemble} 안). 수집 상태({@code news.headlines.status} — 실패 중인 피드 메모,
+     * {@link EventsSection#feedNote})도 저장본만 읽고(수집 요청 없음), 초기 결정 패킷에는 쓰지 않습니다(상태가 기준일의 것이 아님).
+     */
+    private EventsSection.Built events(LocalDate asOf, boolean initial, JsonNode settingsBody,
+                                       FundamentalsTargets targets) {
+        NewsEvents.Window window = NewsEvents.window(asOf, PaperDecisionJob.decisionTime(settingsBody));
+        NewsEvents.Settings news = EventsSection.settings(settingsBody).settings();
+        List<JsonNode> rows = news.enabled()
+                ? repository.readObservationsBetween(Datasets.OBS_NEWS_HEADLINE, EventsSection.readFrom(window), null)
+                : List.of();
+        JsonNode status = news.enabled() && !initial
+                ? reader.readStored(Datasets.SNAP_NEWS_STATUS).map(Snapshot::payload).orElse(null)
+                : null;
+        List<String> tickers = targets.all().stream().map(FundamentalsSection.Target::ticker).toList();
+        return EventsSection.build(rows, window, news, tickers, initial, status);
     }
 
     // ------------------------------------------------------------------ 2 매크로 카드·환율

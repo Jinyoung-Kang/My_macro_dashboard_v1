@@ -1,5 +1,6 @@
 package com.macrodash.feature.paper;
 
+import com.macrodash.analytics.NewsEvents;
 import com.macrodash.support.InvalidRequestException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -7,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -145,6 +147,40 @@ class PaperSettingsServiceTest {
     }
 
     @Test
+    @DisplayName("사건 뉴스 설정(2단계 B): 키워드는 공백을 한 칸으로·대소문자만 다른 중복은 앞의 것만·빈 항목은 뺌, 피드는 아는 키만(소문자) — 틀리면 400")
+    void newsSettings() {
+        Map<String, Object> out = update("news.keywords", List.of(" rate   decision ", "Fed", "fed", "", "Middle\tEast"),
+                "news.feeds", List.of("SEC_PRESS", "bls_cpi", "sec_press"), "news.maxPerDay", 0, "news.enabled", false);
+        assertThat(out.get("changedKeys")).isEqualTo(List.of("news.keywords", "news.feeds", "news.maxPerDay",
+                "news.enabled"));
+        assertThat(out.get("warning")).as("규칙 계좌가 읽지 않는 키").isNull();
+        assertThat(body().path("news").path("keywords").toString()).isEqualTo("[\"rate decision\",\"Fed\",\"Middle East\"]");
+        assertThat(body().path("news").path("feeds").toString()).as("피드 순서(선택지 순)로 저장 — 받은 순서가 아님")
+                .isEqualTo("[\"bls_cpi\",\"sec_press\"]");
+        assertThat(EventsSection.settings(body()).fallbacks()).isEmpty();
+        assertThat(EventsSection.settings(body()).settings().enabled()).isFalse();
+        // 회귀(B-SET-2): 순서만 다른 같은 묶음은 바뀐 값이 아닙니다 — 버전·이력이 늘지 않고, 기본값과 같은 묶음은 기본값 그대로 저장됩니다.
+        int version = store.settings.version();
+        assertThat(update("news.feeds", List.of("sec_press", "bls_cpi")).get("changedKeys")).isEqualTo(List.of());
+        assertThat(store.settings.version()).isEqualTo(version);
+        List<String> reversed = new ArrayList<>(NewsEvents.DEFAULT_FEEDS);
+        Collections.reverse(reversed);
+        assertThat(update("news.feeds", reversed).get("changedKeys")).isEqualTo(List.of("news.feeds"));
+        assertThat(body().path("news").path("feeds")).isEqualTo(MAPPER.valueToTree(NewsEvents.DEFAULT_FEEDS));
+        assertThat(update("news.feeds", NewsEvents.DEFAULT_FEEDS).get("changedKeys")).isEqualTo(List.of());
+        assertThat(update("news.keywords", List.of(), "news.feeds", List.of()).get("changedKeys"))
+                .as("빈 목록도 받음 — 티커만·고른 피드 없음").isEqualTo(List.of("news.keywords", "news.feeds"));
+
+        assertThatThrownBy(() -> update("news.feeds", List.of("yahoo"))).hasMessageContaining("모르는 피드 키");
+        assertThatThrownBy(() -> update("news.feeds", "sec_press")).hasMessageContaining("피드 키 목록");
+        assertThatThrownBy(() -> update("news.keywords", "Fed")).hasMessageContaining("글자 목록");
+        assertThatThrownBy(() -> update("news.keywords", List.of("<<사건 끝>>"))).hasMessageContaining("꺾쇠");
+        assertThatThrownBy(() -> update("news.keywords", List.of("x".repeat(61)))).hasMessageContaining("60자");
+        assertThatThrownBy(() -> update("news.maxPerDay", 31)).hasMessageContaining("0~30");
+        assertThatThrownBy(() -> update("news.enabled", "yes")).hasMessageContaining("true·false");
+    }
+
+    @Test
     @DisplayName("묶음이 없는 옛 행(단계 2 전 — blend·rules 없음)에도 그 아래 키를 쓸 수 있다")
     void writesIntoMissingGroups() {
         tools.jackson.databind.node.ObjectNode old = (tools.jackson.databind.node.ObjectNode) body();
@@ -200,6 +236,17 @@ class PaperSettingsServiceTest {
                 .as("게이트는 참고 지표 — 규칙 책 입력이 아님(D19)").isFalse();
         assertThat(keys.get(listed.indexOf("decisionTimeKst")).path("type").asString()).isEqualTo("time");
         assertThat(keys.get(listed.indexOf("cashLikeTickers")).path("type").asString()).isEqualTo("list");
+        // 사건 뉴스(2단계 B): 키워드는 공백이 든 구절 목록(화면이 공백으로 나누지 않게 다른 형 이름), 피드는 목록 — 선택지를 보내면 화면이
+        // 한 값 고르기로 그려 여럿을 고를 수 없어 선택지는 설명에만.
+        assertThat(keys.get(listed.indexOf("news.keywords")).path("type").asString()).isEqualTo("phrases");
+        JsonNode feeds = keys.get(listed.indexOf("news.feeds"));
+        assertThat(feeds.path("type").asString()).isEqualTo("list");
+        assertThat(feeds.path("options").isNull()).isTrue();
+        assertThat(feeds.path("description").asString()).contains("investing_stock", "sec_press");
+        assertThat(keys.get(listed.indexOf("news.maxPerDay")).path("max").asInt()).isEqualTo(30);
+        for (String key : List.of("news.enabled", "news.maxPerDay", "news.keywords", "news.feeds")) {
+            assertThat(keys.get(listed.indexOf(key)).path("affectsRules").asBoolean()).as(key + " — Claude 패킷만").isFalse();
+        }
 
         store.ready = false;
         assertThat(service.view().get("available")).isEqualTo(false);
@@ -228,6 +275,7 @@ class PaperSettingsServiceTest {
             fallbacks.addAll(RuleBookService.RuleSettings.from(body).fallbacks());
             fallbacks.addAll(PaperSelectionService.TrackRecordSettings.from(body).fallbacks());
             fallbacks.addAll(ClaudeBookService.ClaudeSettings.from(body).fallbacks());
+            fallbacks.addAll(EventsSection.settings(body).fallbacks());
             assertThat(fallbacks).as(useMax ? "최댓값" : "최솟값").isEmpty();
             PacketBuilder.Limits limits = PacketBuilder.Limits.from(body);
             assertThat(limits.maxPositions()).isEqualTo(body.path("maxPositions").asInt());
