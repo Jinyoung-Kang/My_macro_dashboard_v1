@@ -24,4 +24,4 @@
 | [0016](0016-local-no-login.md) | 로컬 실행은 로그인 없이 이 맥(127.0.0.1)에서만 첫 운영자로 — 웹(v3 AWS 데모)·QA는 잠금 화면·로그인 그대로, 이 저장소의 AWS는 SSM 터널 + 로그인(`LOCAL_NO_LOGIN`, 덧붙임이 끔 고정, 섞이면 기동 실패) |
 | [0017](0017-macro-card-delay-and-realtime-sources.md) | 매크로 카드의 지연 배지는 출처가 밝힌 지연으로(카탈로그는 분, 문구는 함수), 같은 종목의 실시간 공개 시세(TradingView)를 먼저 — 장 밖이면 거래일 |
 | [0018](0018-paper-trading-guardrails.md) | 모의 알고리즘 매매(별도 Private 저장소 My_macro_dashboard_v1): 제안은 모델·검증과 집행은 코드(현금 비중은 모델 재량), 체결은 결정 뒤 첫 관측치(봉 날짜 > 기준 거래일), 신호 기관은 공시일 기준 복제 성과로 분기마다 두 그룹, 프레임은 승인된 판만, 실패는 그날 주문 없음·하루 호출 상한 |
-| [0019](0019-aws-personal-deployment.md) | AWS 개인용 배포: EC2 t4g.medium 한 대 + Postgres 컨테이너, 접속은 SSM 포트 포워딩(인바운드 0) · 앞단 Caddy는 루프백 8201 하나 · 서버 `.env`에 적지 않는 이름 · 모의 매매는 서버 한 곳(로컬 `PAPER_ENABLED=false`) |
+| [0019](0019-aws-personal-deployment.md) | AWS 개인용 배포: EC2 t4g.medium 한 대 + Postgres 컨테이너, 밤 시간 창(KST 21:55~08:00, 토 ~10:00 — EventBridge Scheduler)만 가동, 접속은 SSM 포트 포워딩(인바운드 0) · 앞단 Caddy는 루프백 8201 하나 · 서버 `.env`에 적지 않는 이름 · 모의 매매는 서버 한 곳(로컬 `PAPER_ENABLED=false`) |

@@ -1,6 +1,7 @@
 # 0018. 모의 알고리즘 매매의 가드레일: 제안은 모델·집행은 코드, 체결은 결정 뒤 첫 관측치, 신호 기관은 공시일 기준 복제 성과로 분기마다, 별도 Private 저장소
 
 - 상태: 채택 (2026-10-24 결정, 2026-10-25 구현 반영). 2026-10-25부터 My_macro_dashboard_v1(Private) 저장소의 main에서 진행합니다(명세 D0).
+  2026-10-26 사용자 확인: 이 저장소는 GitHub 공개 저장소입니다 — 아래의 'Private'·'공개하지 않음'은 그때의 기록입니다.
   Local_macro_dashboard_v3 저장소에는 넣지 않습니다. AWS 개인용 배포는 [ADR 0019](0019-aws-personal-deployment.md)가 정합니다. 처음 D0은 push하지 않는 로컬 브랜치
   `claude/paper-trading-2026-10`이었고, 그 브랜치를 그대로 이 저장소의 main으로 옮겼습니다.
 - 근거: [명세](../specs/2026-10-24-paper-trading-spec.md)(결정 D0~D27) · [설계 계획서](../specs/2026-10-24-paper-trading-design-plan.md)(구현 결과 §9-1) · [단계 0](../specs/2026-10-24-paper-trading-step0.md)
