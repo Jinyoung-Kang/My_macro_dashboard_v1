@@ -95,7 +95,7 @@ def task_earnings_surprise() -> str:
 
     fresh: dict[str, surprise_service.Parsed] = {}
     failed: dict[str, str] = {}
-    not_tried = {"budget": 0, "time": 0, "rate": 0, "failures": 0}
+    not_tried = {"budget": 0, "budgetDue": 0, "time": 0, "rate": 0, "failures": 0}
     attempted = responses = with_module = with_rows = consecutive = 0
     broken: str | None = None
 
@@ -103,6 +103,9 @@ def task_earnings_surprise() -> str:
         remaining = len(order) - index
         if attempted >= budget:
             not_tried["budget"] = remaining
+            # 묻지 않은 종목 가운데 정말 다음 실행이 받아야 하는 것(① 받은 적 없음 ② 실적일이 지남)만 따로 셉니다 — 나머지(③)는
+            # 이미 받았고 오래된 순으로 다시 받을 뿐이라, 다 셈하면 다 받은 뒤에도 "n종목은 다음 실행"으로 보입니다.
+            not_tried["budgetDue"] = sum(1 for t in order[index:] if _rank(t, prev_items, reported, today)[0] < 2)
             break
         if consecutive >= CONSECUTIVE_FAILURE_LIMIT:
             not_tried["failures"] = remaining
@@ -280,7 +283,13 @@ def _detail(payload: dict, fresh: dict, attempted: int, rows_sent: int, calendar
               + (f", 발표 시각 없는·미래 분기 {skipped}개 뺌" if skipped else "")
               + f") · 서프라이즈 있음 {payload['covered']}/{payload['universe']}, 추정치 4분기 이상 {payload['withEstimate4']}")
     if not_tried["budget"]:
-        detail += f", 예산 소진 — {not_tried['budget']}종목은 다음 실행"
+        due = not_tried["budgetDue"]
+        rest = not_tried["budget"] - due
+        if due:
+            detail += f", 예산 소진 — 아직 받지 않았거나 새 실적이 나왔을 {due}종목은 다음 실행"
+            detail += f"(나머지 {rest}종목은 이미 받음)" if rest else ""
+        else:
+            detail += f", 예산 소진 — 남은 {rest}종목은 이미 받음(오래전에 받은 순으로 다시 받음)"
     if payload.get("stoppedReason"):
         detail += f", {payload['stoppedReason']}"
     if payload["failedThisRun"]:

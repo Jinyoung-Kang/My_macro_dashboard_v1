@@ -438,7 +438,7 @@ def test_예산만큼만_묻고_다음_실행은_받지_않은_종목부터(stor
 
     detail = task_module.task_earnings_surprise()
     assert env["yahoo"].calls == ["AAPL", "BIDU"]
-    assert "예산 소진 — 3종목은 다음 실행" in detail and "stoppedReason" not in _status(store)
+    assert "예산 소진 — 아직 받지 않았거나 새 실적이 나왔을 3종목은 다음 실행" in detail and "stoppedReason" not in _status(store)
 
     env["yahoo"].calls.clear()
     _later(env, 12)
@@ -459,7 +459,6 @@ def test_예산만큼만_묻고_다음_실행은_받지_않은_종목부터(stor
     assert env["yahoo"].calls == ["ZZZZ", "BIDU"]
 
 
-@pytest.mark.xfail(strict=True, reason="재현 — 다음 커밋에서 고침: 다 받은 뒤에도 '예산 소진 — n종목은 다음 실행'이라 적음")
 def test_다_받은_뒤의_예산_소진은_남은_종목을_다음_실행이라_하지_않는다(store, env, monkeypatch):
     env["yahoo"].responses["ZZZZ"] = _raw("AAPL")
     task_module.task_earnings_surprise()   # 예산 100 — 다섯 종목을 모두 받음
