@@ -1,6 +1,8 @@
-# 0018. 모의 알고리즘 매매의 가드레일: 제안은 모델·집행은 코드, 체결은 결정 뒤 첫 관측치, 신호 기관은 공시일 기준 복제 성과로 분기마다, 로컬 브랜치 전용
+# 0018. 모의 알고리즘 매매의 가드레일: 제안은 모델·집행은 코드, 체결은 결정 뒤 첫 관측치, 신호 기관은 공시일 기준 복제 성과로 분기마다, 별도 Private 저장소
 
-- 상태: 채택 (2026-10-24 결정, 2026-10-25 구현 반영). 로컬 브랜치 `claude/paper-trading-2026-10` 전용입니다(명세 D0) — main·GitHub·AWS에 반영하지 않습니다.
+- 상태: 채택 (2026-10-24 결정, 2026-10-25 구현 반영). 2026-10-25부터 My_macro_dashboard_v1(Private) 저장소의 main에서 진행합니다(명세 D0).
+  Local_macro_dashboard_v3 저장소에는 넣지 않습니다. AWS 개인용 배포는 별도 ADR로 정합니다. 처음 D0은 push하지 않는 로컬 브랜치
+  `claude/paper-trading-2026-10`이었고, 그 브랜치를 그대로 이 저장소의 main으로 옮겼습니다.
 - 근거: [명세](../specs/2026-10-24-paper-trading-spec.md)(결정 D0~D27) · [설계 계획서](../specs/2026-10-24-paper-trading-design-plan.md)(구현 결과 §9-1) · [단계 0](../specs/2026-10-24-paper-trading-step0.md)
 - 지키는 방법(결정 번호별, 백엔드는 클래스·메서드 이름):
   1. 제안·집행 분리
@@ -61,7 +63,7 @@
   11. 경계·접근: `AccessPolicyTest.everyRouteIsClassified`, `ApiIntegrationTest.paperRoutesAreOwnerOnly`,
       `RouteInventoryTest`(`routesMatchInventory`·`apiDocumentMatchesRoutes`·`qaRouteListMatchesRoutes`·`controllersStaySmall`),
       `ArchitectureRulesTest`(`analyticsIsPure`·`jdbcOnlyInStore`·`backendDoesNotWriteCollectorTables`·`controllersGoThroughTheirOwnServices`),
-      화면 `access.test.ts`·`endpoints.test.ts`. 로컬 전용(D0)은 시험이 아니라 절차입니다 — 커밋 뒤 `git branch -r --contains HEAD`가 빈 결과([설계 §9](../specs/2026-10-24-paper-trading-design-plan.md) 단계 4 기준, 운영 절차는 §12-3).
+      화면 `access.test.ts`·`endpoints.test.ts`. 저장소 분리(D0)는 시험이 아니라 절차입니다 — v3 저장소에 올리지 않는 것은 CLAUDE.md의 전달 방식이 정합니다(운영 절차는 [설계 §12-3](../specs/2026-10-24-paper-trading-design-plan.md)).
 
 ## 배경
 
@@ -144,8 +146,9 @@
 10. **비용 상한은 하루 호출 수입니다**(C8·D18). 결정·미리보기·시작·재시도·프레임 제안이 같은 상한(설정 `apiDailyCallCap`, 기본 6회, KST 하루, DB로 셈)을 씁니다.
     추정 비용은 설정 키 `pricing.sonnet.*`·`pricing.haiku.*`(USD/MTok) 단가로 호출 때 계산해 `paper_api_usage.est_cost_usd`·`est_cost_calls`(V11)에 더합니다.
     화면은 `isEstimated`와 함께 보이고, 단가나 토큰을 모르는 호출은 0달러로 채우지 않습니다.
-11. **로컬 브랜치 전용입니다**(D0). push·main 병합·`compose.aws.yml` 변경을 하지 않습니다. 운영은 이 브랜치에서 `make up`, main은 rebase로 따라갑니다
-    ([설계 §12-3](../specs/2026-10-24-paper-trading-design-plan.md)). 새 경로 29개는 모두 운영자(`OWNER`) 전용이고, `/paper`는 운영자 메뉴입니다.
+11. **별도 Private 저장소입니다**(D0, 2026-10-25 변경). 처음에는 push하지 않는 로컬 브랜치였고, 지금은 My_macro_dashboard_v1 저장소의 main에서
+    보통 절차(브랜치 → main → push → CI)로 진행합니다. Local_macro_dashboard_v3 저장소에는 넣지 않고, AWS 개인용 배포(배포 덧붙임 파일)는 별도 ADR로
+    정합니다([설계 §12-3](../specs/2026-10-24-paper-trading-design-plan.md)). v3에서 옮겨 온 공개 데모용 `compose.aws.yml`로는 배포하지 않습니다. 새 경로 29개는 모두 운영자(`OWNER`) 전용이고, `/paper`는 운영자 메뉴입니다.
 
 ## 이유
 
@@ -167,7 +170,8 @@
   과금된 응답 뒤 실패를 다시 부르면 두 번 내고 다른 답을 받습니다.
 - **Claude 호출을 장부 잠금 밖에 둔 이유**: 호출이 몇 분 걸리는 동안 리스크 점검(스탑)이 멈추면 안 됩니다. 스케줄러 스레드가 1개(Spring Boot 기본)여도 같은 일이 생깁니다.
 - **단가를 설정에 둔 이유**: 가격표가 바뀌어도 코드를 고치지 않습니다. 2026-10-25 공식 가격표 확인값이 기본값입니다(설계 §5-9).
-- **로컬 전용은 사용자 결정입니다**(D0). 실험 기능이 main·AWS 데모에 섞이지 않습니다.
+- **저장소를 나눈 것은 사용자 결정입니다**(D0). 실험 기능과 개인 포트폴리오 맥락이 담긴 프롬프트·투자 OS 원문이 공개 저장소인 v3와 AWS 공개 데모에
+  섞이지 않습니다. 이 저장소는 공개하지 않습니다.
 
 ## 대안과 버린 이유
 
@@ -186,7 +190,7 @@
 - **SDK 재시도 또는 무제한 재시도**: 같은 거래일 결정이 둘이 되고 비용이 늡니다. 재시도는 부른 쪽이 한 번만 합니다.
 - **Claude 계좌 백테스트**: 모델이 과거를 알고 있어 성과가 아닙니다(D17).
 - **Claude 호출을 장부 잠금 안에서**: 호출하는 몇 분 동안 스탑 점검이 멈춥니다.
-- **main에 기능 스위치로 넣기**: 사용자가 로컬 브랜치를 골랐습니다(D0).
+- **v3 main에 기능 스위치로 넣기**: 사용자가 처음엔 로컬 브랜치를, 2026-10-25부터는 별도 Private 저장소를 골랐습니다(D0).
 
 ## 결과와 남은 위험
 
@@ -197,7 +201,7 @@
 - 재무제표는 D28(2026-10-25)로 Claude 계좌 패킷 `8b_fundamentals`에 들어갔습니다(SEC XBRL Company Facts, 공시일 ≤ 기준일 — 설계 §4-5).
   사용자 OS 엔진 E3·E4·E5·E8-R4가 묻는 TTM·마진·FCF·ROE를 싣습니다. 재무로 거는 **필터**(검증기·규칙 계좌)는 동결 대조군을 바꾸지 않으려고 하지
   않습니다(설계 §14-1).
-- `AI_ENGINES` 허용 목록([0014](0014-aws-demo-ai-report.md))은 `AiService.structured`를 거르지 않습니다. 로컬 전용이라 지금은 상관없지만, main·AWS로 옮기면 먼저 고칩니다.
+- `AI_ENGINES` 허용 목록([0014](0014-aws-demo-ai-report.md))은 `AiService.structured`를 거르지 않습니다. 지금은 로컬 스택만 돌아 상관없지만, AWS 개인용 배포 전에 먼저 고칩니다.
 - 트랙레코드는 복제 수익률이지 기관의 실제 수익률이 아닙니다. 후보 목록에는 생존 편향이 있고, 순위는 커버리지에 민감합니다(매핑 445개 → 498개에서
   3위·6위가 자리를 바꿈, 설계 §13).
 - 몇 달치 결과로는 통계적 결론을 낼 수 없습니다. Claude 계좌는 같은 입력에도 답이 달라지며, 재현은 기록으로만 합니다(명세 §6).

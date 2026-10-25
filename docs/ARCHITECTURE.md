@@ -51,7 +51,7 @@
 | `regime_log` | 국면 판정 라이브 기록 — 하루 한 건, 추가만. **백엔드가 씁니다**(ADR 0008) |
 | `users`·`user_sessions`·`audit_log`·`email_tokens`·`usage_counters` | 계정·DB 세션·감사 기록·메일 링크 토큰·하루 사용량 — **백엔드가 씁니다**(ADR 0010) |
 | `alert_rules`·`alert_events`·`alert_deliveries` | 알림 규칙·사건·알림함 — **백엔드가 씁니다**(ADR 0011). 수집기는 종목 규칙의 코드만 읽습니다 |
-| `paper_*` 20개 (V8, V9~V11은 열 추가, V12 `paper_reviews`) | 🧪 모의 매매(로컬 전용 브랜치) — 계좌·보유·재진입 금지·주문·체결·순자산, 결정 기록, 게이트 지표, 13F 트랙레코드·기관 선정, 프레임 판·제안, 메모, 설정, 작업 기록, 출발일 종가, Claude 사용량·추정 비용, 주간 복기. **백엔드가 씁니다**(ADR 0008, JDBC는 `store.PaperStore`에만). 수집기는 쓰지 않습니다(`collector/tests/test_table_ownership.py`가 검사) |
+| `paper_*` 20개 (V8, V9~V11은 열 추가, V12 `paper_reviews`) | 🧪 모의 매매(운영자 전용) — 계좌·보유·재진입 금지·주문·체결·순자산, 결정 기록, 게이트 지표, 13F 트랙레코드·기관 선정, 프레임 판·제안, 메모, 설정, 작업 기록, 출발일 종가, Claude 사용량·추정 비용, 주간 복기. **백엔드가 씁니다**(ADR 0008, JDBC는 `store.PaperStore`에만). 수집기는 쓰지 않습니다(`collector/tests/test_table_ownership.py`가 검사) |
 
 **데이터셋 이름은 두 언어에 같은 문자열로 존재합니다** — `collector/app/catalog.py`와
 `backend/.../store/Datasets.java`. `DatasetsParityTest`가 실제로 `catalog.py`를
@@ -130,7 +130,7 @@ pandas DataFrame을 JSON 문자열로 저장하면 **dtype을 따로 실어야**
 feature/<기능>/  기능 하나의 컨트롤러(HTTP 경계) + 서비스(저장본을 읽어 analytics에 넘기고
                  화면용 응답으로 조립). auth · macro · institution · insight · positioning ·
                  publicdata · status · snapshot(전체 원본 텍스트) · ai · toss · alert ·
-                 paper(🧪 모의 매매, 로컬 전용 브랜치)
+                 paper(🧪 모의 매매, 운영자 전용)
 analytics/       스프링도 DB도 모릅니다. 입력은 숫자와 날짜, 출력도 숫자입니다.
 read/            읽기 정책(StoreReader) — 저장본이 오래됐으면 읽기 모드에 따라 수집을 요청하고 다시 읽음
 store/           저장소 접근 · 데이터셋 이름 · 신선도 (외부 호출 없음)
@@ -183,7 +183,7 @@ config/          설정 값(AppProperties) · 정기 작업 켜기 — 여러 �
 | `Signal13F` | 🧪 신호 풀 기관의 분기 비교 → 매수 후보·매도 신호, 두 기관 그룹 섞기·배분 |
 | `OrderValidator` | 🧪 Claude가 제안한 주문의 하드 규칙 — 제안은 모델, 집행 여부는 이 검사 |
 
-🧪 = 모의 알고리즘 매매(운영자 전용, 로컬 전용 브랜치 `claude/paper-trading-2026-10`). 규칙의 근거는
+🧪 = 모의 알고리즘 매매(운영자 전용, 이 Private 저장소에만 — Local_macro_dashboard_v3에는 없음). 규칙의 근거는
 [명세](specs/2026-10-24-paper-trading-spec.md)·[설계](specs/2026-10-24-paper-trading-design-plan.md)·[ADR 0018](adr/0018-paper-trading-guardrails.md)입니다.
 
 `analytics`는 `java.*`만 씁니다. 저장본 JSON을 읽는 일(`support.Json`)과 계산 입력 타입으로

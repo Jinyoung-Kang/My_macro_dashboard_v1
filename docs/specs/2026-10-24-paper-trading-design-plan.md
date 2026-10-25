@@ -2,7 +2,7 @@
 
 > 명세: [2026-10-24-paper-trading-spec.md](2026-10-24-paper-trading-spec.md). 결정에 따라 정해진 곳은 "(D#)"로 표시했습니다.
 >
-> - 상태: **구현 완료**(2026-10-25, 단계 0~5 — 결과는 §9-1~§9-3) · 5차 — **D28** 미국 종목 재무(SEC XBRL)를 Claude 계좌 패킷에: 단계 5, 설계 §4-5·§5-2 `8b`, 근거는 단계 0-b 측정 §13) · 이전: 구현 완료(2026-10-25 — 단계 0~4, 결과는 §9-1~§9-3) · 그 이전: 구현 중(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
+> - 상태: **구현 완료**(2026-10-25, 단계 0~5 — 결과는 §9-1~§9-3) · 5차 — **D28** 미국 종목 재무(SEC XBRL)를 Claude 계좌 패킷에: 단계 5, 설계 §4-5·§5-2 `8b`, 근거는 단계 0-b 측정 §13) · 이전: 구현 완료(2026-10-25 — 단계 0~4, 결과는 §9-1~§9-3) · 그 이전: 구현 중(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`(v3), 브랜치 `claude/paper-trading-2026-10`(처음엔 push 금지, 2026-10-25부터 My_macro_dashboard_v1 저장소의 main — D0).
 > - 단계 0 근거 표: [2026-10-24-paper-trading-step0.md](2026-10-24-paper-trading-step0.md). 요약은 §13.
 > - 구현 결과(단계별 결과·운영 상태·남은 확인, 2026-10-25): §9-1~§9-3. 설계 결정과 지키는 시험: [ADR 0018](../adr/0018-paper-trading-guardrails.md).
 > - 이 문서는 **어떻게, 어떤 순서로** 만들지 정합니다. 파일·클래스 이름은 구현 때 바뀔 수 있지만 배치 규칙(§1)은 바뀌지 않습니다.
@@ -29,7 +29,7 @@
 
 ### 0-5. 전달 방식이 다르다 (D0)
 
-이 기능의 모든 커밋은 `claude/paper-trading-2026-10`에만 있다. `make test`는 로컬에서 돌리고, 운영은 이 브랜치에서 `make up`. main이 앞서가면 브랜치를 `git rebase main`으로 따라간다. 절차는 §12-3.
+처음에는 이 기능의 모든 커밋이 v3의 로컬 브랜치 `claude/paper-trading-2026-10`에만 있었다. 2026-10-25부터는 그 브랜치를 그대로 main으로 옮긴 My_macro_dashboard_v1(Private) 저장소에서 보통 절차(브랜치 → main → push → CI)로 진행한다. 절차는 §12-3.
 
 ### 0-6. 수집기 변경 — 후보 기관 13F 30분기, 모의 매매 유니버스의 시세·10년 이력 (D6·D23·D25)
 
@@ -722,7 +722,7 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | 재무제표 | **D28로 해결** — Claude 계좌 패킷에 `8b_fundamentals`(SEC XBRL, 공시일 ≤ 기준일, 25종목까지, §4-5). 사용자 OS 엔진 E3·E4·E5·E8-R4가 묻는 TTM·성장률·마진·FCF·ROE를 싣는다. 남은 한계: 실적 보도자료(8-K) 없음(10-Q 전까지 직전 분기 값), IFRS 2026 연보 공백 13곳, 복수 주식 종류의 표지 주식수 없음(DATA_SOURCES §5). 규칙 계좌·검증기의 재무 필터는 §14-1 그대로 |
 | 패킷 크기 | 실제 호출의 캐시 안 된 입력(= 패킷): D28 전 26,866토큰, D28 뒤 31,883토큰(메모 없음) — 목표 30,000을 조금 넘음. `PacketBuilderTest.fitsTokenBudget`의 어림 토큰(약 29,100)이 실제 토크나이저보다 작다. 넘으면 경고 로그만이고 회당 비용 차이는 약 $0.01 |
 | 순자산 차트 | 하루 범위가 $1 미만이면 y축 눈금 글자가 같은 값으로 되풀이됨(화면만) |
-| `AI_ENGINES` | [ADR 0014](../adr/0014-aws-demo-ai-report.md) 허용 목록이 `AiService.structured`를 거르지 않음. 로컬 전용이라 지금은 상관없음 — main·AWS로 옮기기 전에 고친다 |
+| `AI_ENGINES` | [ADR 0014](../adr/0014-aws-demo-ai-report.md) 허용 목록이 `AiService.structured`를 거르지 않음. 지금은 로컬 스택만 돌아 상관없음 — AWS 개인용 배포 전에 고친다 |
 
 ---
 
@@ -781,7 +781,7 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 
 | 번호 | 내용 |
 |---|---|
-| 0018 | 모의 매매 장부와 LLM 재량 결정의 가드레일 — 제안은 모델, 검증·집행은 코드; 현금 비중·매크로 판단은 모델의 재량이고 하드 규칙은 집중도·회전율·신선도만; 체결은 "결정 뒤 첫 관측치(봉 날짜 > 기준 거래일)"; 신호 기관은 공시일 기준 복제 트랙레코드로 분기마다 재선정; 프레임은 승인된 버전만; 규칙 계좌는 동결된 대조군; Claude 계좌는 백테스트하지 않음; 로컬 브랜치 전용 전달 |
+| 0018 | 모의 매매 장부와 LLM 재량 결정의 가드레일 — 제안은 모델, 검증·집행은 코드; 현금 비중·매크로 판단은 모델의 재량이고 하드 규칙은 집중도·회전율·신선도만; 체결은 "결정 뒤 첫 관측치(봉 날짜 > 기준 거래일)"; 신호 기관은 공시일 기준 복제 트랙레코드로 분기마다 재선정; 프레임은 승인된 버전만; 규칙 계좌는 동결된 대조군; Claude 계좌는 백테스트하지 않음; 별도 Private 저장소로 전달(처음엔 로컬 브랜치 전용, D0) |
 
 ### 12-2. 함께 고칠 문서 (브랜치 안)
 
@@ -790,14 +790,16 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | `docs/ARCHITECTURE.md` | §3 `paper_*` 행, §4-1 기능 목록 `paper`(누락 `alert`도), `analytics` 표 새 클래스 |
 | `docs/API.md` | §1 "🧪 모의 매매(운영자)" 29행 |
 | `docs/DATA_SOURCES.md` | 태스크 표에 새 태스크 3개(23개), 13F 소절에 "후보 기관 30분기·예산·증분", 10년 이력은 `catalog.PAPER_HISTORY_PERIOD`(10y — 기존 `PRICE_HISTORY_PERIOD` 5y는 그대로, D23), 매핑표 확장 절차, "이 기능이 쓰는 저장본과 한계" |
-| `README.md` | 주요 기능 한 줄 + "로컬 전용" |
+| `README.md` | 주요 기능 한 줄 + 어느 저장소에 있는지(처음엔 "로컬 전용", 2026-10-25부터 My_macro_dashboard_v1) |
 | `.env.example`·`docker-compose.yml` | `PAPER_ENABLED`(기본 true), `TRACK_RECORD_FETCH_BUDGET`(기본 400, 1~2000 — §4-0 ②) |
 | `docs/adr/README.md` | 0018 행 |
 | 이 문서 | §13, 구현 결과 표 |
 
-### 12-3. 브랜치 운영 (D0) — 변경 없음
+### 12-3. 저장소 운영 (D0) — 2026-10-25 변경
 
-운영은 이 브랜치에서 `make up`. main 갱신은 "브랜치 커밋 → `git switch main && make update` → `git switch claude/paper-trading-2026-10 && git rebase main` → `make test` → `make up`". `git push`·main 병합·`compose.aws.yml` 변경 금지. 장부·트랙레코드 캐시는 `make backup`에 포함.
+2026-10-25부터 My_macro_dashboard_v1(Private) 저장소의 main에서 운영한다(`~/Projects/My_macro_dashboard_v1`에서 `make up`). 작업은 CLAUDE.md의 전달 방식대로 `claude/<주제>` 브랜치 → main fast-forward → push → CI. Local_macro_dashboard_v3 저장소에는 올리지 않고, v3 main의 이후 변경은 자동으로 따라오지 않는다(필요한 것만 옮겨 온다). AWS 개인용 배포 덧붙임은 별도 ADR로 정한다. 장부·트랙레코드 캐시는 `make backup`에 포함.
+
+처음(2026-10-24~25)에는 v3 폴더의 로컬 브랜치에서 운영했다 — "브랜치 커밋 → `git switch main && make update` → `git switch claude/paper-trading-2026-10 && git rebase main` → `make test` → `make up`", `git push`·main 병합·`compose.aws.yml` 변경 금지.
 
 ---
 

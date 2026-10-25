@@ -1,8 +1,9 @@
 # CLAUDE.md — 작업 규칙 요약
 
-로컬 매크로·13F 대시보드. 화면(Next.js, `frontend/`) → API(Spring Boot, `backend/`) →
+로컬 매크로·13F 대시보드와 🧪 모의 알고리즘 매매(운영자 전용, ADR 0018). 화면(Next.js, `frontend/`) → API(Spring Boot, `backend/`) →
 PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너로 돌며, 폴더 이름
-`Local_macro_dashboard_v3`가 compose 프로젝트·DB 볼륨 이름을 정한다(바꾸지 말 것).
+`My_macro_dashboard_v1`이 compose 프로젝트·DB 볼륨 이름을 정한다(바꾸지 말 것).
+2026-10-25에 `Local_macro_dashboard_v3`에서 갈라져 나온 별도 저장소다(옮겨 온 절차는 [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) §0).
 
 ## 먼저 읽을 문서
 - 전체 구조·데이터 흐름: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -25,8 +26,8 @@ PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너
 - **운영 DB(`macrodash`)로 테스트하지 않는다.** 테스트는 `macrodash_test`만 쓴다
   (`make test-*`가 맞춰 줌). 백엔드 통합 테스트는 시작할 때 `snapshots`를 비운다.
   부하·장애·브라우저 시험도 운영 스택(3000/8080/8000/5432)이 아니라 QA 스택에서 한다.
-- **비밀값은 `.env`에만.** 저장소는 지금 Private이지만 공개될 수 있다고 보고, 키·토큰·비밀번호를 코드·문서·로그·커밋에
-  넣지 않는다. 예시 이메일 같은 자리표시 값도 코드 기본값으로 두지 않는다.
+- **비밀값은 `.env`에만.** 이 저장소는 공개하지 않는다(모의매매 프롬프트·투자 OS 원문 포함). 그래도 비밀값은 `.env`에만 —
+  키·토큰·비밀번호를 코드·문서·로그·커밋에 넣지 않는다. 예시 이메일 같은 자리표시 값도 코드 기본값으로 두지 않는다.
 - **없는 숫자를 만들지 않는다.** 표본 부족·수집 실패는 `null`→화면 `—`. 0으로 채우지 않는다.
   추정치는 `isEstimated`/`isProxy`를 함께 내려보낸다.
 - **새 API 경로는 `AccessPolicy` 표에 넣는다**(공개·회원·유료·운영자, ADR 0010) — 빠지면 `AccessPolicyTest`가 막는다. 사용자 정보는 `support.CurrentUser`.
@@ -45,8 +46,9 @@ PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너
   (`test(QA-###)`, 수정 전엔 xfail/@Disabled) → 근본 원인 수정(`fix(QA-###)`) 두 커밋으로. 모든 커밋이 `make test`를 통과한다.
 
 ## 전달 방식
-- 작업은 `claude/<주제>-YYYY-MM` 브랜치에서 하고, 끝나면 **본체 폴더의 `main`에 fast-forward 병합해 GitHub `main`에
-  push**한 뒤 CI(6개 job)까지 확인하고 커밋 번호와 함께 보고한다. 사용자는 git 명령을 직접 치지 않는다. 큰 변경은 설명하고 동의를 받은 뒤 반영한다.
+- 작업은 `claude/<주제>-YYYY-MM` 브랜치에서 하고, 끝나면 **본체 폴더의 `main`에 fast-forward 병합해 이 저장소(GitHub
+  `Jinyoung-Kang/My_macro_dashboard_v1`)의 `main`에 push**한 뒤 CI(6개 job)까지 확인하고 커밋 번호와 함께 보고한다. 사용자는 git 명령을 직접 치지 않는다. 큰 변경은 설명하고 동의를 받은 뒤 반영한다.
+  `Local_macro_dashboard_v3` 저장소에는 아무것도 올리지 않는다(모의 매매를 넣지 않기로 한 별도 공개 저장소, ADR 0018).
 - 커밋 메시지는 `type(scope): 요약`, **요약은 한국어**(예: `fix(backend): …`, `docs: …`), 끝에 `Co-Authored-By` 줄.
   CI 가 GitHub 쪽 사정으로 취소되면("job was not acquired by Runner") 취소된 job 만 다시 돌린다 — 코드 실패와 구분해 보고한다.
 - 돌고 있는 코드를 바꾸는 변경이면 보고에 "`make up` 하세요"를 넣는다(이미 `make up`까지

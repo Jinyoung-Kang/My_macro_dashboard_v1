@@ -4,7 +4,7 @@
 >
 > - 상태: **구현 완료**(2026-10-25, 단계 0~5 — 결과는 설계 §9-1~§9-3, Claude 계좌 시작은 사용자) · 5차(2026-10-25) — **D28** 미국 종목 재무(SEC XBRL Company Facts)를 Claude 계좌 패킷에 더함, 설계 단계 5. 검증기·규칙 계좌의 재무 필터는 그대로 2단계. 근거는 [단계 0-b 측정](2026-10-24-paper-trading-step0.md)) · 이전: 구현 완료(2026-10-25 — 단계 0~4, 로컬 브랜치만. 프레임 v1 = 사용자 OS 원문, Claude 계좌 시작은 사용자가 누름. 결과는 설계 §9-1~§9-3) · 그 이전: 구현 중(2026-10-24, 4차 — 단계 0 결과로 D21 확정·D23 변경·D25·D26 추가, 사용자가 D19·D21 권장안 확정, 사용자 추가 결정 D27 두 기관 그룹 섞기). 결정 내용은 §8, 단계 0 근거는 [단계 0 결과](2026-10-24-paper-trading-step0.md).
 > - 이름(2026-10-25, 사용자 "계좌로 바꿔 줘, 화면 문구랑 문서만"): 화면 문구와 문서의 '책'을 '계좌'로 바꿨다 — 규칙 계좌 `rules` · Claude 계좌 `claude` · SPY 계좌 `bench_spy` · 60/40 계좌 `bench_mix`(SPY 60% · SHY 40%). 코드 식별자(`book`·`bookCode`·`paper_books`·`/api/paper/books/…`·`RuleBookService`·`ClaudeBookService`)와 JSON 키는 그대로다. Claude에게 보내는 글(시스템 프롬프트 역할 줄 `ClaudePrompts.ROLE`·`PROPOSAL`, 패킷 문장)은 옛 이름 그대로 둔다 — Claude 계좌가 2026-10-25 13:29 KST에 그 문장으로 초기 결정을 냈으므로 실험 도중에 프롬프트를 바꾸지 않는다. DB의 계좌 이름(`paper_books.label`)은 백엔드가 기동할 때 옛 이름 그대로인 행만 새 이름으로 맞춘다(`PaperAdminService.reconcileLabels`).
-> - 기준 코드: `main@590260f`. 작업 브랜치 `claude/paper-trading-2026-10` — **push하지 않고 main에 넣지 않는다**(§8 D0).
+> - 기준 코드: `main@590260f`(v3). 작업 브랜치 `claude/paper-trading-2026-10` — 처음엔 push하지 않는 로컬 브랜치였고, 2026-10-25부터 **My_macro_dashboard_v1(Private) 저장소의 main**이다(§8 D0).
 > - 이 문서는 **무엇을, 어디까지** 만들지 정합니다. 어떻게 만들지는 설계 계획서에 있습니다.
 > - 라벨 규칙: `[사실]`은 저장소·데이터에서 확인한 것, `[해석]`은 그 위의 판단, `[확인 필요]`는 구현 때 검증할 것.
 
@@ -31,7 +31,7 @@
 - 장중 분 단위 시세 수집. 시세는 지금 수집 주기(종목 일봉 1시간, 매크로 카드 5분)를 그대로 쓴다.
 - 시가·고가·저가. 저장된 종목 가격은 **종가와 날짜만**이라 "시가 체결"은 2단계(수집기 OHLC 저장) 뒤에 가능하다.
 - 배당 반영(장부). 1단계 장부는 가격 수익률만이며 네 계좌 모두 같은 조건이다(설계 §3-6). 트랙레코드 계산은 수정주가를 쓰므로 배당이 들어간다(설계 §4-0).
-- GitHub·AWS 반영. 이 기능의 코드·문서는 로컬 브랜치에만 있다.
+- Local_macro_dashboard_v3 저장소·AWS 데모 반영. 이 기능의 코드·문서는 My_macro_dashboard_v1(Private) 저장소에만 있다(D0). AWS 개인용 배포는 별도 ADR로 정한다.
 
 ---
 
@@ -199,7 +199,7 @@
 
 **규약**
 - `make test` 통과(JDK 21 판 포함). `ArchitectureRulesTest`·`AccessPolicyTest`·`RouteInventoryTest`·`DatasetsParityTest`·`endpoints.test.ts` 통과. 새 경로는 전부 OWNER.
-- 커밋 뒤 `git branch -r --contains HEAD`가 빈 결과(origin에 없음).
+- 커밋은 My_macro_dashboard_v1 저장소의 main에 fast-forward 병합·push하고 CI(6개 job)를 확인한다(D0, 2026-10-25 변경 — 처음 기준은 커밋 뒤 `git branch -r --contains HEAD`가 빈 결과, 곧 origin에 없음이었다).
 
 ---
 
@@ -235,7 +235,7 @@
 
 | ID | 질문 | 결정 | 이유 |
 |---|---|---|---|
-| D0 | 어디에 두나 | **push하지 않는 로컬 브랜치 `claude/paper-trading-2026-10`. main·GitHub·AWS 반영 없음.** CI 대신 `make test` | 사용자 결정 |
+| D0 | 어디에 두나 | **push하지 않는 로컬 브랜치 `claude/paper-trading-2026-10`. main·GitHub·AWS 반영 없음.** CI 대신 `make test`<br>→ **2026-10-25 변경: My_macro_dashboard_v1(Private) 저장소의 main에서 진행**(그 브랜치를 그대로 main으로, push·CI는 보통 절차). Local_macro_dashboard_v3 저장소에는 넣지 않는다. AWS 개인용 배포는 별도 ADR로 | 사용자 결정 |
 | D1 | 가상 자본 | **100,000달러**, 계좌마다 | 사용자 결정 |
 | D2 | 시작 | **2026-10-23 종가 사후 체결**, `isBackfill` | 사용자 결정 |
 | D3 | 체결 방식 | **결정 이후 첫 관측치(장중 지연)** 기본, `NEXT_CLOSE` 선택. `NEXT_OPEN`은 2단계 | 사용자가 위임. 시가 데이터 없음 |

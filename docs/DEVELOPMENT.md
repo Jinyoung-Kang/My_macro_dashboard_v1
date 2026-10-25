@@ -240,7 +240,7 @@ git remote prune origin
 
 | 증상 | 원인 / 해결 |
 |---|---|
-| `git push`가 `Permission to … denied` (403) | 저장소 권한이 아니라 **맥에 저장된 GitHub 토큰**이 만료됐거나 쓰기 권한이 없습니다. 공개 저장소는 pull에 로그인이 필요 없어 push할 때만 드러납니다. 아래 순서로 해결 |
+| `git push`가 `Permission to … denied` (403) | 저장소 권한이 아니라 **맥에 저장된 GitHub 토큰**이 만료됐거나 쓰기 권한이 없습니다. 이 저장소는 Private이라 받기(`make update`)에도 같은 토큰을 씁니다 — 받기까지 실패하면 토큰 만료, 받기는 되는데 push만 403이면 쓰기 권한(Contents: Read and write) 문제입니다. 아래 순서로 해결 |
 | `refusing to allow a Personal Access Token to … workflow` | `.github/workflows/`를 고친 경우입니다. 토큰 설정에서 `workflow` 권한만 체크하면 됩니다 |
 | `Permission denied (publickey)` | 원격이 SSH인데 키가 없습니다. `git remote -v` 확인 후 HTTPS로 변경 |
 | `make update`가 `수정 중인 파일이 있어 당기지 않았습니다` | `git status` 확인 후 `git restore <파일>`(버리기) 또는 `git stash`(보관) |
