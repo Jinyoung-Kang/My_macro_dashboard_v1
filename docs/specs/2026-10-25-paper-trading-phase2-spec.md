@@ -2,7 +2,7 @@
 
 > 1단계: [2026-10-24-paper-trading-spec.md](2026-10-24-paper-trading-spec.md) · [2026-10-24-paper-trading-design-plan.md](2026-10-24-paper-trading-design-plan.md)
 >
-> - 상태: **설계 승인 대기**(2026-10-25). 결정은 §7(D29부터, 1단계 명세 §8을 이어 센다).
+> - 상태: **구현 중**(2026-10-25 — 사용자 "명세대로 구현, D29~D36 권장안"). 결정은 §7(D29부터, 1단계 명세 §8을 이어 센다). 단계 0 결과는 §10 — 그 결과로 고친 곳은 본문에 "(단계 0)" 표시.
 > - 전제: 1단계는 3b까지 구현되어 브랜치 `claude/paper-trading-2026-10`에서 운용 중(push 금지, D0). 이 문서도 같은 브랜치에만 둔다.
 > - 이 문서는 **무엇을, 어디까지** 만들지 정한다. 설계는 1단계 설계 계획서의 배치 규칙(§1)을 그대로 따르고, 항목별 "어떻게"는 §5에 요지만 적는다.
 > - 라벨: `[사실]` 저장소·데이터에서 확인, `[해석]` 그 위의 판단, `[확인 필요]` 구현 때 검증.
@@ -51,8 +51,8 @@
 
 | ID | 요구사항 |
 |---|---|
-| A1 | **거시 일정.** FRED 발표 일정 API(`fred/releases/dates`, 기존 `FRED_API_KEY`)로 앞으로 30일의 발표일을 받는다. 대상 릴리스: CPI·PCE·고용(Employment Situation)·GDP·FOMC 관련 H.15/H.4.1은 제외하고 **FOMC 회의 일정은 연준 공개 연간 일정표를 상수**로 둔다(연 1회 갱신, `[확인 필요]` 2026·2027 날짜). 소스·갱신일 표기 |
-| A2 | **실적 일정.** 보유·후보·유니버스 ETF를 뺀 종목(최대 60개)의 다음 실적 발표일을 yfinance `Ticker.calendar`(또는 `earnings_dates`)로 받는다. 날짜만, 시간(장전·장후)이 있으면 함께. 없으면 `null` |
+| A1 | **거시 일정.** FRED 발표 일정 API — 릴리스별 `fred/release/dates?release_id=`(단계 0: 전체 목록 `fred/releases/dates`는 FOMC 보도자료 101번의 매일 날짜로 넘침), `include_release_dates_with_no_data=true`(이것이 있어야 앞날짜가 나옴), 기존 `FRED_API_KEY` — 로 앞으로 45일의 발표일을 받는다. 대상 릴리스: CPI(10)·PCE(Personal Income and Outlays, 54)·고용(Employment Situation, 50)·GDP(53). FRED는 그해 12-31까지만 날짜를 주므로 릴리스마다 마지막으로 받은 날짜(`lastKnownDate`)를 남기고, 창이 그 뒤로 넘어가면 "일정 미공개(~날짜까지만 확인)"로 적는다. **FOMC 회의 일정은 연준 공개 연간 일정표를 상수**로 둔다(2026·2027 단계 0 확인, 연 1회 갱신, 상수 끝을 지나면 "갱신 필요" 표시). 소스·갱신일 표기 |
+| A2 | **실적 일정.** 보유·후보 종목(ETF 제외, 최대 60개)의 다음 실적 발표일을 yfinance quoteSummary `calendarEvents.earnings.earningsDate`(시각 포함 epoch)로 받는다(단계 0: 공개 `Ticker.calendar`는 컨테이너 시간대로 날짜를 만들어 장 마감 뒤 발표가 하루 밀리고, `earnings_dates`는 HTML 스크래핑이라 D29에 어긋남). 날짜는 미국 동부 날짜, 장 구분은 UTC 12:30 → 장전(BMO)·20:00 → 장후(AMC)·그 밖·추정치(`isEarningsDateEstimate`)는 `null`. 이미 지난 날짜면 "다음 일정 미정". 없으면 `null`. 종목당 24시간 캐시 |
 | A3 | **저장.** 스냅샷 `calendar.us_events` = `{generatedAt, macro:[{name, date, source}], earnings:[{ticker, date, session, source}]}`. 태스크 `us_calendar`(`slow`, 1시간) |
 | A4 | **패킷 섹션 `1b_calendar`.** 기준일부터 10거래일 안의 거시 일정과 보유·후보 종목 실적일. "일정이 매매를 막지 않는다. 판단에 쓸 뿐" 문구 |
 | A5 | **화면.** 개요 탭의 데이터 상태 줄에 "일정 n건·갱신 시각" 한 줄. 새 탭 없음 |
@@ -74,7 +74,7 @@
 | ID | 요구사항 |
 |---|---|
 | D1 | **주기.** 토요일 KST 09:00 이후, 그 주 금요일 확정 종가가 들어온 뒤 1회(`paper_reviews` 유일 제약: `week_ending`). 수동 실행 가능 |
-| D2 | **입력(코드가 만든다, Claude가 아니라).** 최근 4주 Claude 계좌 결정의 요약·stance·노출·주문·검증 결과; 각 주문의 그 뒤 수익률(체결가 대비 금요일 종가)·스탑 발동 여부; 각 `invalidation` 문장과 **코드가 평가할 수 있는 것**(가격·지표 조건)은 평가 결과, 못 하는 것은 "평가 불가"; 같은 기간 규칙 계좌·벤치마크 수익률; 거절된 주문의 가정 수익률(체결됐다면). 프레임 현재 버전 |
+| D2 | **입력(코드가 만든다, Claude가 아니라).** 최근 4주(단계 0: 조립 뒤 어림이 25,000토큰을 넘으면 2주로 다시 조립하고 `windowWeeks`·`trimmedReason`을 입력에 남김) Claude 계좌 결정의 요약·stance·노출·주문·검증 결과; 각 주문의 그 뒤 수익률(체결가 대비 금요일 종가)·스탑 발동 여부; 각 `invalidation` 문장과 **코드가 평가할 수 있는 것**(가격·지표 조건)은 평가 결과, 못 하는 것은 "평가 불가"; 같은 기간 규칙 계좌·벤치마크 수익률; 거절된 주문의 가정 수익률(체결됐다면). 프레임 현재 버전 |
 | D3 | **출력(구조화).** `{weekEnding, verdicts:[{decisionId, thesisHeld: 유지/반증/판단불가, note}], recurringErrors:[…], keep:[…], proposal: null | {operations:[…], judgment, rationale}}`. `proposal`이 있으면 1단계 F2의 제안 테이블에 `PENDING`으로 넣는다. **자동 반영 없음** |
 | D4 | **비용.** `apiDailyCallCap`에 포함. 모델은 설정의 `model`. 주 1회 |
 | D5 | **저장·화면.** `paper_reviews(week_ending PK, input JSONB, response JSONB, response_raw, model, usage, status, proposal_id NULL, created_at)`. 결정 로그 탭에 "주간 복기" 소탭: 메모 본문, 판정 표, 연결된 제안서로 이동 |
@@ -96,9 +96,9 @@
 
 | ID | 요구사항 |
 |---|---|
-| B1 | **출처는 RSS만.** 후보: 인베스팅닷컴 주요 뉴스·경제 지표 RSS, 야후 파이낸스 헤드라인 RSS, 연준 보도자료 RSS, BLS 보도자료 RSS, SEC 보도자료 RSS. 정확한 URL과 응답 형식은 단계 0에서 확인하고 고정본을 테스트에 둔다(`[확인 필요]`). HTML 페이지는 받지 않는다 |
+| B1 | **출처는 RSS만.** 단계 0에서 고정: 인베스팅닷컴 `news_25`(주식)·`news_95`(경제 지표)·`news_14`(경제), 연준 `press_monetary.xml`, BLS `cpi.rss`·`empsit.rss`(실제로는 Atom), SEC `pressreleases.rss`. **야후 파이낸스는 뺀다**(404·429, robots.txt가 전체 금지). 인베스팅 `news.rss`(전체)는 자동 생성 내부자 거래 항목이 많아 빼고, 연준 `press_all`은 제재·인가 공지가 많아 뺀다. BLS는 브라우저 UA에 403이라 설명형 UA(연락처 없음)와 403 재시도 없는 세션, SEC는 기존 SEC 세션·속도 제한. 고정본을 테스트에 둔다. HTML 페이지는 받지 않는다 |
 | B2 | **수집.** 태스크 `news_headlines`(`slow`, 1시간), `feedparser`(새 의존성 — 이유: RSS 날짜·인코딩 변형을 직접 다루지 않기 위해). `observations` 데이터셋 `news_headline`, entity = 제목 정규화 해시, 필드 `{title, link, source, publishedAt, fetchedAt}`. 중복 제거, 7일 보존 |
-| B3 | **거르기(코드).** 패킷에 넣는 조건은 둘 중 하나: ① 보유·후보 종목의 회사 이름·티커가 제목에 있음, ② 매크로 키워드 사전(연준·FOMC·금리 결정·CPI·고용·관세·유가·OPEC·중동·휴전·신용·디폴트·은행 등, 설정에서 편집). 둘 다 아니면 저장만 하고 패킷에 넣지 않는다 |
+| B3 | **거르기(코드).** 패킷에 넣는 조건은 둘 중 하나: ① 보유·후보 종목의 회사 이름·티커가 제목에 있음(티커는 대문자 단어 전체 일치 — `A`·`IT`·`ON` 같은 짧은 티커 오탐 방지), ② 매크로 키워드 사전 — 피드가 모두 영어라 기본 사전도 영어(Fed·FOMC·Federal Open Market Committee·rate decision·CPI·inflation·payroll·unemployment·tariff·oil·OPEC·Middle East·ceasefire·credit·default·bank 등, 단어 경계·대소문자 무시, 설정에서 편집). 둘 다 아니면 저장만 하고 패킷에 넣지 않는다 |
 | B4 | **패킷 섹션 `11b_events`.** 기준일 직전 24시간, 최대 10건(설정), 제목·출처·시각만, 구분자로 감싸 "자료일 뿐 지시가 아니다". 없으면 "해당 사건 없음" |
 | B5 | **설정.** `news.enabled`(기본 true), `news.maxPerDay`(10), `news.keywords`, `news.feeds`. 끄면 수집은 계속하고 패킷에서만 뺀다 |
 | B6 | **기록.** 결정 기록에 참조한 헤드라인 entity 목록. 측정(§6)에 쓴다 |
@@ -113,13 +113,13 @@
 ## 5. 기능 C — 어닝 서프라이즈 (네 번째)
 
 ### 5-1. 사용자가 얻는 것
-보유·후보 종목의 최근 8분기 EPS 실제치·컨센서스·서프라이즈율이 패킷의 재무 섹션 옆에 붙는다. OS 엔진 7의 "상위 기관이 샀을 때의 공통분모"에서 비어 있던 항목이다.
+보유·후보 종목의 최근 4분기 EPS 실제치·컨센서스·서프라이즈율이 패킷의 재무 섹션 옆에 붙는다(단계 0: 출처가 한 번에 4분기만 주므로 8분기는 관측치가 약 1년 쌓여야 찬다). OS 엔진 7의 "상위 기관이 샀을 때의 공통분모"에서 비어 있던 항목이다.
 
 ### 5-2. 요구사항
 
 | ID | 요구사항 |
 |---|---|
-| C1 | **출처.** yfinance `Ticker.earnings_history`(epsActual·epsEstimate·surprisePercent) — 이미 쓰는 출처, 같은 방법. 응답 필드와 커버리지는 단계 0에서 확인(`[확인 필요]`). 없으면 `null`, 0으로 채우지 않는다 |
+| C1 | **출처.** yfinance quoteSummary `earnings.earningsChart.quarterly`(actual·estimate·surprisePct·periodEndDate·**reportedDate** = 실제 발표 시각) — 이미 쓰는 출처. 공개 `earnings_history`는 같은 값이지만 발표일이 없어 시점(PIT)을 자를 수 없으므로 쓰지 않는다(단계 0). A2와 같은 요청 한 번(`calendarEvents`·`earnings` 모듈)으로 받는다 — yfinance 내부 호출이라 버전 고정(1.7.0)·원본 고정본 시험을 두고, 내부 API가 바뀌면 `EmptyResult`("yfinance 내부 API 변경")로 멈춘다. 단계 0 커버리지: 4분기 이상 97%(58/60), 8분기 0%(최대 4분기). 없으면 `null`, 0으로 채우지 않는다. 추정치가 0에 가까우면(|est| < 0.05) `smallBase` 표시 |
 | C2 | **수집.** 태스크 `earnings_surprise`(`weekly`), 대상은 유니버스 종목 + 후보 기관 상위 보유(최대 300), 1회 예산 100종목, 증분. `observations` 데이터셋 `us.earnings_surprise`, entity = 티커, 날짜 = 발표일 |
 | C3 | **패킷.** 섹션 `8b_fundamentals`의 종목 행에 `eps:{last4:[{date, actual, estimate, surprisePct}]}` 추가. 기준일 이후 발표분은 넣지 않는다(Point-in-Time) |
 | C4 | **화면.** 개요 데이터 상태 줄에 커버리지 한 줄 |
@@ -152,7 +152,7 @@
 | D33 | 일정 출처 | FRED 발표 일정 API + FOMC 연간 상수 + yfinance 실적일 — 권장안 | 이미 쓰는 키·출처. 새 의존성 없음 |
 | D34 | 새 의존성 | 수집기에 `feedparser` 1개 — 권장안 | RSS 변형 처리를 직접 쓰지 않기 위해. PyPI GA 버전 확인 뒤 고정 |
 | D35 | 규칙 계좌·검증기 | **불변** | 동결 대조군(D15·D19). 네 항목은 Claude 패킷·프레임에만 |
-| D36 | 서프라이즈 출처 | yfinance `earnings_history` — 권장안, 단계 0 확인 뒤 확정 | 같은 출처·같은 방법. 무료 컨센서스 대안이 없다 |
+| D36 | 서프라이즈 출처 | yfinance quoteSummary `earnings`·`calendarEvents`(발표 시각 포함) — 권장안, 단계 0 확인 뒤 확정(공개 `earnings_history`는 발표일이 없어 시점을 못 자름) | 같은 출처·같은 방법. 무료 컨센서스 대안이 없다 |
 
 D30~D34·D36은 따로 답을 받지 않아 권장안으로 정했다. 구현을 시작할 때 바꿀 수 있다.
 
@@ -173,4 +173,19 @@ D30~D34·D36은 따로 답을 받지 않아 권장안으로 정했다. 구현을
 
 ## 9. 함께 고칠 것
 
-`collector/app/catalog.py`·`Datasets.java`(새 데이터셋 이름 넷: `calendar.us_events`·`news_headline`·`us.earnings_surprise`·필요 시 더), `registry.py`(태스크 3개), `docs/DATA_SOURCES.md`(태스크 표·새 소스 RSS·FRED 일정·한계), `db/migrations/V9__paper_reviews.sql`, `AccessPolicy`·`RouteInventoryTest`·`docs/API.md`·`scripts/qa/routes.json`·`endpoints.ts`(복기 조회·수동 실행 경로), `.env.example`(새 변수 없음 예상, `feedparser` 추가는 `collector/requirements.txt`), 1단계 설계 계획서 §14에서 이 문서로 옮긴 항목 표시, ADR 0018 "결과" 절에 2단계 추가(새 ADR 불필요 — 가드레일 원칙이 같다).
+`collector/app/catalog.py`·`Datasets.java`(새 데이터셋 이름 넷: `calendar.us_events`·`news_headline`·`us.earnings_surprise`·필요 시 더), `registry.py`(태스크 3개), `docs/DATA_SOURCES.md`(태스크 표·새 소스 RSS·FRED 일정·한계), `db/migrations/V12__paper_reviews.sql`(1단계에서 V9~V11을 이미 씀), `AccessPolicy`·`RouteInventoryTest`·`docs/API.md`·`scripts/qa/routes.json`·`endpoints.ts`(복기 조회·수동 실행 경로), `.env.example`(새 변수 없음 예상, `feedparser` 추가는 `collector/requirements.txt`), 1단계 설계 계획서 §14에서 이 문서로 옮긴 항목 표시, ADR 0018 "결과" 절에 2단계 추가(새 ADR 불필요 — 가드레일 원칙이 같다).
+
+---
+
+## 10. 단계 0 결과 (2026-10-25)
+
+수집기 컨테이너 안에서 순차로 확인(키·연락처 출력 없음, DB는 읽기만). 고정본은 구현 때 수집기 시험에 옮긴다.
+
+| 항목 | 결과 | 영향 |
+|---|---|---|
+| RSS 다섯 출처 | [사실] 인베스팅닷컴 `news_25`·`news_95`·`news_14`: 200, 피드당 10항목, 제목·링크·시각 있음(시각은 시간대 없이 UTC — 미국 지표 발표 시각과 대조한 [해석]). 연준 `press_monetary.xml`: 200, RFC822 GMT. BLS `cpi.rss`·`empsit.rss`: 브라우저 UA는 403(Akamai), 설명형 UA는 200, 실제 형식은 Atom 1.0. SEC `pressreleases.rss`: SEC 세션으로 200, 하루 약 0.5건, 제목에 줄바꿈. **야후 파이낸스: 404·429, robots.txt `Disallow: /`** | **B 진행, 출처 넷**(야후 제외). B1에 URL 고정. `[확인 필요]` 인베스팅닷컴 RSS 이용 조건 — 사용자가 브라우저로 확인 권장 |
+| FRED 발표 일정 | [사실] 릴리스 ID: CPI 10 · Employment Situation 50 · GDP 53 · Personal Income and Outlays(PCE) 54. 넷 다 `include_release_dates_with_no_data=true`일 때 앞날짜를 주고, 2026-12-31까지만 나온다. GDP·PCE 날짜는 BEA 공식 일정과 일치(10-29·11-25·12-23). CPI 11-10·12-10, 고용 11-06·12-04. 전체 목록 엔드포인트는 101번(FOMC 보도자료)의 매일 날짜로 1,000건 상한에 걸림 | **A 진행, 작은 변경**: 릴리스별 호출 4회, `lastKnownDate`로 "미공개 구간" 구분. BLS 일정 상수 불필요 |
+| FOMC 2026·2027 일정 | [사실] 연준 일정표(Last Update 2026-10-07) — 2026: 1/27–28, 3/17–18*, 4/28–29, 6/16–17*, 7/28–29, 9/15–16*, **10/27–28**, 12/8–9*; 2027: 1/26–27, 3/16–17*, 4/27–28, 6/8–9*, 7/27–28, 9/14–15*, 10/26–27, 12/7–8* (*경제전망 SEP). 다음 회의가 이번 주 | 상수로 둠(출처·확인일 2026-10-25). 상수 끝(2027-12-08)을 지나면 "갱신 필요" |
+| yfinance 실적일·서프라이즈 (60종목 — 보유 13 + 후보 7 + 13F 신규·확대 종목 40, ETF 제외) | [사실] yfinance 1.7.0. 다음 실적일 있음 60/60(미래 날짜 46/60 — 14종목은 막 지난 날짜를 아직 보임), 장전·장후 구분 55/60. 서프라이즈 4분기 이상(추정치 포함) **58/60(97%)**, 8분기 0/60(API가 4분기만). 모든 행에 실제 발표 시각(`reportedDate`). 공개 `Ticker.calendar`는 컨테이너 시간대(KST)로 날짜를 만들어 장후 발표 28종목이 하루 밀림, `earnings_dates`는 HTML 스크래핑. 종목당 0.16초(중앙값), 429 없음 | **C 진행**(50% 기준 넘음). 출처는 quoteSummary `calendarEvents`·`earnings`(내부 호출, 버전 고정·고정본 시험·변경 시 멈춤). "8분기" → "4분기(쌓이면 8분기)" |
+| `feedparser` GA 버전 | [사실] **6.0.14**(PyPI, 2026-07-30), Python ≥ 3.10(수집기 3.11.17), BSD-2-Clause, 간접 의존성 `feedparser-sgmllib` 2.1.0. 고정본 10개를 파싱해 모두 제목·링크·`published_parsed`가 나옴(시간대 없는 날짜는 UTC로 읽음) | `collector/requirements.txt`에 `feedparser==6.0.14`, `make constraints`로 간접 의존성 고정. HTTP는 수집기 세션으로 받고 feedparser는 파싱만 |
+| 복기 입력 크기 | [사실] 지금 기록(Claude 결정 1건·주문 9건)으로 조립하면 7,094자(어림 약 3K토큰). 외삽: 4주 × 결정 20 × 주문 140 → 어림 약 40~47K, 월 재량 상한(20건)에 맞춘 4주 × 주문 29 → 약 16~19K, 2주 × 주문 70 → 약 20~24K. 실측 배율: 패킷 실제 입력 토큰이 어림(÷3)의 1.72배 | **4주 기본, 어림이 25,000을 넘으면 2주로**(D2에 반영). 첫 복기 실행의 `usage.inputTokens`로 배율을 다시 잰다 `[확인 필요]` |
