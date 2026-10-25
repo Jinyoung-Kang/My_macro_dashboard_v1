@@ -2,7 +2,7 @@
 
 > 명세: [2026-10-24-paper-trading-spec.md](2026-10-24-paper-trading-spec.md). 결정에 따라 정해진 곳은 "(D#)"로 표시했습니다.
 >
-> - 상태: **구현 완료**(2026-10-25, 단계 0~5 — 결과는 §9-1~§9-3) · 5차 — **D28** 미국 종목 재무(SEC XBRL)를 Claude 책 패킷에: 단계 5, 설계 §4-5·§5-2 `8b`, 근거는 단계 0-b 측정 §13) · 이전: 구현 완료(2026-10-25 — 단계 0~4, 결과는 §9-1~§9-3) · 그 이전: 구현 중(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
+> - 상태: **구현 완료**(2026-10-25, 단계 0~5 — 결과는 §9-1~§9-3) · 5차 — **D28** 미국 종목 재무(SEC XBRL)를 Claude 계좌 패킷에: 단계 5, 설계 §4-5·§5-2 `8b`, 근거는 단계 0-b 측정 §13) · 이전: 구현 완료(2026-10-25 — 단계 0~4, 결과는 §9-1~§9-3) · 그 이전: 구현 중(2026-10-24, 4차 — 단계 0 결과 반영: 가격 저장 방식(D23), CUSIP 매핑표(D25), 선행 CIK, 구조화 출력 제약 / 사용자 추가 결정: 두 기관 그룹 섞기(D27)). 기준 코드 `main@590260f`, 브랜치 `claude/paper-trading-2026-10`(push 금지, D0).
 > - 단계 0 근거 표: [2026-10-24-paper-trading-step0.md](2026-10-24-paper-trading-step0.md). 요약은 §13.
 > - 구현 결과(단계별 결과·운영 상태·남은 확인, 2026-10-25): §9-1~§9-3. 설계 결정과 지키는 시험: [ADR 0018](../adr/0018-paper-trading-guardrails.md).
 > - 이 문서는 **어떻게, 어떤 순서로** 만들지 정합니다. 파일·클래스 이름은 구현 때 바뀔 수 있지만 배치 규칙(§1)은 바뀌지 않습니다.
@@ -45,7 +45,7 @@
 | 새 태스크 `paper_price_history` (`weekly`, 12시간) | 같은 유니버스 10년 일봉(수정주가) → `timeseries` 데이터셋 `equity_close`(종목 = `series_id`). `put_timeseries` upsert라 배당·분할로 바뀐 과거 값만 다시 쓴다 | 트랙레코드·모멘텀·분할 감지의 이력(백엔드는 필요한 종목만 범위로 읽음) |
 | `catalog.TRACK_RECORD_QUARTERS = 30`·`SNAP_PAPER_QUOTES`·`TS_EQUITY_CLOSE` + `Datasets` 같은 상수 | 이름 상수를 같이(`DatasetsParityTest`) | |
 | `registry.py` 등록, `docs/DATA_SOURCES.md` 태스크 23개(D28로 24개) | | |
-| 새 태스크 `sec_fundamentals` (`weekly`, D28) | 유니버스(ETF 제외)의 SEC XBRL companyfacts를 실행당 200 CIK(`FUNDAMENTALS_FETCH_BUDGET`) → `observations` `us.fundamentals`(obs_date = 공시일) + 상태 `us.fundamentals.status`. 지주회사 재편 CIK 별칭표 `FUNDAMENTALS_CIK_ALIASES`(XOM·BLK·FERG) | 13F 두 태스크와 SEC 토큰 버킷을 나눠 씀. 읽는 곳은 Claude 책 패킷 `8b`뿐(§4-5) |
+| 새 태스크 `sec_fundamentals` (`weekly`, D28) | 유니버스(ETF 제외)의 SEC XBRL companyfacts를 실행당 200 CIK(`FUNDAMENTALS_FETCH_BUDGET`) → `observations` `us.fundamentals`(obs_date = 공시일) + 상태 `us.fundamentals.status`. 지주회사 재편 CIK 별칭표 `FUNDAMENTALS_CIK_ALIASES`(XOM·BLK·FERG) | 13F 두 태스크와 SEC 토큰 버킷을 나눠 씀. 읽는 곳은 Claude 계좌 패킷 `8b`뿐(§4-5) |
 
 ---
 
@@ -102,8 +102,8 @@
 | `store` | `PaperStore` | `paper_*` 읽기·쓰기 전부. `TransactionTemplate`로 `atomically(Supplier)`. `ready()` |
 | `feature/paper` | `PaperMarketData` | 저장본 읽기: 관측치(`paper.quotes` 마지막 봉), 가격 이력(`timeseries` `equity_close`, 기준일 이전으로 자르기), 매크로 카드, FRED, 환율, 13F 원본(`q30`, 저장본의 `ticker`) |
 | | `PaperSelectionService` | 후보 기관 전부의 트랙레코드 계산·캐시(`paper_track_record`)·선정(`paper_selection_log`)·수집 진행률. 기존 `feature/insight/TrackRecordService`(국면 판정 성과)와 빈 이름이 겹치지 않게 이름을 바꿈 |
-| | `PaperLedgerService` | 관측치 하나를 네 책에 적용. 멱등 |
-| | `RuleBookService` | 규칙 책 일일 결정(R1~R6) |
+| | `PaperLedgerService` | 관측치 하나를 네 계좌에 적용. 멱등 |
+| | `RuleBookService` | 규칙 계좌 일일 결정(R1~R6) |
 | | `ClaudeBookService`, `PacketBuilder`, `FundamentalsSection` | 패킷→호출→검증→주문→기록(C1~C11). 재무 섹션 `8b`의 변환·열 배열은 `FundamentalsSection`(D28) |
 | | `FrameworkService`, `NoteService`, `PaperSettingsService`, `PaperAdminService`, `PaperQueryService` | 프레임·메모·설정·관리·화면 응답 |
 | | `PaperDecisionJob`, `PaperRiskJob` | 정기 작업(§6) |
@@ -135,14 +135,14 @@
 
 | 테이블 | 열(요지) | 제약·비고 |
 |---|---|---|
-| `paper_books` | `code TEXT PK`, `kind` CHECK(RULES·CLAUDE·BENCHMARK), `label`, `initial_cash`, `started_on`, `status` CHECK(NOT_STARTED·ACTIVE·PAUSED), `created_at` | 네 행. 규칙·Claude 책은 사용자가 "시작"을 누르기 전 `NOT_STARTED`(L2) |
+| `paper_books` | `code TEXT PK`, `kind` CHECK(RULES·CLAUDE·BENCHMARK), `label`, `initial_cash`, `started_on`, `status` CHECK(NOT_STARTED·ACTIVE·PAUSED), `created_at` | 네 행. 규칙·Claude 계좌는 사용자가 "시작"을 누르기 전 `NOT_STARTED`(L2) |
 | `paper_book_state` | `book_code PK FK`, `cash`, `nav`, `equity_value`, `exposure_pct`, `last_observed_at`, `last_processed_collected_at`, `last_nav_trading_date`, `updated_at` | 멱등 키 `last_processed_collected_at` |
 | `paper_positions` | `book_code`, `ticker`, `qty INTEGER`, `avg_cost`, `opened_on`, `opened_at`, `high_watermark`, `watermark_at`, `last_price`, `last_price_at`, `price_stale`, `fill_ref_date`, `fill_ref_close`, `split_note`, `updated_at` | `PK (book_code, ticker)` |
 | `paper_lockouts` | `book_code`, `ticker`, `until_trading_date`, `reason`, `created_at` | `PK (book_code, ticker)` |
 | `paper_orders` | `id`, `book_code`, `decision_id FK NULL`, `ticker`, `side`, `qty NULL`, `target_weight_pct NULL`, `sell_fraction NULL`, `timing` CHECK(NEXT_OBSERVATION·NEXT_CLOSE·IMMEDIATE·BACKFILL), `source` CHECK(RULE·CLAUDE·STOP·BENCHMARK·INITIAL), `status` CHECK(PROPOSED·REJECTED·PENDING·FILLED·EXPIRED·CANCELLED), `reject_reason`, `reason JSONB`, `as_of_trading_date`, `created_at`, `expires_on`, `filled_at` | 인덱스 `(book_code, status)` |
 | `paper_fills` | `id`, `order_id FK`, `book_code`, `ticker`, `side`, `qty`, `price`, `raw_price`, `slippage_bp`, `gross`, `observed_at`, `observation_date`, `price_source`, `is_backfill`, `created_at` | `UNIQUE (order_id)` |
 | `paper_nav_daily` | `book_code`, `trading_date`, `nav`, `cash`, `equity_value`, `exposure_pct`, `prices_final`, `created_at` | `PK (book_code, trading_date)` |
-| `paper_gate_log` | `trading_date PK`, `inputs JSONB`, `level` CHECK(L0·L1·L2·UNKNOWN), `streaks JSONB`, `created_at` | **지표**. Claude 책·규칙 책 어느 쪽도 구속하지 않음(D7·D19) |
+| `paper_gate_log` | `trading_date PK`, `inputs JSONB`, `level` CHECK(L0·L1·L2·UNKNOWN), `streaks JSONB`, `created_at` | **지표**. Claude 계좌·규칙 계좌 어느 쪽도 구속하지 않음(D7·D19) |
 | `paper_track_record` | `as_of_date`, `cik`, `window_years`, `periods_used`, `periods_total`, `first_filing_date`, `last_filing_date`, `cum_return_pct`, `cagr_pct`, `vol_pct`, `mdd_pct`, `sharpe`, `excess_vs_spy_pct`, `coverage_min`, `coverage_avg`, `eligible BOOL`, `ineligible_reason`, `rank INT NULL`, `periods JSONB`(구간별 시작·끝·수익률·커버리지), `computed_at`, `group_code`(V9 — `A` 후보 7년, `B` 기존 메뉴 2년), `data_source`(V9 — 계산에 쓴 저장본 `q30`·`q8`, 단계 1b 행은 NULL) | `PK (as_of_date, group_code, cik)`(V9). 재선정일마다 한 세트, 수동 재계산은 같은 날 덮어씀 |
 | `paper_selection_log` | `as_of_date PK`, `selected_ciks TEXT[]`, `ranking JSONB`(상위 10 요약), `settings_version`, `created_at` | 선정 이력 |
 | `paper_decisions` | `id`, `book_code`, `as_of_trading_date`, `kind` CHECK(SCHEDULED·MANUAL·INITIAL·REBALANCE), `decided_at`, `status` CHECK(OK·NO_TRADE·REFUSED·FORMAT_ERROR·API_ERROR·SKIPPED), `model`, `framework_version`, `settings_version`, `selection_as_of DATE NULL`, `target_exposure_pct NULL`, `packet JSONB`, `packet_hash`, `response_raw`, `response JSONB`, `usage JSONB`, `error`, `note_ids BIGINT[]`, `prices_final`, `latency_ms`, `retry_count INT` | `UNIQUE (book_code, as_of_trading_date, kind)` |
@@ -172,7 +172,7 @@
 
 **만료**: 기준 거래일 + 3거래일 → `EXPIRED`.
 
-**관측치 처리 순서**(책마다 한 트랜잭션): 만료·지난 재진입 금지 정리 → 분할 감지(가격 갱신) → 매도 체결 → 최고가 갱신·스탑 생성·즉시 체결(+ 재진입 금지) → 매수 체결 → 평가 → 그 세션의 마감 뒤 관측치면 `paper_nav_daily` upsert → `last_processed_collected_at` 갱신. 분할 감지를 먼저 하는 것은 분할 뒤 반값 관측가가 분할 전 최고가와 비교돼 가짜 스탑이 나지 않게, 스탑을 매수 앞에 두는 것은 이번 관측치에서 스탑에 걸린 종목의 대기 매수가 재진입 금지로 취소되게(사자마자 같은 관측치의 스탑으로 팔리지 않게) 하려는 것이다. 순자산 줄은 관측 시각의 세션(`currentOrLastSession`)이 다수 티커의 봉 날짜와 같을 때만 쓰고(다음 날 개장 직후 관측치가 전날 줄을 덮지 않게), 보유가 모두 그 세션의 확정 봉으로 평가됐을 때만 `prices_final = true`다.
+**관측치 처리 순서**(계좌마다 한 트랜잭션): 만료·지난 재진입 금지 정리 → 분할 감지(가격 갱신) → 매도 체결 → 최고가 갱신·스탑 생성·즉시 체결(+ 재진입 금지) → 매수 체결 → 평가 → 그 세션의 마감 뒤 관측치면 `paper_nav_daily` upsert → `last_processed_collected_at` 갱신. 분할 감지를 먼저 하는 것은 분할 뒤 반값 관측가가 분할 전 최고가와 비교돼 가짜 스탑이 나지 않게, 스탑을 매수 앞에 두는 것은 이번 관측치에서 스탑에 걸린 종목의 대기 매수가 재진입 금지로 취소되게(사자마자 같은 관측치의 스탑으로 팔리지 않게) 하려는 것이다. 순자산 줄은 관측 시각의 세션(`currentOrLastSession`)이 다수 티커의 봉 날짜와 같을 때만 쓰고(다음 날 개장 직후 관측치가 전날 줄을 덮지 않게), 보유가 모두 그 세션의 확정 봉으로 평가됐을 때만 `prices_final = true`다.
 
 **BACKFILL 체결**은 `PaperAdminService`가 10-23 종가로 직접 만든다(`observed_at = 10-23 16:00 ET`). 종가는 `paper_start_prices`에 얼린 값이다(§2).
 
@@ -199,7 +199,7 @@ STOP: 생성과 동시에 FILLED      일시정지·리셋: PENDING → CANCELLE
 - 개요 화면의 "OS 문자 그대로 게이트" 카드.
 - Claude 패킷 §5-2 섹션 5에 "참고 지표(구속하지 않음)"로.
 
-규칙 책·검증기 어느 쪽도 이 값을 읽지 않는다. 임계치는 설정의 `gate.*`에 "참고"로 남는다.
+규칙 계좌·검증기 어느 쪽도 이 값을 읽지 않는다. 임계치는 설정의 `gate.*`에 "참고"로 남는다.
 
 ### 3-6. 배당·가격 없음 (D12) — 변경 없음
 
@@ -213,7 +213,7 @@ STOP: 생성과 동시에 FILLED      일시정지·리셋: PENDING → CANCELLE
 
 ---
 
-## 4. 규칙 책
+## 4. 규칙 계좌
 
 ### 4-0. 기관 선정 — 7년 롤링 트랙레코드 (R1·R7~R10, D6·D20~D24)
 
@@ -279,7 +279,7 @@ eligible = periods_used ≥ 24 && min(coverage) ≥ 0.5 && avg(coverage) ≥ 0.7
 - 재선정일 = 각 분기 13F 공시 기한 다음 거래일. 그날의 `asOf`로 계산한다. 그날까지 최신 분기를 공시하지 않은 후보는 "최신 공시 없음"으로 그 분기 선정에서 제외(R5).
 - 10-23 초기 선정은 `asOf=2026-10-23`(2026-06-30 분기 공시까지).
 - 수동 재계산(`POST /run/rerank`)은 같은 `as_of_date`를 덮어쓰고 선정은 바꾸지 않는다(기록용). 선정은 재선정일에만 바뀐다.
-- 자격 기관이 5곳 미만이면 있는 만큼으로 가고 결정 기록에 적는다. 0곳이면 규칙 책은 매수 없이 SHY만.
+- 자격 기관이 5곳 미만이면 있는 만큼으로 가고 결정 기록에 적는다. 0곳이면 규칙 계좌는 매수 없이 SHY만.
 
 #### ⑥ 그룹 B — 기존 13F 메뉴의 최근 성과 상위 4곳 (R1·D27)
 
@@ -336,10 +336,10 @@ decideRules(asOf):
 
 | 키 | 기본 | 영향 |
 |---|---|---|
-| `model` / `effort` | `claude-sonnet-5-5` / `high` | Claude 책·제안 (D5) |
+| `model` / `effort` | `claude-sonnet-5-5` / `high` | Claude 계좌·제안 (D5) |
 | `decisionTimeKst` / `decisionDeadlineKst` | `07:30` / `12:00` | C1 |
-| `slippageBp` | 5 | 전 책 (D9) |
-| `maxWeightStockPct` / `maxWeightEtfPct` / `maxPositions` | 10 / 20 / 20 | 검증기·규칙 책 (D8) |
+| `slippageBp` | 5 | 전 계좌 (D9) |
+| `maxWeightStockPct` / `maxWeightEtfPct` / `maxPositions` | 10 / 20 / 20 | 검증기·규칙 계좌 (D8) |
 | `trailingStopPct` / `lockoutTradingDays` | 8 / 20 | 스탑 (D10) |
 | `maxDiscretionaryOrdersPerMonth` / `minHoldTradingDaysForSell` / `minOrderNotional` | 20 / 5 / 500 | 검증기 (D11) |
 | `trackRecord.windowYears` | 7 | §4-0 (D6) |
@@ -347,8 +347,8 @@ decideRules(asOf):
 | `trackRecord.metric` | `CAGR` (`EXCESS_VS_SPY`·`SHARPE`) | D20 |
 | `trackRecord.minPeriods` / `minCoverage` / `avgCoverage` | 24 / 0.5 / 0.7 | D22 |
 | `trackRecord.candidateCiks` | §4-0 ① 표(단계 0 확인 뒤) | D21 — 바꾸면 경고 |
-| `minHolders` / `rulesMaxNames` / `parkCashInShy` | 2 / 10 / true | 규칙 책 |
-| `rules.parkCashThresholdPct` | 2 (0~20) | 재선정일이 아닌 날 남는 현금을 SHY에 두는 기준(순자산 %) — 이보다 크면 SHY 한 건(§4-2). `minOrderNotional`(500)은 규칙 책 매수에도 적용 |
+| `minHolders` / `rulesMaxNames` / `parkCashInShy` | 2 / 10 / true | 규칙 계좌 |
+| `rules.parkCashThresholdPct` | 2 (0~20) | 재선정일이 아닌 날 남는 현금을 SHY에 두는 기준(순자산 %) — 이보다 크면 SHY 한 건(§4-2). `minOrderNotional`(500)은 규칙 계좌 매수에도 적용 |
 | `blend.groupB.topN` / `blend.groupB.windowYears` / `blend.groupB.minPeriods` | 4 / 2 / 6 | 그룹 B(D27) |
 | `blend.groupWeightA` / `blend.convictionCapPct` / `blend.allocation` | 0.5 / 10 / `CONVICTION`(`EQUAL`) | 섞기 가중·확신도·배분(D27) |
 | `blend.minTargetPct` | 1.0 (0~10) | 확신도 비례 배분의 하한 — 목표 비중이 이보다 작으면 '확신도 낮음'으로 뺌(D27) |
@@ -358,17 +358,17 @@ decideRules(asOf):
 | `apiDailyCallCap` | 6 | D18 |
 | `frameworkTokenBudget` | 8000 | F4 |
 
-규칙 책 영향 키(`trackRecord.*`·`blend.*`·`minHolders`·`rulesMaxNames`·`trailingStopPct`·`maxWeight*`)는 응답 `warning`으로 화면이 확인 문구를 보인다. `exposure.*` 키는 없다(D7·D19).
+규칙 계좌 영향 키(`trackRecord.*`·`blend.*`·`minHolders`·`rulesMaxNames`·`trailingStopPct`·`maxWeight*`)는 응답 `warning`으로 화면이 확인 문구를 보인다. `exposure.*` 키는 없다(D7·D19).
 
 ### 4-5. 재무(SEC XBRL) — D28
 
-**규칙 책은 이 자료를 읽지 않는다.** 수집·저장·시점 규칙이 13F 트랙레코드(§4-0)와 같은 층이라 여기 두고, 쓰는 곳은 Claude 책 패킷 §5-2 `8b` 하나다.
+**규칙 계좌는 이 자료를 읽지 않는다.** 수집·저장·시점 규칙이 13F 트랙레코드(§4-0)와 같은 층이라 여기 두고, 쓰는 곳은 Claude 계좌 패킷 §5-2 `8b` 하나다.
 근거는 단계 0-b 측정(§13, [단계 0 문서](2026-10-24-paper-trading-step0.md)).
 
 #### ① 범위
 
-- Claude 책 패킷에만 재무 섹션을 더한다(사용자 OS v1의 E3·E4·E5·E8-R4가 묻는 자료, §9-3).
-- 규칙 책·검증기는 바꾸지 않는다. 규칙 책은 10-23부터 도는 동결 대조군(D15)이라, 재무 필터(검증기·규칙 책)는 §14 1번에 남긴다.
+- Claude 계좌 패킷에만 재무 섹션을 더한다(사용자 OS v1의 E3·E4·E5·E8-R4가 묻는 자료, §9-3).
+- 규칙 계좌·검증기는 바꾸지 않는다. 규칙 계좌는 10-23부터 도는 동결 대조군(D15)이라, 재무 필터(검증기·규칙 계좌)는 §14 1번에 남긴다.
 - 화면은 새 탭이 없다. `/api/paper/status`에 수집 범위 한 덩어리, 개요의 데이터 상태 줄 한 줄. 패킷 원문은 결정 상세에서 이미 보인다.
 
 #### ② 수집 — 태스크 `sec_fundamentals` (수집기 소유, ADR 0008)
@@ -450,7 +450,7 @@ decideRules(asOf):
 
 ---
 
-## 5. Claude 재량 책
+## 5. Claude 계좌
 
 ### 5-1. 호출 방식 (`AiService.structured`, C2·C3)
 
@@ -550,7 +550,7 @@ decideRules(asOf):
 
 ### 5-5. 결정 흐름 — 변경 없음(`target_exposure_pct` 저장 추가)
 
-- 구현 메모(단계 3a): Claude 호출은 장부 잠금 밖이라 그사이 책이 바뀔 수 있다. 일시정지됐으면 결정은 응답·검증과 함께 `SKIPPED`,
+- 구현 메모(단계 3a): Claude 호출은 장부 잠금 밖이라 그사이 계좌가 바뀔 수 있다. 일시정지됐으면 결정은 응답·검증과 함께 `SKIPPED`,
   통과 주문은 `CANCELLED`("결정 중 일시정지 — 집행 안 함")로 남기고 앞선 대기 주문을 대신하지 않는다. 초기화(뒤 재시작)됐으면 기록 없이
   400. 응답을 받은 뒤(과금됨) 검증·저장이 예외로 끝나면 원문·사용량·오류를 `API_ERROR`·`retry_count = 1`(다시 부르지 않음)로 남긴다.
 
@@ -626,14 +626,14 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 
 - 구현 메모(단계 3a): 정기 실행은 작업 잠금을 기다리지 않는다 — 수동 실행이 쥐고 있으면 `BUSY`로 그 주기를 건너뛴다. 스케줄러 스레드는
   4개(`spring.task.scheduling.pool.size`, Spring Boot 기본 1개면 Claude 호출 몇 분 동안 리스크 점검·알림이 멈춤). 그날 오류 3번이면 포기하는
-  횟수는 책마다 세고(관측치·게이트 단계 오류는 두 책 모두에), 수동 실행은 그 책의 횟수만 지운다.
-- 구현 메모: 정기 결정은 두 책 모두 출발일 **뒤** 거래일만 낸다 — 출발일은 초기 결정(INITIAL)이 그날 결정이다(같은 거래일 두 번이면 C1에 어긋남).
+  횟수는 계좌마다 세고(관측치·게이트 단계 오류는 두 계좌 모두에), 수동 실행은 그 계좌의 횟수만 지운다.
+- 구현 메모: 정기 결정은 두 계좌 모두 출발일 **뒤** 거래일만 낸다 — 출발일은 초기 결정(INITIAL)이 그날 결정이다(같은 거래일 두 번이면 C1에 어긋남).
 
 ### 6-3. `PaperRiskJob` — `fixedDelay 5분` — 변경 없음
 
 ### 6-4. 트랙레코드 수집 진행과의 관계
 
-재선정일에 `complete=false`인 후보가 있으면 그 후보는 "수집 중"으로 제외되고 결정 기록에 적힌다. 수집이 끝난 뒤 사용자가 `POST /run/rerank`로 같은 `as_of_date`를 다시 계산해 볼 수 있지만 **선정은 바꾸지 않는다**(기록의 일관성). 10-23 초기 선정은 수집이 끝난 뒤 규칙 책 "시작"(`POST /run/initial-decision`, 사용자가 누름 — 명세 L2)에서 한 번 계산한다(신호 풀 A ∪ B). 수집 중인 후보가 있으면 시작하지 않는다 — 그래서 단계 1b(수집)가 단계 2(규칙 책 시작)보다 먼저다.
+재선정일에 `complete=false`인 후보가 있으면 그 후보는 "수집 중"으로 제외되고 결정 기록에 적힌다. 수집이 끝난 뒤 사용자가 `POST /run/rerank`로 같은 `as_of_date`를 다시 계산해 볼 수 있지만 **선정은 바꾸지 않는다**(기록의 일관성). 10-23 초기 선정은 수집이 끝난 뒤 규칙 계좌 "시작"(`POST /run/initial-decision`, 사용자가 누름 — 명세 L2)에서 한 번 계산한다(신호 풀 A ∪ B). 수집 중인 후보가 있으면 시작하지 않는다 — 그래서 단계 1b(수집)가 단계 2(규칙 계좌 시작)보다 먼저다.
 
 ---
 
@@ -657,8 +657,12 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | 파일 | 역할 |
 |---|---|
 | `paper/SelectionSection.tsx` | 후보 기관 표(순위·CAGR·초과·변동성·MDD·샤프·구간·커버리지·자격·선정 배지·수집 진행 `n/30`), 선정 이력, "지금 재계산" 버튼(`useAsyncAction`), 한계 문구(복제 수익률·생존 편향·커버리지) |
-| `paper/OverviewSection.tsx` | 네 책 곡선 + **Claude 노출 비율 추이**(결정 기록의 `target_exposure_pct`와 실제 `exposure_pct`) + OS 게이트 지표 카드("참고") |
+| `paper/OverviewSection.tsx` | 네 계좌 곡선 + **Claude 노출 비율 추이**(결정 기록의 `target_exposure_pct`와 실제 `exposure_pct`) + OS 게이트 지표 카드("참고") |
+| `paper/AccountDetailPanel.tsx` | 개요의 계좌 카드를 누르면 카드 묶음 아래에 열리는 **계좌 상세**(2026-10-25) |
 | 나머지 | 변경 없음 |
+
+**계좌 상세(2026-10-25).** 계좌 카드(이름 옆 단추 — `aria-expanded`·`aria-controls`, 카드 어디를 눌러도 열림)를 누르면 한 번에 하나의 상세가 열린다(다시 누르기·'닫기'·Esc로 닫힘, 화면 상태 — 주소 쿼리 없음). 내용은 정의 여섯 줄(운용 방식·매수·매도·리스크·현금·시작·출발일·비교 목적 — `lib/paper.ts`의 `ACCOUNT_PROFILES`, 카드에는 한 줄 소개)과 그 규칙의 **지금 설정 값**(설정 응답에서 읽음 — 정의 문장에는 설정 숫자를 적지 않음), 핵심 숫자 일곱 칸, 구성, 최근 체결 5건과 "보유·체결 탭에서 전체 보기"·"결정 로그 보기"(그 탭으로 바꾸며 계좌를 미리 고름)다.
+구성은 상위 3종목 + "기타 n종목"(남은 종목이 하나뿐이면 그 티커) + "현금·현금성"(현금 + `cashLike` 종목, 없으면 "현금") — 종목 비중은 보유 응답의 `weightPct`, 현금 몫만 현금 ÷ 순자산(`accountComposition`). 의미 있는 묶음(0.5% 이상)이 셋 이상이면 도넛, 둘 이하면 한 줄 막대(두 조각 파이 금지), 비중을 모르면 그리지 않는다. 범례·표(종목·비중·평가액·수익률·수량)는 늘 함께 그린다. 직접 라벨은 묶음이 넷 이하이고 차트 너비에 다 들어갈 때만 붙인다(좁으면 SVG 끝에서 잘려 끔 — `donutLabelsFit`). 색은 상위 순서대로 파랑·주황·청록(`#3987e5`·`#d95926`·`#199e70`), 기타 `#606870`·현금 `#9ea7b3` — dataviz 검증기로 어두운 표면에서 세 색은 모든 쌍, 회색은 맞닿는 모든 쌍을 쟀다. 처음의 넷째 색 노랑 `#c98500`은 주황과 모든 쌍 색약 ΔE 4.8이라 뺐다(직접 라벨이 빠지는 다섯 묶음 이상에서 둘째·넷째 종목을 색으로 가를 수 없었음). 패널을 열면 초점이 패널 제목으로 간다(움직임 줄이기면 스크롤도 바로). 새 API는 없다(`positions`·`fills?limit=5`·`settings`를 그대로 읽음).
 
 ---
 
@@ -669,10 +673,10 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | 단계 | 내용 | 규모 | 끝났다는 기준 |
 |---|---|---|---|
 | **0. 선행 확인** | 명세 §7 여덟 항목: 장중 저장본, **후보 CIK 확인**, **EDGAR 목록 깊이·수집 시간 측정**, **커버리지 집계**, **10년 가격 저장본 크기**, Sonnet 호출, SDK 스키마 주입, 10-23 값 | S~M | 결과를 §13에 기록. 커버리지 미달 기관 목록과 매핑 추가 후보 200개 표 확보 |
-| **1. 장부 코어** | 수집기 `paper_quotes`·`paper_price_history`(D23, 유니버스는 지금 `EQUITY_MAP` + ETF로 시작하고 1b에서 CUSIP 매핑 티커를 더함), V8, `PaperStore`, `UsMarketCalendar`(공시 기한 포함)·`PaperLedger`·`TrailingStop`·`SplitDetector`·`PaperStats`·`GateIndicator`, `PaperMarketData`, `PaperLedgerService`, `PaperRiskJob`, `PaperAdminService.init`(네 책 + 벤치마크 10-23 사후 체결, 규칙·Claude 책은 현금만), `PaperQueryService`, API(overview·positions·orders·fills·nav·status·init·books status/reset·run/risk), 화면 개요·보유 탭 | M | 벤치마크 순자산이 SPY·SHY와 맞음. 체결 룩어헤드 테스트 통과. 스탑·분할 테스트 통과 |
+| **1. 장부 코어** | 수집기 `paper_quotes`·`paper_price_history`(D23, 유니버스는 지금 `EQUITY_MAP` + ETF로 시작하고 1b에서 CUSIP 매핑 티커를 더함), V8, `PaperStore`, `UsMarketCalendar`(공시 기한 포함)·`PaperLedger`·`TrailingStop`·`SplitDetector`·`PaperStats`·`GateIndicator`, `PaperMarketData`, `PaperLedgerService`, `PaperRiskJob`, `PaperAdminService.init`(네 계좌 + 벤치마크 10-23 사후 체결, 규칙·Claude 계좌는 현금만), `PaperQueryService`, API(overview·positions·orders·fills·nav·status·init·books status/reset·run/risk), 화면 개요·보유 탭 | M | 벤치마크 순자산이 SPY·SHY와 맞음. 체결 룩어헤드 테스트 통과. 스탑·분할 테스트 통과 |
 | **1b. 13F 트랙레코드** | 수집기: `TRACK_RECORD_FILERS`(선행 CIK)·`TRACK_RECORD_QUARTERS`·`task_sec_13f_track_record`·`collect_13f(reuse_stored, list_count)`·`TRACK_RECORD_CUSIPS`(D25)·유니버스 확장·`Datasets` 상수·DATA_SOURCES. 백엔드: `TrackRecord13F`·`PaperSelectionService`·`paper_track_record`·`paper_selection_log`·API 2개·기관 선정 탭. 수집을 돌려 후보 전원 `complete` | L | 수집 완료. 손계산 테스트(구간 수익률·CAGR·룩어헤드·커버리지·자격). 2026-10-23 기준 순위표가 화면에 보이고 상위 5가 기록됨. 단계 0 원형 계산(단계 0 표 D)과 대조 |
-| **2. 규칙 책** | V9(`paper_track_record.group_code`), 그룹 B 선정(D27), `Signal13F`(기관 가중 × 확신도, 확신도 비례 배분), `RuleBookService`, `PaperDecisionJob`(규칙 책까지, 재선정일 분기·놓친 재선정일 따라잡기), 규칙 책 "시작"(`POST /run/initial-decision`)에 10-23 사후 체결(신호 풀 A ∪ B, 최대 9곳), 결정 로그 탭(규칙 책) | M | 10-23 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·순위·행동 기록. 재선정일 외 매수 없음 테스트 |
-| **3a. Claude 책 — 결정** | `AiService.structured`, 스키마 2개, `PacketBuilder`(게이트 참고·트랙레코드 섹션 포함), `OrderValidator`(예산 규칙 없음), `ClaudeBookService`, `paper_api_usage`, 설정 테이블·API·탭, 결정 로그 탭(패킷·응답·검증·노출), `run/decision`·`run/initial-decision` | L | 가짜 서버 4종. 검증기 규칙별 테스트 + "노출 0%·100% 모두 통과" 테스트. 초기 결정 패킷에 10-23 이후 값 없음. 실제 키로 10-23 초기 결정 미리보기 1회(장부를 바꾸지 않음 — 책 시작은 사용자가 누름, L2) |
+| **2. 규칙 계좌** | V9(`paper_track_record.group_code`), 그룹 B 선정(D27), `Signal13F`(기관 가중 × 확신도, 확신도 비례 배분), `RuleBookService`, `PaperDecisionJob`(규칙 계좌까지, 재선정일 분기·놓친 재선정일 따라잡기), 규칙 계좌 "시작"(`POST /run/initial-decision`)에 10-23 사후 체결(신호 풀 A ∪ B, 최대 9곳), 결정 로그 탭(규칙 계좌) | M | 10-23 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·순위·행동 기록. 재선정일 외 매수 없음 테스트 |
+| **3a. Claude 계좌 — 결정** | `AiService.structured`, 스키마 2개, `PacketBuilder`(게이트 참고·트랙레코드 섹션 포함), `OrderValidator`(예산 규칙 없음), `ClaudeBookService`, `paper_api_usage`, 설정 테이블·API·탭, 결정 로그 탭(패킷·응답·검증·노출), `run/decision`·`run/initial-decision` | L | 가짜 서버 4종. 검증기 규칙별 테스트 + "노출 0%·100% 모두 통과" 테스트. 초기 결정 패킷에 10-23 이후 값 없음. 실제 키로 10-23 초기 결정 미리보기 1회(장부를 바꾸지 않음 — 계좌 시작은 사용자가 누름, L2) |
 | **3b. 프레임·메모** | `paper_framework_*`·`paper_notes`, `FrameworkService`(v1 시드 — 매크로 축은 지침 문장으로)·`NoteService`, API, 탭 | M | 승인 전후 테스트. 만료 메모 제외. v1 규칙 목록 사람이 검토 |
 | **4. 마무리** | ADR 0018, ARCHITECTURE·API.md·DATA_SOURCES·README·`.env.example`·compose(`PAPER_ENABLED`), 이 문서 구현 결과 표 | S | `make test` 통과, `/paper` 여섯 탭 동작(구현은 일곱 탭 — 단계 3b에서 '프레임·메모'를 '프레임'·'메모'로 나눔, §9-1), `git branch -r --contains HEAD` 빈 결과 |
 | **5. 재무(D28)** — 완료(2026-10-25) | 수집기: `sec_fundamentals`(weekly, 1회 200 CIK, `FUNDAMENTALS_FETCH_BUDGET`)·`FUNDAMENTALS_CIK_ALIASES`(XOM은 확인됨, CIK ≥ 1,990,000 9곳은 구현 때 submissions로 확인)·catalog `OBS_US_FUNDAMENTALS`·`SNAP_US_FUNDAMENTALS_STATUS` + `Datasets` 상수. 백엔드: `analytics.Fundamentals`(시점·기간 분류·누계 차감·TTM·개념 선택·지표), `store` 읽기(`obs_date ≤ asOf`), `PacketBuilder` 섹션 `8b_fundamentals`·목표 30,000토큰, `ClaudePrompts.FIXED_RULES` 한 줄, `/api/paper/status`의 `fundamentals`, 개요 데이터 상태 줄. 문서: DATA_SOURCES(태스크 24개·재무 행·한계), README·CLAUDE.md·ARCHITECTURE의 태스크 수 23 → 24, `.env.example`(§4-5) | M | 수집기 실행(1회 200 CIK, 약 3회)으로 매핑된 회사의 **90% 이상**이 채워짐(상태 스냅샷의 `mapped` 대비). 시점(PIT) 단위 테스트 — `filed ≤ asOf`·같은 기간은 가장 늦게 낸 값·누계 차감(Q2~Q4)·TTM·`null`(0 아님)·USD 아닌 금액 `null`. 10-23 초기 결정 **미리보기 패킷에 `8b_fundamentals` 섹션**이 있음. `make test` 통과 |
@@ -688,7 +692,7 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | 0 | §13, [단계 0 문서](2026-10-24-paper-trading-step0.md) | `9bde281`(명세·설계) · `b67e8f6` · `b7d304e` | **충족.** 매핑 추가 후보는 200개가 아니라 상위 600개를 조회해 498개 채택 | D23(가격 저장 방식), D25(CUSIP 매핑표), D26(스키마 제약을 API용·검증용으로) |
 | 1 | 수집기 `paper_quotes`·`paper_price_history`, V8(`paper_*` 19개), `PaperStore`, `analytics`(`UsMarketCalendar`·`DailySeries`·`PaperLedger`·`TrailingStop`·`SplitDetector`·`PaperStats`·`GateIndicator`), `PaperLedgerService`·`PaperRiskJob`·`PaperAdminService`·`PaperQueryService`, API 10개, '개요'·'보유·체결' 탭 | `282a5b5` · `045d9c1` · `24a5bb0` · `8e80f41` | **시험으로 충족** — 벤치마크 사후 체결 수량(`PaperAdminServiceTest.initBackfillsBenchmarks`), 룩어헤드·스탑·분할(`PaperLedgerServiceTest`). 운영 장부를 SPY·SHY 추이와 대조하는 것은 출발일(금) 뒤 세션이 아직 없어 **[확인 필요]**(§9-3) | 출발일 종가 동결 `paper_start_prices`(§2)와 그것을 30분마다 얼리는 정기 작업(`PaperAdminService` — 정기 작업이 §0-3의 2개에서 3개로), 관측치 처리 순서 — 분할 먼저·스탑은 매수 앞·현금성 매수는 마지막(§3-1) |
 | 1b | 수집기 `TRACK_RECORD_FILERS`(27곳·선행 CIK 2)·`task_sec_13f_track_record`(실행당 400건)·`TRACK_RECORD_CUSIPS` 498개(유니버스 615종목), `TrackRecord13F`·`PaperSelectionService`, API 2개, 기관 선정 탭 | `482b5ea` · `da26067` · `b522bde` | **충족.** 27곳 30분기 수집 완료(실행 3번), 손계산·룩어헤드·커버리지·자격 시험(`TrackRecord13FTest`), 2026-10-23 순위표·상위 5 기록, 원형과 대조(`matchesStepZeroPrototype`, §13) | 원형과 5·6위가 바뀜(Coatue ↔ Himalaya — 거래일 달력·상장폐지 처리 차이, §13). `q30`은 필요한 열만 SQL로 읽음(힙) |
-| 2 | V9(`group_code`·`data_source`), 그룹 B(D27), `Signal13F`, `RuleBookService`, `PaperDecisionJob`(규칙 책), 규칙 책 "시작", API 4개, 결정 로그 탭·게이트 지표 카드 | `694025f`(D27) · `e79074c` · `beb2efb` · `38bc265` · 결함 `79294e6` → `6ff9f58` | **충족.** 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·그룹·가중·확신도 근거(`RuleBookServiceTest.startBackfillsWithEvidence`), 재선정일 외 매수 없음(`nonReselectionDayOnlySells`) | 두 그룹 섞기·확신도 비례 배분(D27, §4-0 ⑥·§4-1·§4-2), 놓친 재선정일 따라잡기(§6-2), 매일 남는 현금 SHY(`rules.parkCashThresholdPct`). 출발일 당일 정기 결정 중복 결함 — 재현 `79294e6`, 수정 `6ff9f58`(§6-2 구현 메모) |
+| 2 | V9(`group_code`·`data_source`), 그룹 B(D27), `Signal13F`, `RuleBookService`, `PaperDecisionJob`(규칙 계좌), 규칙 계좌 "시작", API 4개, 결정 로그 탭·게이트 지표 카드 | `694025f`(D27) · `e79074c` · `beb2efb` · `38bc265` · 결함 `79294e6` → `6ff9f58` | **충족.** 초기 포트폴리오가 10-23 이전 공시·선정만으로 계산되고 종목마다 기관·그룹·가중·확신도 근거(`RuleBookServiceTest.startBackfillsWithEvidence`), 재선정일 외 매수 없음(`nonReselectionDayOnlySells`) | 두 그룹 섞기·확신도 비례 배분(D27, §4-0 ⑥·§4-1·§4-2), 놓친 재선정일 따라잡기(§6-2), 매일 남는 현금 SHY(`rules.parkCashThresholdPct`). 출발일 당일 정기 결정 중복 결함 — 재현 `79294e6`, 수정 `6ff9f58`(§6-2 구현 메모) |
 | 3a | `AiService.structured`(먼저 `cfaa402`로 예외 분류를 떼어 냄), `StructuredSchema`·`decision.schema.json`, `OrderValidator`, `PacketBuilder`, `ClaudeBookService`, 설정 API 3개·설정 탭, Claude 결정 상세·노출 추이·호출 사용량, V10 | `cfaa402` · `7feca27` · `d17d16f` · `ad5555f` | **충족.** 가짜 서버 4종(`ClaudeBookServiceTest` 정상·형식 오류·거절·429), 검증기 규칙별·노출 0%·100%(`OrderValidatorTest`), 초기 패킷에 10-23 뒤 값 없음(`PacketBuilderTest.initialPacketHasNothingAfterAsOf`), 실제 키 미리보기 1회(§9-2) | V10 `packet_text`, `BELOW_ONE_SHARE`, 체결 시점을 나눈 `OVER_ALLOCATED`·`MAX_POSITIONS`, 그룹별 기관 상한, 호출은 장부 잠금 밖 + 일시정지·초기화 재확인, 응답 뒤 실패는 다시 부르지 않음(`AFTER_RESPONSE`), 스케줄러 스레드 4개 + `tryLock`(§5-2·§5-4·§5-5·§6-2 구현 메모) |
 | 3b | `FrameworkService`(v0 시드·렌더링·제안→승인·수동 편집)·`NoteService`·`PaperApiCalls`, V11, API 10개, 프레임·메모 탭 | `99059dc` · `941cceb` · `b6f7016` · 결함 `d38eda8` → `0e07824` · 리뷰 수정 `515c524` | **시험으로 충족** — 승인 전후(`FrameworkServiceTest`), 만료 메모 제외(`NoteServiceTest.packetNotes`). 'v1 규칙 목록 사람 검토'는 v1이 사용자 원문을 그대로 옮긴 판이 되면서 성격이 바뀜 — 사용자 확인 여부 **[확인 필요]** | v0 임시·v1 사용자 OS(F1), 결정 시점 설정으로 렌더링, 추정 비용 단가 설정(V11, C8), 메모 기준일 기본값, 탭을 '프레임'·'메모' 둘로. 메모 빈 줄 결함 — 재현 `d38eda8`, 수정 `0e07824`. 리뷰 수정(§5-7 구현 메모 ①~⑥) |
 | 4 | ADR 0018·ADR 목록, `docs/ARCHITECTURE.md`(§3 표·§4-1·§4-2·§8), `README.md`(메뉴·환경변수·폴더), `docs/DATA_SOURCES.md`(저장본 표의 기존 저장본 행·미국 재무 없음), `.env.example`·`docker-compose.yml`(`PAPER_ENABLED`가 끄는 정기 작업 셋), 이 절, §12-2의 낡은 수치(태스크 수·예산 기본값). 앞 단계에서 함께 고친 것: `docs/API.md`(29행), `docs/DATA_SOURCES.md`(태스크 3개·후보 기관·저장본과 한계), `.env.example`·`docker-compose.yml`(`PAPER_ENABLED`·`TRACK_RECORD_FETCH_BUDGET`) | (문서 정리) | **충족.** `make test` 통과(위 — 단계 4는 문서만 고침), `/paper` 일곱 탭 동작(QA 스택·헤드리스 Chrome, §9-2), `git branch -r --contains HEAD` 빈 결과(2026-10-25) | 탭 여섯 → 일곱(명세 U2·§1 그림은 여섯 탭 그대로) |
@@ -699,8 +703,8 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | 항목 | 상태 |
 |---|---|
 | 스키마 | V8~V11 적용 |
-| 책 | `bench_spy`·`bench_mix`·`rules` 운용(ACTIVE), 출발일 2026-10-23. `claude`는 시작 전(NOT_STARTED) — 사용자가 "시작"을 누른다(L2) |
-| 규칙 책 결정 | 1번 INITIAL(체결 11건). 2번 SCHEDULED 10-23 NO_TRADE는 수정 전 결함(출발일 당일 정기 결정, `79294e6`·`6ff9f58`)이 남긴 행 — 이력으로 둔다 |
+| 계좌 | 네 계좌 모두 운용(ACTIVE), 출발일 2026-10-23. `claude`는 사용자가 2026-10-25 13:29 KST에 "Claude 계좌 시작"을 눌러 시작(L2) — 초기 결정 3번(프레임 v1, 목표 노출 66%), 출발일 종가 사후 체결 9건: SPY 10 · XLV 8 · XLE 8 · SHY 20 · UUP·MRK·AR·PYPL·GOOGL 각 4(%). 첫 정기 결정은 10-26(월) 세션 뒤 KST 10-27 07:30 |
+| 규칙 계좌 결정 | 1번 INITIAL(체결 11건). 2번 SCHEDULED 10-23 NO_TRADE는 수정 전 결함(출발일 당일 정기 결정, `79294e6`·`6ff9f58`)이 남긴 행 — 이력으로 둔다 |
 | 프레임 | v0 INTERIM(시드), v1 USER = 사용자 OS 원문 "빠방이 투자 운영체계"(원칙 5·엔진 8·규칙 29, 문구 그대로). 원문 전체는 INSIGHT 메모 #2. 메모 #1은 보관 — 수정 전 정규화가 빈 줄을 지운 본문(`d38eda8`·`0e07824`) |
 | 실제 키 호출 | 10-23 초기 결정 미리보기 1회(장부 변화 없음): 24.8초, 입력 26,866 + 캐시 쓰기 2,714 + 출력 2,632토큰 ≈ $0.09(§5-9 단가), 목표 노출 42%, 주문 6건 모두 통과. 패킷 시점 검사에서 10-23 뒤 값은 매크로 카드(`asOfMismatch`, C6이 허용)와 달력의 `nextSession`뿐 |
 | 재무(D28) | `a9b7f36`에서 `make up`, `sec_fundamentals` 세 번 실행 → 568/570곳. 10-23 초기 결정 미리보기 2회째(v1 프레임·8b 포함): 37.6초, 입력 31,883 + 캐시 쓰기 6,404 + 출력 4,548토큰 ≈ $0.12, 목표 노출 53%, 주문 7건 모두 통과 — 응답이 FCF·ROE로 후보를 거름(AMZN FCF 적자, PANW·MRK 낮은 ROE 제외) |
@@ -712,8 +716,8 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 | 항목 | 내용 |
 |---|---|
 | 장중 마지막 봉 | **[확인 필요]** 10-26(월) KST 22:30 뒤 — §13 첫 행 |
-| 벤치마크 추이 대조 | 두 벤치마크 책 순자산을 SPY·SHY 종가 변화와 대조 — 출발일 뒤 첫 세션(10-26)의 확정 순자산이 생긴 뒤 **[확인 필요]** |
-| 재무제표 | **D28로 해결** — Claude 책 패킷에 `8b_fundamentals`(SEC XBRL, 공시일 ≤ 기준일, 25종목까지, §4-5). 사용자 OS 엔진 E3·E4·E5·E8-R4가 묻는 TTM·성장률·마진·FCF·ROE를 싣는다. 남은 한계: 실적 보도자료(8-K) 없음(10-Q 전까지 직전 분기 값), IFRS 2026 연보 공백 13곳, 복수 주식 종류의 표지 주식수 없음(DATA_SOURCES §5). 규칙 책·검증기의 재무 필터는 §14-1 그대로 |
+| 벤치마크 추이 대조 | 두 벤치마크 계좌 순자산을 SPY·SHY 종가 변화와 대조 — 출발일 뒤 첫 세션(10-26)의 확정 순자산이 생긴 뒤 **[확인 필요]** |
+| 재무제표 | **D28로 해결** — Claude 계좌 패킷에 `8b_fundamentals`(SEC XBRL, 공시일 ≤ 기준일, 25종목까지, §4-5). 사용자 OS 엔진 E3·E4·E5·E8-R4가 묻는 TTM·성장률·마진·FCF·ROE를 싣는다. 남은 한계: 실적 보도자료(8-K) 없음(10-Q 전까지 직전 분기 값), IFRS 2026 연보 공백 13곳, 복수 주식 종류의 표지 주식수 없음(DATA_SOURCES §5). 규칙 계좌·검증기의 재무 필터는 §14-1 그대로 |
 | 패킷 크기 | 실제 호출의 캐시 안 된 입력(= 패킷): D28 전 26,866토큰, D28 뒤 31,883토큰(메모 없음) — 목표 30,000을 조금 넘음. `PacketBuilderTest.fitsTokenBudget`의 어림 토큰(약 29,100)이 실제 토크나이저보다 작다. 넘으면 경고 로그만이고 회당 비용 차이는 약 $0.01 |
 | 순자산 차트 | 하루 범위가 $1 미만이면 y축 눈금 글자가 같은 값으로 되풀이됨(화면만) |
 | `AI_ENGINES` | [ADR 0014](../adr/0014-aws-demo-ai-report.md) 허용 목록이 `AiService.structured`를 거르지 않음. 로컬 전용이라 지금은 상관없음 — main·AWS로 옮기기 전에 고친다 |
@@ -775,7 +779,7 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 
 | 번호 | 내용 |
 |---|---|
-| 0018 | 모의 매매 장부와 LLM 재량 결정의 가드레일 — 제안은 모델, 검증·집행은 코드; 현금 비중·매크로 판단은 모델의 재량이고 하드 규칙은 집중도·회전율·신선도만; 체결은 "결정 뒤 첫 관측치(봉 날짜 > 기준 거래일)"; 신호 기관은 공시일 기준 복제 트랙레코드로 분기마다 재선정; 프레임은 승인된 버전만; 규칙 책은 동결된 대조군; Claude 책은 백테스트하지 않음; 로컬 브랜치 전용 전달 |
+| 0018 | 모의 매매 장부와 LLM 재량 결정의 가드레일 — 제안은 모델, 검증·집행은 코드; 현금 비중·매크로 판단은 모델의 재량이고 하드 규칙은 집중도·회전율·신선도만; 체결은 "결정 뒤 첫 관측치(봉 날짜 > 기준 거래일)"; 신호 기관은 공시일 기준 복제 트랙레코드로 분기마다 재선정; 프레임은 승인된 버전만; 규칙 계좌는 동결된 대조군; Claude 계좌는 백테스트하지 않음; 로컬 브랜치 전용 전달 |
 
 ### 12-2. 함께 고칠 문서 (브랜치 안)
 
@@ -818,10 +822,10 @@ REBALANCE는 지난 선정이라 매수 없이 끝나 세지 않음), 다음 결
 
 ## 14. 2단계 이후
 
-1. **재무 필터(검증기·규칙 책)** — FCF 전환율·듀퐁 ROE·RIM. SEC XBRL Company Facts 수집과 Point-in-Time(`filed`) 계산, Claude 책 패킷의 재무(`8b`)는 D28로 한다(§4-5, 단계 5). 남은 것은 이 자료로 거는 필터다 — 규칙 책은 10-23부터 도는 동결 대조군(D15)이라 실험 중간에 더하지 않는다.
+1. **재무 필터(검증기·규칙 계좌)** — FCF 전환율·듀퐁 ROE·RIM. SEC XBRL Company Facts 수집과 Point-in-Time(`filed`) 계산, Claude 계좌 패킷의 재무(`8b`)는 D28로 한다(§4-5, 단계 5). 남은 것은 이 자료로 거는 필터다 — 규칙 계좌는 10-23부터 도는 동결 대조군(D15)이라 실험 중간에 더하지 않는다.
 2. 수집기 OHLC·배당(`actions=True`) → `NEXT_OPEN` 체결, 현금 배당 반영.
-3. 규칙 책 Walk-forward 백테스트(트랙레코드 선정 + 신호, 2019~2026) — 스탑·재진입·minHolders·topN 재검토.
+3. 규칙 계좌 Walk-forward 백테스트(트랙레코드 선정 + 신호, 2019~2026) — 스탑·재진입·minHolders·topN 재검토.
 4. 트랙레코드 창 7년 → 10년(저장 분기 42), 브린슨 분해(`nameMap.sector`), 섹터 로테이션 패턴.
 5. 메모를 넣고 바로 받는 "OS 절차 C 9단계 시황 해석" 리포트(수동 호출).
 6. 가격 없음 보유의 수동 정리, 분할 수동 교정.
-7. 다섯 번째 책 `rules_gated`(OS 문자 그대로 게이트를 건 규칙 책) — 명세 §9 대안이 필요해지면.
+7. 다섯 번째 계좌 `rules_gated`(OS 문자 그대로 게이트를 건 규칙 계좌) — 명세 §9 대안이 필요해지면.

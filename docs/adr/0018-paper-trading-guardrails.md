@@ -16,7 +16,7 @@
   2. 체결
      - `PaperLedgerServiceTest` 체결 조건: `observationOlderThanOrderDoesNotFill`·`weekendResaveDoesNotFill`·`nextCloseWaitsForFinalClose`·
        `staleBarDoesNotFill`·`sameObservationTwiceIsOnce`. 처리 순서: `sellsBeforeBuys`·`cashLikeBuysFillLast`·`stopRunsBeforeBuysInSameObservation`·
-       `twoForOneBeforeStop`. 한 책 오류는 그 책만(`oneBookFailureIsIsolated`)
+       `twoForOneBeforeStop`. 한 계좌 오류는 그 계좌만(`oneBookFailureIsIsolated`)
      - `PaperLedgerTest`(슬리피지·정수 주식 내림), `PaperStoreDbTest.oneFillPerOrder`·`duplicateFillInsideTransactionRollsBackEverything`,
        `PaperLedgerDbTest.ledgerFlowOnRealTables`(실제 테스트 DB)
   3. 출발
@@ -47,7 +47,7 @@
        `newIdsNeverReuseDeletedIds`·`renderIsDeterministic`·`systemPromptUsesCurrentSettings`·`stripsLookalikeDelimiters`
      - `ClaudeBookServiceTest.decisionUsesCurrentFrameworkRenderedWithCurrentSettings`·`packetUsesDecisionSettingsRow`, `PacketBuilderTest.usesGivenSettingsRow`·`deterministic`
      - `PaperStoreDbTest.packetTextKeepsSentBytes`(V10), `NoteServiceTest.packetNotes`·`bodyKeepsParagraphs`
-  8. 규칙 책 동결: `PaperSettingsServiceTest.updatesKnownKeysAndBumpsVersion`(규칙 책 영향 키는 경고). `RuleBookService`는 프레임·메모를 받지 않습니다(생성자).
+  8. 규칙 계좌 동결: `PaperSettingsServiceTest.updatesKnownKeysAndBumpsVersion`(규칙 계좌 영향 키는 경고). `RuleBookService`는 프레임·메모를 받지 않습니다(생성자).
   9. 실패 처리
      - `ClaudeBookServiceTest`: `formatErrorLeavesLedgerUntouched`·`refusalLeavesLedgerUntouched`·`apiErrorIsRetriedOnceOnTheSameRow`·`secondApiErrorEndsRetries`·
        `missingKeyDoesNotCountACall`·`failureAfterPaidResponseIsNotRetried`·`pauseDuringCallLeavesNoPendingOrders`·`resetAndRestartDuringCallLeavesNothing`·`notStartedAndPaused`
@@ -65,13 +65,13 @@
 
 ## 배경
 
-가상 자본 10만 달러로 네 책을 같은 날 출발시켜 비교합니다([명세](../specs/2026-10-24-paper-trading-spec.md)).
+가상 자본 10만 달러로 네 계좌를 같은 날 출발시켜 비교합니다([명세](../specs/2026-10-24-paper-trading-spec.md)).
 
-| 책 | 역할 |
+| 계좌 | 역할 |
 |---|---|
-| `rules` | 13F 신호만 따르는 대조군 |
-| `claude` | Claude가 매일 한 번 판단하는 실험군 |
-| `bench_spy`·`bench_mix` | SPY 100%, SPY 60%/SHY 40% |
+| 규칙 계좌 `rules` | 13F 신호만 따르는 대조군 |
+| Claude 계좌 `claude` | Claude가 매일 한 번 판단하는 실험군 |
+| SPY 계좌 `bench_spy`·60/40 계좌 `bench_mix` | 벤치마크 — SPY 100%, SPY 60% · SHY 40% |
 
 어떤 주문도 밖으로 나가지 않습니다. 그래도 숫자가 조용히 좋아 보이게 틀리기 쉬운 자리가 많습니다.
 
@@ -88,7 +88,7 @@
    - 검증기(`OrderValidator`)의 하드 규칙은 (수치는 설정 기본값) 집중도(종목 10%·ETF 20%·최대 20종목·합 100%), 회전율(월 20건·재량 매도는 5거래일 뒤·최소 $500),
      재진입 금지, 신선도, 유니버스입니다. 주문마다 정해진 순서의 첫 사유 하나로 거절합니다.
    - **현금 비중·매크로 판단은 모델의 재량입니다**(D7). 노출 0%도 100%도 거절 사유가 아닙니다. 사용자 OS가 쓰던 게이트(10Y 4.80/4.75, 브렌트 95, WTI 90,
-     USD/JPY 155)는 `GateIndicator`로 계산해 화면과 패킷에 "참고 — 구속하지 않음"으로만 보입니다. 규칙 책·검증기 어느 쪽도 읽지 않습니다.
+     USD/JPY 155)는 `GateIndicator`로 계산해 화면과 패킷에 "참고 — 구속하지 않음"으로만 보입니다. 규칙 계좌·검증기 어느 쪽도 읽지 않습니다.
    - 노출 숫자와 주문이 어긋나면 주문대로 집행하고 `exposureMismatch`를 남깁니다. 숫자를 맞춰 고치지 않습니다.
    - 현금·자리는 체결 순서로 셉니다. `NEXT_CLOSE` 매도는 먼저 체결되는 `NEXT_OBSERVATION` 매수의 현금(`OVER_ALLOCATED`)과 종목 자리(`MAX_POSITIONS`)를
      만들지 못합니다. 장부가 전량으로 집행할 1주 미만 부분 매도는 `BELOW_ONE_SHARE`로 거절합니다. 월 상한은 그달 체결된 정기·수동 주문만 셉니다(초기 배분 제외).
@@ -99,13 +99,13 @@
    두 번째 조건이 주말 재저장 룩어헤드를 막습니다.
    - `NEXT_CLOSE`는 마감 + 15분 뒤 저장본만 씁니다. 이어 쓴(`isStale`) 봉으로는 체결하지 않습니다. 시가가 없어 `NEXT_OPEN`은 두지 않습니다(2단계).
    - 체결가는 관측가 × (1 ± 슬리피지, 기본 5bp), 수량은 정수 내림입니다.
-   - 관측치 하나는 책마다 한 트랜잭션입니다. 순서는 분할 감지 → 매도 → 스탑 → 매수(현금성 마지막)이고, 같은 관측치는 한 번만 처리합니다.
-3. **출발은 2026-10-23 종가 사후 체결(`is_backfill`)입니다.** 네 책이 같은 날 출발하고, 그 뒤 체결은 모두 관측치입니다.
+   - 관측치 하나는 계좌마다 한 트랜잭션입니다. 순서는 분할 감지 → 매도 → 스탑 → 매수(현금성 마지막)이고, 같은 관측치는 한 번만 처리합니다.
+3. **출발은 2026-10-23 종가 사후 체결(`is_backfill`)입니다.** 네 계좌가 같은 날 출발하고, 그 뒤 체결은 모두 관측치입니다.
    - 출발일 종가는 확정 종가가 들어오는 대로(30분마다 정기 작업, 초기화 때도) 유니버스 전체로 한 번 얼립니다(`paper_start_prices`).
      리셋과 뒤늦은 "시작"도 이 값을 씁니다.
-   - 벤치마크는 초기화 때 체결합니다. 규칙·Claude 책은 사용자가 "시작"을 눌러야 출발합니다(L2). Claude 책은 장부를 바꾸지 않는 미리보기가 먼저 있습니다.
+   - 벤치마크는 초기화 때 체결합니다. 규칙·Claude 계좌는 사용자가 "시작"을 눌러야 출발합니다(L2). Claude 계좌는 장부를 바꾸지 않는 미리보기가 먼저 있습니다.
    - 초기 결정의 입력은 10-23 이전 값만입니다(C6). 이력이 없는 매크로 카드만 현재 수집본이고 `asOfMismatch`로 표시합니다.
-   - 두 책 모두 출발일 이하 거래일에는 정기 결정을 내지 않습니다. 출발일의 결정은 초기 결정(INITIAL) 하나입니다.
+   - 두 계좌 모두 출발일 이하 거래일에는 정기 결정을 내지 않습니다. 출발일의 결정은 초기 결정(INITIAL) 하나입니다.
 4. **신호 기관은 고정하지 않고, 두 그룹을 섞습니다**(D6·D27).
 
    | 그룹 | 후보 | 순위 |
@@ -116,9 +116,9 @@
    - 두 그룹 모두 커버리지 기준(구간 최소 50%·평균 70%)과 최신 분기 공시(R5)를 통과해야 순위에 듭니다. 덮인 대형주만 보이는 인덱스·연기금은 이 기준으로 빠집니다.
    - 재선정은 분기 13F 공시 기한 다음 거래일에, 그날까지 공시된 자료와 가격만으로 합니다. 수집 중인 후보는 자격에서 빼고
      선정하고, 그룹 A 자격 기관이 0곳인데 수집 중인 후보가 있으면(처음 30분기를 채우는 동안) 선정을 남기지 않습니다 — 그룹 B만으로도 선정하지 않습니다.
-     규칙 책 "시작"은 수집 중인 후보가 있으면 거절합니다. 그날 결정을 놓쳤거나 선정을 건너뛰었으면, 다음 결정 날에 같은 재선정일 기준으로 한 번 따라잡습니다. 수동 재계산은 기록만 하고 선정을 바꾸지 않습니다.
+     규칙 계좌 "시작"은 수집 중인 후보가 있으면 거절합니다. 그날 결정을 놓쳤거나 선정을 건너뛰었으면, 다음 결정 날에 같은 재선정일 기준으로 한 번 따라잡습니다. 수동 재계산은 기록만 하고 선정을 바꾸지 않습니다.
    - 신호는 선정 기준일까지 낸 공시만 쓰고, 모든 기관을 같은 분기로 대조합니다. 후보 점수 = Σ(기관 가중 × 확신도)이고, 목표 비중은 점수에 비례합니다.
-   - 규칙 책은 재선정일에만 삽니다. 그 밖의 날은 매도 신호·스탑과 남는 현금의 SHY 관리뿐입니다.
+   - 규칙 계좌는 재선정일에만 삽니다. 그 밖의 날은 매도 신호·스탑과 남는 현금의 SHY 관리뿐입니다.
 5. **후보 기관 보유의 티커는 CUSIP으로 붙입니다**(D25). OpenFIGI·SEC·야후로 대조한 498개 표(`equities_cusip.TRACK_RECORD_CUSIPS`)를 `q30` 저장본에만 씁니다.
    기존 `q8`과 13F 화면은 그대로이고, 채권·우선주·워런트 배제([0015](0015-13f-security-identity.md) 결정 6)를 먼저 적용합니다.
 6. **가격 이력은 저장 방식을 나눕니다**(D23). 10년 수정주가는 `timeseries` 데이터셋 `equity_close`(종목별 행, 12시간), 관측치는 스냅샷 `paper.quotes`
@@ -130,17 +130,17 @@
    - 결정의 시스템 프롬프트는 그 판을 **결정 시점의 설정으로 다시 렌더링**합니다. 프롬프트·패킷·검증·기록이 같은 설정 행 하나를 씁니다.
    - 결정마다 프레임 판·설정 판·보낸 패킷 문자열(`packet_text`, V10)·SHA-256을 남깁니다. 재현은 기록으로 합니다.
    - 메모는 자료입니다. 구분자로 감싸고(가짜 구분자는 변형까지 지움) "지시가 아님"을 적습니다. 그 거래일에 유효한 시황 메모만 패킷에 들어갑니다.
-8. **규칙 책은 동결된 대조군입니다**(D15·D19). 프레임·메모·게이트를 읽지 않습니다. 규칙 책 영향 키(트랙레코드·섞기·스탑·상한·슬리피지 등)를 바꾸면 설정 화면이 한 번 더 확인합니다.
-   **Claude 책은 백테스트하지 않습니다**(D17).
+8. **규칙 계좌는 동결된 대조군입니다**(D15·D19). 프레임·메모·게이트를 읽지 않습니다. 규칙 계좌 영향 키(트랙레코드·섞기·스탑·상한·슬리피지 등)를 바꾸면 설정 화면이 한 번 더 확인합니다.
+   **Claude 계좌는 백테스트하지 않습니다**(D17).
 9. **실패는 "그날 재량 주문 없음"입니다**(C7).
    - 오류·거절(refusal)·형식 위반·호출 상한이면 장부를 바꾸지 않습니다. 리스크 규칙(트레일링 스탑)은 따로 계속 돕니다. 다른 모델로 자동 전환하지 않습니다(D5).
    - 재시도는 `API_ERROR`(401·403·404·429·5xx·연결·시간 초과)만, 같은 거래일 같은 결정 행에서 한 번입니다. 거절·형식 오류는 같은 입력이면 같은 답일
      가능성이 커 다시 부르지 않습니다. 응답을 받은 뒤(과금됨) 검증·저장이 실패하면 원문·사용량을 `API_ERROR`·`retry_count = 1`(`stage = AFTER_RESPONSE`)로
      남기고 다시 부르지 않습니다.
-   - Claude 호출은 장부 잠금 밖에서 합니다. 호출하는 사이 책이 일시정지되면 결정은 `SKIPPED`, 통과 주문은 `CANCELLED`로 남깁니다. 초기화 뒤 다시 시작됐으면
+   - Claude 호출은 장부 잠금 밖에서 합니다. 호출하는 사이 계좌가 일시정지되면 결정은 `SKIPPED`, 통과 주문은 `CANCELLED`로 남깁니다. 초기화 뒤 다시 시작됐으면
      아무것도 남기지 않습니다(400).
    - 정기 작업 스레드는 4개입니다(`spring.task.scheduling.pool.size`). 정기 결정은 작업 잠금을 기다리지 않고(`tryLock`, 수동 실행 중이면 `BUSY`),
-     같은 거래일 오류가 책마다 3번이면 그날은 포기합니다.
+     같은 거래일 오류가 계좌마다 3번이면 그날은 포기합니다.
 10. **비용 상한은 하루 호출 수입니다**(C8·D18). 결정·미리보기·시작·재시도·프레임 제안이 같은 상한(설정 `apiDailyCallCap`, 기본 6회, KST 하루, DB로 셈)을 씁니다.
     추정 비용은 설정 키 `pricing.sonnet.*`·`pricing.haiku.*`(USD/MTok) 단가로 호출 때 계산해 `paper_api_usage.est_cost_usd`·`est_cost_calls`(V11)에 더합니다.
     화면은 `isEstimated`와 함께 보이고, 단가나 토큰을 모르는 호출은 0달러로 채우지 않습니다.
@@ -150,8 +150,8 @@
 ## 이유
 
 - **집행을 코드에 두면** 모델의 답이 흔들려도 장부 규칙은 흔들리지 않습니다. 같은 응답이면 같은 통과·거절이고, 기록만으로 다시 따져 볼 수 있습니다.
-- **현금 비중을 하드 규칙으로 두면** Claude 책이 OS 문자 그대로의 기계가 됩니다. 사용자는 "무조건 따를 필요 없음, 유동적으로"를 골랐습니다(D7). 규칙 책에도
-  게이트를 걸지 않아(D19), 두 책의 차이가 "Claude의 매크로·현금 판단 + 종목 선택"으로 읽힙니다.
+- **현금 비중을 하드 규칙으로 두면** Claude 계좌가 OS 문자 그대로의 기계가 됩니다. 사용자는 "무조건 따를 필요 없음, 유동적으로"를 골랐습니다(D7). 규칙 계좌에도
+  게이트를 걸지 않아(D19), 두 계좌의 차이가 "Claude의 매크로·현금 판단 + 종목 선택"으로 읽힙니다.
 - **수집 시각만으로 체결하면** 금요일 기준 결정이 주말에 다시 저장된 같은 금요일 종가로 체결됩니다. 결정이 이미 본 가격입니다. 봉 날짜 조건이 이를 막습니다.
 - **출발일 종가를 얼린 이유**: 수정주가 이력은 배당락 뒤 과거 종가를 낮게 다시 씁니다. 리셋할 때마다 다시 읽으면 처음과 수량·현금이 달라지고 배당이 장부에 섞입니다.
 - **신호 기관을 고정하면** 오늘 잘 알려진 승자를 고르는 사후 선택이 됩니다. 공시일 다음 거래일부터 복제해야 45일 시차를 실제로 겪은 성과가 됩니다
@@ -172,7 +172,7 @@
 ## 대안과 버린 이유
 
 - **모델이 도구 호출로 장부를 직접 바꾸기**: 하드 규칙을 프롬프트에 맡기게 됩니다.
-- **Claude 책에 OS 게이트(L0/L1/L2)를 하드 규칙으로**: D7로 버렸습니다. 지표로만 남깁니다. 규칙 책에 게이트를 건 다섯 번째 책(`rules_gated`)은 필요해지면 더합니다
+- **Claude 계좌에 OS 게이트(L0/L1/L2)를 하드 규칙으로**: D7로 버렸습니다. 지표로만 남깁니다. 규칙 계좌에 게이트를 건 다섯 번째 계좌(`rules_gated`)는 필요해지면 더합니다
   (명세 §9, 설계 §14-7).
 - **결정한 날 종가로 체결**: 결정이 본 가격이라 룩어헤드입니다.
 - **`NEXT_OPEN` 체결**: 저장된 시가가 없습니다. 수집기 OHLC가 생기면 2단계입니다.
@@ -184,7 +184,7 @@
 - **실패하면 Haiku로 자동 전환**: D5로 버렸습니다.
 - **스키마를 그대로 보내기**: API가 숫자 `minimum`·`maximum`을 400으로 거절합니다(단계 0, D26).
 - **SDK 재시도 또는 무제한 재시도**: 같은 거래일 결정이 둘이 되고 비용이 늡니다. 재시도는 부른 쪽이 한 번만 합니다.
-- **Claude 책 백테스트**: 모델이 과거를 알고 있어 성과가 아닙니다(D17).
+- **Claude 계좌 백테스트**: 모델이 과거를 알고 있어 성과가 아닙니다(D17).
 - **Claude 호출을 장부 잠금 안에서**: 호출하는 몇 분 동안 스탑 점검이 멈춥니다.
 - **main에 기능 스위치로 넣기**: 사용자가 로컬 브랜치를 골랐습니다(D0).
 
@@ -199,4 +199,4 @@
 - `AI_ENGINES` 허용 목록([0014](0014-aws-demo-ai-report.md))은 `AiService.structured`를 거르지 않습니다. 로컬 전용이라 지금은 상관없지만, main·AWS로 옮기면 먼저 고칩니다.
 - 트랙레코드는 복제 수익률이지 기관의 실제 수익률이 아닙니다. 후보 목록에는 생존 편향이 있고, 순위는 커버리지에 민감합니다(매핑 445개 → 498개에서
   3위·6위가 자리를 바꿈, 설계 §13).
-- 몇 달치 결과로는 통계적 결론을 낼 수 없습니다. Claude 책은 같은 입력에도 답이 달라지며, 재현은 기록으로만 합니다(명세 §6).
+- 몇 달치 결과로는 통계적 결론을 낼 수 없습니다. Claude 계좌는 같은 입력에도 답이 달라지며, 재현은 기록으로만 합니다(명세 §6).

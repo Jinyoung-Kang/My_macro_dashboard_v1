@@ -117,7 +117,7 @@ make down            # 정지
 | 🇰🇷 국내 파생 & 투기세력 | `/krx` | KOSPI200 선물 OI·베이시스·4대 국면·한국판 COT Index, **현물·선물 수급 동조(외국인·기관·개인·금융투자)**, **증시 규모(시가총액·거래대금, 금융위 공식)** |
 | 📡 외국인/기관 수급 레이더 (KRX) | `/radar` | **시장 전체 투자자별 매매대금·기관 세부(토스 공식)**, 투자자별 순매수 상위, **종목별 수급 지속성(며칠째 순매수·연기금·외국인 보유율, 토스 공식)**, **외국인·기관 공통 순매수/순매도**, **순매수 종목의 재무·밸류에이션(DART 부채비율·증가율 + PER·PBR)**, 소스 진단 |
 | 🧭 시장 국면 판정 | `/regime` | 성장·신용 축 × 유동성 축으로 4국면 + 근거 지표, **판정 성과(과거 재현 → 4·13·26주 수익률, 표본 부족 표시)**, **판정 기록(하루 한 건, 고치지 않음)** |
-| 🧪 모의 알고리즘 매매 | `/paper` | **$100k 네 책 — SPY·SPY 60/SHY 40 벤치마크, 13F 규칙 책(대조군), Claude 재량 책(실험군) — 두 책은 하루 한 번 결정하고, 네 책 모두 같은 관측치로 모의 체결**. Claude 책 입력에는 미국 종목 재무(SEC XBRL, 공시일 ≤ 기준일)도 들어감. 탭 7개: 개요 / 기관 선정(13F 공시일 기준 트랙레코드) / 보유·체결 / 결정 로그 / 프레임(투자 OS 판) / 메모 / 설정. 운영자 전용, **로컬 전용 브랜치**(`claude/paper-trading-2026-10`, GitHub에 올리지 않음) |
+| 🧪 모의 알고리즘 매매 | `/paper` | **$100k 네 계좌 — 벤치마크 SPY 계좌·60/40 계좌(SPY 60% · SHY 40%), 13F 규칙 계좌(대조군), Claude 계좌(실험군) — 두 계좌는 하루 한 번 결정하고, 네 계좌 모두 같은 관측치로 모의 체결**. Claude 계좌 입력에는 미국 종목 재무(SEC XBRL, 공시일 ≤ 기준일)도 들어감. 탭 7개: 개요(계좌 카드를 누르면 정의·지금 설정·구성 도넛·최근 체결을 보이는 계좌 상세) / 기관 선정(13F 공시일 기준 트랙레코드) / 보유·체결 / 결정 로그 / 프레임(투자 OS 판) / 메모 / 설정. 운영자 전용, **로컬 전용 브랜치**(`claude/paper-trading-2026-10`, GitHub에 올리지 않음) |
 | 🤖 AI 종합 데이터 분석 | `/ai/report` | 수집 원본을 AI에 넘겨 리포트 생성 (8개 엔진 폴백 — Claude Haiku 5.5부터, 키가 없는 엔진은 건너뜀) |
 | 🔔 알림 | `/alerts` | 국면 전환(3일 확정)·외국인 N일 연속 순매수(시장·관심 종목)·관심 기관 13F 신규 편입을 **화면 알림함**으로. 사이드바·탭 제목에 읽지 않은 수 |
 | 👤 내 계정 · 👥 사용자 관리 | `/account` · `/admin/users` | 비밀번호 변경·로그인한 기기·계정 삭제 / (운영자) 역할·등급 지정·회원 만들기·감사 기록 |
@@ -276,7 +276,7 @@ make test-frontend     # 자가검증 + 훅 테스트(vitest) + 린트 + 빌드(
 | `LS_APP_KEY` / `LS_APP_SECRET` | 수급 레이더 폴백 체인에서 LS 단계만 건너뜀 |
 | `KRX_ID` / `KRX_PW` | pykrx를 비로그인으로 사용 (선택) |
 | AI 키 (`NVIDIA` / `CEREBRAS` / `CLOUDFLARE`) | AI 메뉴만 비활성화. 하나만 있어도 동작 |
-| `ANTHROPIC_API_KEY` | AI 리포트의 Claude 엔진을 건너뜀. 🧪 모의 매매 Claude 책(결정·프레임 제안)은 'API Key 누락'으로 실패하고 규칙 책·벤치마크는 그대로. Claude 책은 `AI_ENGINES` 허용 목록과 상관없이 이 키를 씀 |
+| `ANTHROPIC_API_KEY` | AI 리포트의 Claude 엔진을 건너뜀. 🧪 모의 매매 Claude 계좌(결정·프레임 제안)는 'API Key 누락'으로 실패하고 규칙 계좌·벤치마크는 그대로. Claude 계좌는 `AI_ENGINES` 허용 목록과 상관없이 이 키를 씀 |
 | `PAPER_ENABLED` | 비우면 `true`. `false`면 🧪 모의 매매 정기 작업(리스크 점검·하루 한 번 결정·출발일 종가 얼리기)이 쉼. 화면의 수동 실행은 그대로 |
 | `TRACK_RECORD_FETCH_BUDGET` | 🧪 13F 트랙레코드 수집(`sec_13f_track_record`)이 한 번에 새로 받는 공시 수. 비우면 400(1~2000) |
 | `FUNDAMENTALS_FETCH_BUDGET` | 🧪 미국 종목 재무 수집(`sec_fundamentals`, SEC XBRL companyfacts)이 한 번에 보내는 요청(CIK) 수. 비우면 200(1~600) — 유니버스 약 570곳을 약 36시간에 한 바퀴 |
@@ -396,7 +396,7 @@ ok=; for i in 1 2 3 4 5 6 7 8 9 10; do docker compose -f docker-compose.yml -f c
 | 한국 공휴일 (KRX 휴장) | 한국천문연구원 특일정보 | 공식 (대체공휴일·선거일 포함) |
 | 국내 종목 공식 시세·시가총액 | 금융위원회 주식시세정보 | 공식 (거래소 확정치, **다음 영업일 13시 이후**) |
 | 국내 종목 재무 | 금융감독원 Open DART (사업보고서) | 공식 (연 1회, 직전 사업연도) |
-| 🧪 미국 종목 재무 (모의 매매 Claude 책 패킷) | SEC EDGAR XBRL Company Facts | 공식 (10-Q·10-K·20-F 공시일 기준, 실적 보도자료 8-K 없음) |
+| 🧪 미국 종목 재무 (모의 매매 Claude 계좌 패킷) | SEC EDGAR XBRL Company Facts | 공식 (10-Q·10-K·20-F 공시일 기준, 실적 보도자료 8-K 없음) |
 | **MOVE 지수** | `^TNX` 변동성 역산 | ⚠️ **추정치 — 실제 MOVE 아님** |
 
 > 이 대시보드는 **정보 제공용**입니다. 투자 판단과 그 결과의 책임은 이용자에게
@@ -425,7 +425,7 @@ ok=; for i in 1 2 3 4 5 6 7 8 9 10; do docker compose -f docker-compose.yml -f c
 |---|---|---|
 | Frontend | TypeScript · React 19 · Next.js 16 · Tailwind · Recharts | 18개 메뉴가 서로 다른 표·차트를 쓰므로 컴포넌트 재사용이 크게 이득 |
 | Backend | Java 21 · Spring Boot 4.1 | 모든 계산을 한 계층에 모아 타입과 테스트로 고정 |
-| AI | Claude API (Haiku 5.5, 공식 Java SDK) · NVIDIA · Cerebras · Cloudflare | 수집 원본으로 리포트 생성. 엔진이 실패하면 다음 엔진으로 자동 전환. 모의 매매 Claude 책은 같은 SDK의 구조화 출력으로 Sonnet 5.5(설정에서 Haiku 5.5) 한 모델만 부름(전환 없음) |
+| AI | Claude API (Haiku 5.5, 공식 Java SDK) · NVIDIA · Cerebras · Cloudflare | 수집 원본으로 리포트 생성. 엔진이 실패하면 다음 엔진으로 자동 전환. 모의 매매 Claude 계좌는 같은 SDK의 구조화 출력으로 Sonnet 5.5(설정에서 Haiku 5.5) 한 모델만 부름(전환 없음) |
 | Store | PostgreSQL 16 | 수집기와 API가 다른 프로세스라 파일 공유 불가. JSONB로 저장해 SQL로 질의 |
 | Collector | Python 3.11 · FastAPI · pandas · yfinance · pykrx | 금융 데이터 수집·파싱 라이브러리 생태계 |
 | DevOps | Docker Compose · GitHub Actions | 네 프로세스를 한 명령으로, 세 언어 테스트를 매 푸시마다 |
