@@ -274,7 +274,7 @@ make test-frontend     # 자가검증 + 훅 테스트(vitest) + 린트 + 빌드(
 | `AI_DAILY_LIMIT` | 유료 회원의 하루 AI 리포트 한도(기본 20). 운영자는 한도 없음, 무료 회원은 쓸 수 없음 |
 | `AI_ENGINES` | 쓸 AI 엔진 ID만 쉼표로(예: `anthropic_haiku`). 비우면 키가 있는 엔진을 모두 씀(기본). 모르는 ID면 백엔드가 기동하지 않음([ADR 0014](docs/adr/0014-aws-demo-ai-report.md)) |
 | `FRED_API_KEY` | FRED 웹 CSV로 폴백 (대부분 정상). 🧪 모의 매매 발표·실적 일정(`us_calendar`)의 FRED 발표일(CPI·PCE·고용·GDP)은 대체 경로가 없어 비고 "키 미설정"으로 표시(FOMC 상수·실적일은 그대로) |
-| `SEC_USER_AGENT` | **키가 아니라 본인 이메일입니다.** 없으면 13F 수집(🧪 모의 매매 트랙레코드 포함)과 🧪 모의 매매 미국 종목 재무(`sec_fundamentals`)가 멈추고, 🧪 사건 뉴스(`news_headlines`)의 SEC 보도자료 피드(`sec_press`)도 실패로 남습니다(나머지 6개 피드는 정상) |
+| `SEC_USER_AGENT` | **키가 아니라 본인 이메일입니다.** 없으면 13F 수집(🧪 모의 매매 트랙레코드 포함)과 🧪 모의 매매 미국 종목 재무(`sec_fundamentals`)가 멈추고, 🧪 사건 뉴스(`news_headlines`)의 SEC 보도자료 피드(`sec_press`)도 실패로 남습니다(나머지 7개 피드는 정상) |
 | `KRX_API_KEY` | KRX 선물이 KODEX 200 기반 **추정치**로 폴백 (`isEstimated` 표시) |
 | `KIS_APP_KEY` / `KIS_APP_SECRET` | 장중 수급 가집계와 교차 검증 비활성화 |
 | `LS_APP_KEY` / `LS_APP_SECRET` | 수급 레이더 폴백 체인에서 LS 단계만 건너뜀 |
@@ -409,7 +409,7 @@ ok=; for i in 1 2 3 4 5 6 7 8 9 10; do docker compose -f docker-compose.yml -f c
 | 🧪 미국 종목 재무 (모의 매매 Claude 계좌 패킷) | SEC EDGAR XBRL Company Facts | 공식 (10-Q·10-K·20-F 공시일 기준, 실적 보도자료 8-K 없음) |
 | 🧪 미국 발표·실적 일정 (모의 매매 Claude 계좌 패킷) | FRED release/dates · 연준 FOMC 일정표(상수) · yfinance quoteSummary | 거시는 공식(FRED는 그해 12-31까지만), 실적일은 **비공식 참고** (yfinance 내부 호출, 장 구분은 발표 시각으로 추정) |
 | 🧪 어닝 서프라이즈 (모의 매매 Claude 계좌 패킷) | yfinance quoteSummary `earnings` (내부 호출) | **비공식 참고** — 컨센서스는 Yahoo 집계, 한 번에 최근 4분기만(쌓아서 8분기), 추정치가 0에 가까우면 비율이 부풂(`smallBase`) |
-| 🧪 사건 뉴스 헤드라인 (모의 매매 Claude 계좌 패킷) | RSS — Investing.com 셋 · 연준 · BLS 둘 · SEC (야후는 robots.txt가 막아 제외) | 제목·출처·시각만, 7일 보관. 인베스팅닷컴은 최근 10건만 줘 사이 항목을 놓칠 수 있고 이용 조건 [확인 필요] |
+| 🧪 사건 뉴스 헤드라인 (모의 매매 Claude 계좌 패킷) | RSS — Investing.com 넷 · 연준 · BLS 둘 · SEC (야후는 robots.txt가 막아 제외) | 제목·출처·시각만, 7일 보관. 인베스팅닷컴은 최근 10건만 줘 사이 항목을 놓칠 수 있고 이용 조건 [확인 필요] |
 | **MOVE 지수** | `^TNX` 변동성 역산 | ⚠️ **추정치 — 실제 MOVE 아님** |
 
 > 이 대시보드는 **정보 제공용**입니다. 투자 판단과 그 결과의 책임은 이용자에게

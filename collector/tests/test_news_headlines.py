@@ -3,7 +3,8 @@ tests/test_news_headlines.py
 사건 뉴스 RSS 헤드라인(태스크 news_headlines, 2단계 명세 B1·B2·§4-3·§10) — 모의 매매 Claude 계좌 패킷 11b_events의 원자료.
 
 고정하는 규칙
-  1. 피드는 단계 0에서 고정한 일곱 개(인베스팅닷컴 셋·연준 하나·BLS 둘·SEC 하나). 야후·인베스팅 전체·연준 press_all은 없다.
+  1. 피드는 단계 0에서 고정한 일곱 개에 외환(news_1, 2026-10-25)을 더한 여덟 개(인베스팅닷컴 넷·연준 하나·BLS 둘·SEC 하나).
+     야후·인베스팅 전체·연준 press_all은 없다.
      feedparser는 6.0.14로 고정하고 간접 의존성(feedparser-sgmllib)도 constraints.txt에 있다.
   2. feedparser는 읽기만 한다 — 받은 바이트가 URL·파일 경로 모양이어도 받거나 열지 않는다. RSS 2.0·Atom(BLS)·RFC 822·
      시간대 없는 인베스팅 시각(UTC)·SEC의 앞뒤 공백 제목을 읽는다. 시각이 없는 항목은 건너뛰고 센다. HTML·빈 피드는 그 피드의 실패.
