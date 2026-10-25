@@ -190,7 +190,7 @@
 
 ## 결과와 남은 위험
 
-- 백엔드 기능 모듈 `feature/paper`, 순수 함수 `analytics` 10개, 테이블 `paper_*`(V8~V11), 수집 태스크 3개(`paper_quotes`·`paper_price_history`·
+- 백엔드 기능 모듈 `feature/paper`, 순수 함수 `analytics` 10개, 테이블 `paper_*`(V8~V12), 수집 태스크 3개(`paper_quotes`·`paper_price_history`·
   `sec_13f_track_record`), 경로 29개, `/paper` 일곱 탭을 더했습니다. 단계별 결과·운영 상태는 [설계 §9-1](../specs/2026-10-24-paper-trading-design-plan.md)입니다.
 - **[확인 필요]** 장중 저장본의 마지막 봉이 그날 지연 시세인지 아직 재지 않았습니다. 10-26(월) KST 22:30 뒤 `paper_job_runs`(job `risk`)의 `detail`로 확인합니다
   (설계 §13 첫 행). 장중 봉이 없어도 체결 조건 2 때문에 `NEXT_OBSERVATION`이 다음 확정 종가 체결이 될 뿐, 룩어헤드는 생기지 않습니다.
