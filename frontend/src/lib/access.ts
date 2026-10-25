@@ -9,7 +9,7 @@ import type { SessionResponse, SessionUser } from "./types";
 
 /**
  * 운영자만 보는 메뉴 — 수집 실행·내부 상태(/api/status*)와 키 설정 진단·유료 AI 시험 호출을 부르는 화면,
- * 그리고 🧪 모의 알고리즘 매매(/api/paper/* 전부 운영자 전용, 로컬 전용 기능).
+ * 그리고 🧪 모의 알고리즘 매매(/api/paper/* 전부 운영자 전용).
  */
 export const OWNER_ONLY_MENUS = ["/status", "/connections", "/admin/users", "/paper"] as const;
 

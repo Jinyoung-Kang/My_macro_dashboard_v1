@@ -1,6 +1,6 @@
 """
 app/tasks/fundamentals.py
-weekly 그룹 — 모의 매매(로컬 전용 기능) Claude 책 패킷의 미국 종목 재무(SEC XBRL Company Facts, 명세 D28·설계 §4-5).
+weekly 그룹 — 모의 매매(운영자 전용 기능) Claude 책 패킷의 미국 종목 재무(SEC XBRL Company Facts, 명세 D28·설계 §4-5).
 
 태스크는 "받아서 저장"만 합니다. 시점(filed ≤ 기준일)·TTM·지표 계산과 패킷 섹션 ``8b_fundamentals``는 백엔드가 이
 저장본을 읽어 합니다(ADR 0008 — observations·snapshots는 수집기만 씀). 규칙 책·검증기는 이 자료를 읽지 않습니다(D15 동결 대조군).

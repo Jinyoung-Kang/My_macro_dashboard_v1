@@ -168,7 +168,7 @@ export const endpoints = {
     test: (engineId: string, prompt: string) => withQuery("/api/ai/test", { engineId, prompt }),
   },
 
-  // 🧪 모의 알고리즘 매매(운영자, 로컬 전용). code는 책 코드(rules · claude · bench_spy · bench_mix).
+  // 🧪 모의 알고리즘 매매(운영자 전용). code는 책 코드(rules · claude · bench_spy · bench_mix).
   paper: {
     overview: "/api/paper/overview",
     status: "/api/paper/status",

@@ -61,7 +61,7 @@ import type {
 } from "./types";
 
 /**
- * 이 화면 숫자의 출처. 다른 화면은 lib/sources.ts에 모으지만, 모의 매매는 로컬 전용 기능이라 이 파일에 둡니다
+ * 이 화면 숫자의 출처. 다른 화면은 lib/sources.ts에 모으지만, 모의 매매는 운영자 전용 실험 기능이라(다른 화면과 출처가 겹치지 않음) 이 파일에 둡니다
  * (sources.ts로 옮길지는 단계 4 마무리에서 정함).
  */
 export const PAPER_SOURCES = {

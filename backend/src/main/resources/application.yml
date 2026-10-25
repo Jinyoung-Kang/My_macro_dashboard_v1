@@ -96,7 +96,7 @@ dashboard:
   frontend-origin: ${FRONTEND_ORIGIN:http://localhost:3000}
   frontend-port: ${FRONTEND_PORT:3000}
 
-  # 🧪 모의 알고리즘 매매(로컬 전용, 명세 docs/specs/2026-10-24-paper-trading-spec.md). 슬리피지·스탑 비율 같은 값은 여기가 아니라
+  # 🧪 모의 알고리즘 매매(운영자 전용, 명세 docs/specs/2026-10-24-paper-trading-spec.md). 슬리피지·스탑 비율 같은 값은 여기가 아니라
   # DB 설정 한 행(paper_settings)이고, 여기는 재기동해야 바뀌는 값만 둡니다. 출발일이 거래일이 아니거나 현금이 0 이하면 기동하지 않습니다.
   paper:
     enabled: ${PAPER_ENABLED:true}          # false면 정기 작업(리스크 점검·결정·출발일 종가 얼리기)이 일하지 않음(통합 테스트는 false). 수동 실행은 그대로

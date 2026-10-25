@@ -12,7 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * 🧪 모의 알고리즘 매매(운영자 전용·로컬 전용) — 장부 조회와 관리 버튼.
+ * 🧪 모의 알고리즘 매매(운영자 전용) — 장부 조회와 관리 버튼.
  *
  * <pre>
  *  GET  /api/paper/overview                       네 책 요약·순자산 곡선·관측치 신선도·한계 문구·작업 기록

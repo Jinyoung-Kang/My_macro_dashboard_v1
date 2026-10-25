@@ -45,7 +45,7 @@ SNAP_EARNINGS_SURPRISE_STATUS = "us.earnings_surprise.status"
 # 요청은 잘라 씁니다 (13F에서 q1을 q8에서 유도하는 것과 같은 방식).
 VOLATILITY_STORE_PERIOD = "5y"
 
-# 모의 매매(로컬 전용 기능)의 가격 기간. 관측치(paper.quotes)는 장부가 마지막 봉을 체결·평가에 쓰고, 앞부분은 10년 이력
+# 모의 매매(운영자 전용 기능)의 가격 기간. 관측치(paper.quotes)는 장부가 마지막 봉을 체결·평가에 쓰고, 앞부분은 10년 이력
 # (12시간 주기)에 아직 들어오지 않은 최근 종가를 메웁니다 — 1시간마다 받으므로 짧게 둡니다. 10년 이력은 트랙레코드 7년 창 + 여유.
 # 기존 equity.price_history(5년·138종목)를 10년·유니버스 전체로 키우지 않은 이유는 docs/specs/2026-10-24-paper-trading-spec.md D23
 # (한 저장본이 16MB 기준·백엔드 힙을 넘음).

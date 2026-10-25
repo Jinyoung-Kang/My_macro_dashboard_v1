@@ -1,6 +1,6 @@
 """
 tests/test_paper_tasks.py
-모의 알고리즘 매매(로컬 전용 기능)의 가격 수집 태스크 (PostgreSQL 필요 — 유니버스 검사는 DB 없이).
+모의 알고리즘 매매(운영자 전용 기능)의 가격 수집 태스크 (PostgreSQL 필요 — 유니버스 검사는 DB 없이).
 
 고정하는 규칙
   1. paper.quotes 저장본 모양 {"period", "tickers": {T: {dates, close}}, "universe"} — 백엔드 PaperMarketData가 이 모양을 읽습니다.

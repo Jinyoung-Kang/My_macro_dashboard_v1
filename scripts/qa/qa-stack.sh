@@ -7,7 +7,7 @@
 #   bash scripts/qa/qa-stack.sh ps|logs [S]|exec S …|compose …
 #   bash scripts/qa/qa-stack.sh api /api/…    QA 백엔드에 로그인해 한 번 호출(비밀번호는 출력하지 않음)
 #   bash scripts/qa/qa-stack.sh proxy [mode]  차단 프록시 모드 조회·변경 (block | hang | slow:N)
-#   bash scripts/qa/qa-stack.sh down          컨테이너·볼륨 삭제 (운영 볼륨 local_macro_dashboard_v3_*는 그대로)
+#   bash scripts/qa/qa-stack.sh down          컨테이너·볼륨 삭제 (운영 볼륨 my_macro_dashboard_v1_*는 그대로)
 #   QA_NO_LOGIN=1 bash scripts/qa/qa-stack.sh up   로그인 없는 로컬 실행을 시험(기본은 로그인, ADR 0016)
 #
 # compose 프로젝트 이름은 macrodash_qa, 포트는 13000(화면)·18080(API)·18000(수집기)·15432(DB)·18888(프록시).
