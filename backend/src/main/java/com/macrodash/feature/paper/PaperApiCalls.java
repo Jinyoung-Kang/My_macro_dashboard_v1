@@ -22,7 +22,7 @@ import java.util.Optional;
  * 상한을 넘습니다.
  *
  * <p><b>순서</b>: 호출 전에 {@link #reserve}(검사와 증가가 한 문장 — 동시에 눌러도 상한을 넘지 않음), 부른 뒤 {@link #record}. 키가
- * 없어 요청을 보내지 않았으면({@code NO_KEY}) {@link #record}가 잡은 호출을 돌려놓고, 요청을 보내기 전에 예외로 멈췄으면 부른 쪽이
+ * 없거나 허용 목록 밖이라 요청을 보내지 않았으면({@code NO_KEY}·{@code NOT_ALLOWED}) {@link #record}가 잡은 호출을 돌려놓고, 요청을 보내기 전에 예외로 멈췄으면 부른 쪽이
  * {@link #release}합니다. 실패한 호출(429·5xx·거절·형식 오류)도 과금됐을 수 있어 호출 수를 그대로 둡니다.
  *
  * <p><b>추정 비용</b>: 설정의 단가({@code pricing.sonnet.*}·{@code pricing.haiku.*}, 달러/100만 토큰)로
@@ -172,7 +172,7 @@ public class PaperApiCalls {
     }
 
     /**
-     * 부른 결과를 그날 사용량에 남깁니다 — 키가 없어 요청을 보내지 않았으면({@code NO_KEY}) 잡은 호출을 돌려놓고, 아니면 응답이
+     * 부른 결과를 그날 사용량에 남깁니다 — 요청을 보내지 않았으면({@code NO_KEY}·{@code NOT_ALLOWED}) 잡은 호출을 돌려놓고, 아니면 응답이
      * 알려 준 토큰과 추정 비용(클래스 설명)을 더합니다. 기록 실패는 로그만 남깁니다.
      *
      * @param model 부른 모델 ID(단가를 고르는 데 씀)
@@ -181,7 +181,7 @@ public class PaperApiCalls {
         if (r == null) {
             return;
         }
-        if ("NO_KEY".equals(r.errorKind())) {
+        if ("NO_KEY".equals(r.errorKind()) || "NOT_ALLOWED".equals(r.errorKind())) {
             release(kstDay);
             return;
         }

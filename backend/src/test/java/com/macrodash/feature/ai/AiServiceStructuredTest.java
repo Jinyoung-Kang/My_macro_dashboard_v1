@@ -5,7 +5,6 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -370,7 +369,6 @@ class AiServiceStructuredTest {
     }
 
     @Test
-    @Disabled("재현(설계 계획서 남은 위험 AI_ENGINES): 허용 목록이 structured를 거르지 않아 목록 밖 모델도 부른다 — 다음 커밋에서 고침")
     @DisplayName("허용 목록(AI_ENGINES)이 있으면 목록 엔진의 모델만 부른다 — 밖이면 NOT_ALLOWED, 키가 없어도 이쪽이 먼저, 나가지 않고 과금 없음")
     void allowListLimitsModels() throws Exception {
         String base = startServer(200, message(textBlock(ANSWER), "end_turn", "", USAGE));

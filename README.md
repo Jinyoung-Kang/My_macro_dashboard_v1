@@ -272,7 +272,7 @@ make test-frontend     # 자가검증 + 훅 테스트(vitest) + 린트 + 빌드(
 | `APP_PASSWORD` | 처음 운영자 계정의 비밀번호. `make setup`이 무작위로 만듭니다. 비었거나 `admin1234@`면 계정을 만들지 않음 |
 | `MAIL_HOST`·`MAIL_PORT`·`MAIL_USERNAME`·`MAIL_PASSWORD` | 계정 메일(가입 인증·비밀번호 재설정). 없으면 가입·재설정만 꺼짐(운영자 로그인·나머지는 정상) |
 | `AI_DAILY_LIMIT` | 유료 회원의 하루 AI 리포트 한도(기본 20). 운영자는 한도 없음, 무료 회원은 쓸 수 없음 |
-| `AI_ENGINES` | 쓸 AI 엔진 ID만 쉼표로(예: `anthropic_haiku`). 비우면 키가 있는 엔진을 모두 씀(기본). 모르는 ID면 백엔드가 기동하지 않음([ADR 0014](docs/adr/0014-aws-demo-ai-report.md)) |
+| `AI_ENGINES` | 쓸 AI 엔진 ID만 쉼표로(예: `anthropic_haiku`). 비우면 키가 있는 엔진을 모두 씀(기본). 모르는 ID면 백엔드가 기동하지 않음([ADR 0014](docs/adr/0014-aws-demo-ai-report.md)). 🧪 모의 매매 Claude 계좌도 이 목록을 모델 단위로 따름 — 정하면 목록 안 Anthropic 엔진의 모델만(예: `anthropic_haiku`면 Haiku만, Sonnet 설정은 '허용 목록 밖'으로 그날 주문 없음) |
 | `FRED_API_KEY` | FRED 웹 CSV로 폴백 (대부분 정상). 🧪 모의 매매 발표·실적 일정(`us_calendar`)의 FRED 발표일(CPI·PCE·고용·GDP)은 대체 경로가 없어 비고 "키 미설정"으로 표시(FOMC 상수·실적일은 그대로) |
 | `SEC_USER_AGENT` | **키가 아니라 본인 이메일입니다.** 없으면 13F 수집(🧪 모의 매매 트랙레코드 포함)과 🧪 모의 매매 미국 종목 재무(`sec_fundamentals`)가 멈추고, 🧪 사건 뉴스(`news_headlines`)의 SEC 보도자료 피드(`sec_press`)도 실패로 남습니다(나머지 7개 피드는 정상) |
 | `KRX_API_KEY` | KRX 선물이 KODEX 200 기반 **추정치**로 폴백 (`isEstimated` 표시) |
@@ -280,7 +280,7 @@ make test-frontend     # 자가검증 + 훅 테스트(vitest) + 린트 + 빌드(
 | `LS_APP_KEY` / `LS_APP_SECRET` | 수급 레이더 폴백 체인에서 LS 단계만 건너뜀 |
 | `KRX_ID` / `KRX_PW` | pykrx를 비로그인으로 사용 (선택) |
 | AI 키 (`NVIDIA` / `CEREBRAS` / `CLOUDFLARE`) | AI 메뉴만 비활성화. 하나만 있어도 동작 |
-| `ANTHROPIC_API_KEY` | AI 리포트의 Claude 엔진을 건너뜀. 🧪 모의 매매 Claude 계좌(결정·프레임 제안·주간 복기)는 'API Key 누락'으로 실패하고 규칙 계좌·벤치마크는 그대로. Claude 계좌는 `AI_ENGINES` 허용 목록과 상관없이 이 키를 씀 |
+| `ANTHROPIC_API_KEY` | AI 리포트의 Claude 엔진을 건너뜀. 🧪 모의 매매 Claude 계좌(결정·프레임 제안·주간 복기)는 'API Key 누락'으로 실패하고 규칙 계좌·벤치마크는 그대로. Claude 계좌도 이 키를 씀(`AI_ENGINES`를 정했으면 그 목록의 모델만) |
 | `PAPER_ENABLED` | 비우면 `true`. `false`면 🧪 모의 매매 정기 작업(리스크 점검·하루 한 번 결정·출발일 종가 얼리기·주간 복기)이 쉼. 화면의 수동 실행은 그대로 |
 | `TRACK_RECORD_FETCH_BUDGET` | 🧪 13F 트랙레코드 수집(`sec_13f_track_record`)이 한 번에 새로 받는 공시 수. 비우면 400(1~2000) |
 | `FUNDAMENTALS_FETCH_BUDGET` | 🧪 미국 종목 재무 수집(`sec_fundamentals`, SEC XBRL companyfacts)이 한 번에 보내는 요청(CIK) 수. 비우면 200(1~600) — 유니버스 약 570곳을 약 36시간에 한 바퀴 |

@@ -201,7 +201,9 @@
 - 재무제표는 D28(2026-10-25)로 Claude 계좌 패킷 `8b_fundamentals`에 들어갔습니다(SEC XBRL Company Facts, 공시일 ≤ 기준일 — 설계 §4-5).
   사용자 OS 엔진 E3·E4·E5·E8-R4가 묻는 TTM·마진·FCF·ROE를 싣습니다. 재무로 거는 **필터**(검증기·규칙 계좌)는 동결 대조군을 바꾸지 않으려고 하지
   않습니다(설계 §14-1).
-- `AI_ENGINES` 허용 목록([0014](0014-aws-demo-ai-report.md))은 `AiService.structured`를 거르지 않습니다. 지금은 로컬 스택만 돌아 상관없지만, AWS 개인용 배포 전에 먼저 고칩니다.
+- ~~`AI_ENGINES` 허용 목록([0014](0014-aws-demo-ai-report.md))은 `AiService.structured`를 거르지 않습니다.~~ → 2026-10-26 고침: 목록이 있으면
+  목록 안 Anthropic 엔진의 모델만 부르고, 아니면 나가지 않고 `NOT_ALLOWED`(잡은 호출은 되돌림 — `AiServiceStructuredTest.allowListLimitsModels`·
+  `PaperApiCallsTest.notAllowedReleasesCall`). 목록이 비면 제한 없음(로컬·개인 배포 기본).
 - 트랙레코드는 복제 수익률이지 기관의 실제 수익률이 아닙니다. 후보 목록에는 생존 편향이 있고, 순위는 커버리지에 민감합니다(매핑 445개 → 498개에서
   3위·6위가 자리를 바꿈, 설계 §13).
 - 몇 달치 결과로는 통계적 결론을 낼 수 없습니다. Claude 계좌는 같은 입력에도 답이 달라지며, 재현은 기록으로만 합니다(명세 §6).

@@ -58,7 +58,8 @@ import java.util.regex.Pattern;
  *   <li>응답이 한국어가 아니면 번역 전용 모델로 한 번 더 호출</li>
  *   <li>키가 없는 엔진은 <b>조용히 건너뛰지 않고</b> 이유를 남깁니다</li>
  *   <li>배포마다 쓸 엔진을 허용 목록({@code AI_ENGINES})으로 좁힐 수 있습니다(비면 전부 — 기본·로컬, ADR 0014)</li>
- *   <li>모의 매매 Claude 책은 위 경로와 따로 {@link #structured}(스키마로 모양을 강제한 Claude 호출 한 번)를 씁니다</li>
+ *   <li>모의 매매 Claude 책은 위 경로와 따로 {@link #structured}(스키마로 모양을 강제한 Claude 호출 한 번)를 씁니다 — 허용 목록은
+ *       모델 단위로 따릅니다(목록 안 Anthropic 엔진의 모델만)</li>
  * </ul>
  *
  * <p>AI는 <b>수집된 데이터만</b> 근거로 삼습니다. 리포트 프롬프트에는 대시보드
@@ -944,8 +945,8 @@ public class AiService {
      * @param text             응답의 텍스트 블록을 이어 붙인 것(사고 블록 제외). 받은 것이 없으면 null — 실패여도 받은 텍스트는
      *                         남깁니다(출력 한도로 잘린 JSON 등, 결정 기록의 원문용)
      * @param stopReason       API의 {@code stop_reason} 원문(예: end_turn·refusal·max_tokens). 응답이 없으면 null
-     * @param errorKind        NO_KEY · UNAUTHORIZED · FORBIDDEN · NOT_FOUND · RATE_LIMIT · HTTP · IO · TIMEOUT · REFUSAL ·
-     *                         EMPTY · MAX_TOKENS. 성공이면 null
+     * @param errorKind        NOT_ALLOWED · NO_KEY · UNAUTHORIZED · FORBIDDEN · NOT_FOUND · RATE_LIMIT · HTTP · IO · TIMEOUT ·
+     *                         REFUSAL · EMPTY · MAX_TOKENS. 성공이면 null. NOT_ALLOWED·NO_KEY는 요청을 보내지 않은 것
      * @param error            사람이 읽는 실패 사유(한국어, 키·요청 주소 없음). 성공이면 null
      * @param charged          모델에 닿아 과금됐을 수 있는가(실패여도 true일 수 있음, QA-021)
      * @param inputTokens      입력 토큰. 응답이 없으면 null(0으로 채우지 않음)
@@ -960,10 +961,20 @@ public class AiService {
     }
 
     /**
+     * 구조화 출력이 이 모델을 불러도 되는가 — 허용 목록이 없으면 늘 그렇고, 있으면 목록 안 Anthropic 엔진의 모델과 같을 때만
+     * (예: {@code AI_ENGINES=anthropic_haiku}면 Haiku만, Sonnet은 안 됨).
+     */
+    boolean structuredModelAllowed(String model) {
+        return allowed == null || ENGINES.stream().anyMatch(engine -> allowed.contains(engine.id())
+                && "anthropic".equals(engine.provider()) && model.equals(engine.model()));
+    }
+
+    /**
      * 구조화 출력 호출 — 스키마로 응답 모양을 강제하는 Claude 호출 한 번(설계 §0-4·§5-1).
      *
-     * <p>리포트 경로와 따로입니다: 엔진 레지스트리·자동 탐색(폴오버)·번역·허용 목록을 타지 않고, 부른 쪽이 고른 모델만
-     * <b>한 번</b> 부릅니다. 거절·오류 때 다른 모델로 넘어가지 않습니다(D5) — 서버 쪽 대체 모델({@code fallbacks})도
+     * <p>리포트 경로와 따로입니다: 엔진 레지스트리·자동 탐색(폴오버)·번역을 타지 않고, 부른 쪽이 고른 모델만
+     * <b>한 번</b> 부릅니다. 허용 목록({@code AI_ENGINES})이 있는 배포에서는 목록 안 Anthropic 엔진의 모델일 때만 부르고, 아니면
+     * 나가지 않고 {@code NOT_ALLOWED}입니다(키 검사보다 먼저 — 엔진 목록 화면과 같은 순서). 목록이 비면 제한 없음(기본·로컬). 거절·오류 때 다른 모델로 넘어가지 않습니다(D5) — 서버 쪽 대체 모델({@code fallbacks})도
      * 보내지 않고 SDK 재시도도 꺼져 있어, 재시도 정책(같은 거래일 한 번, C7)은 부른 쪽이 정합니다.
      * 클라이언트·키·오류 분류·로그(키·요청 주소 가림)는 리포트와 같은 것을 씁니다.
      *
@@ -999,6 +1010,11 @@ public class AiService {
         }
         OutputConfig.Effort level = effortOf(effort);
 
+        if (!structuredModelAllowed(model)) {
+            return new StructuredResult(false, null, null, "NOT_ALLOWED",
+                    ("이 배포의 AI_ENGINES 허용 목록에 %s 모델이 없어 부르지 않았습니다 — 목록을 비우거나 이 모델의 엔진을 넣고 "
+                            + "make up 하세요(ADR 0014·0018).").formatted(model), false, null, null, null, null, 0L);
+        }
         if (anthropicKey == null || anthropicKey.isBlank()) {
             return new StructuredResult(false, null, null, "NO_KEY",
                     "Claude API Key 누락 — .env에 ANTHROPIC_API_KEY를 넣고 make up 하세요.", false,

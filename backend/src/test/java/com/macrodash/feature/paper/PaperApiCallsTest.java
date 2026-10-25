@@ -3,7 +3,6 @@ package com.macrodash.feature.paper;
 import com.macrodash.feature.ai.AiService;
 import com.macrodash.store.PaperStore.ApiUsage;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
@@ -108,7 +107,6 @@ class PaperApiCallsTest {
     }
 
     @Test
-    @Disabled("재현(설계 계획서 남은 위험 AI_ENGINES): 허용 목록 밖이라 보내지 않은 호출(NOT_ALLOWED)이 상한을 깎는다 — 다음 커밋에서 고침")
     @DisplayName("기록: 허용 목록 밖(NOT_ALLOWED)도 보내지 않은 호출이라 잡은 호출을 되돌린다")
     void notAllowedReleasesCall() {
         calls.reserve(DAY, 6);
