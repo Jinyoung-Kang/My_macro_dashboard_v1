@@ -499,7 +499,7 @@ describe("성과 화면의 판 경계(F5)", () => {
     ], ["2026-10-23", "2026-10-26"]);
     expect(view.markers).toEqual([{ x: "2026-10-23", label: "프레임 v0" }]);
     expect(view.text).toBe(
-      "프레임 경계(Claude 책 결정이 그 판을 처음 쓴 거래일) — 2026-10-23부터 임시 v0 · 2026-11-02부터 v1(그날 순자산 기록 없음 — 선 없음)",
+      "프레임 경계(Claude 계좌 결정이 그 판을 처음 쓴 거래일) — 2026-10-23부터 임시 v0 · 2026-11-02부터 v1(그날 순자산 기록 없음 — 선 없음)",
     );
     expect(frameworkBoundaryView(undefined, [])).toEqual({ markers: [], text: null });
     expect(frameworkBoundaryView([], ["2026-10-23"])).toEqual({ markers: [], text: null });

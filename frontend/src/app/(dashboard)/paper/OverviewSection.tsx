@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MultiLineSeries, SERIES_COLORS } from "@/components/charts";
 import { Banner, Button, Card, Freshness, Table } from "@/components/ui";
 import { useApi } from "@/hooks/useApi";
@@ -10,6 +10,7 @@ import { apiPost } from "@/lib/api";
 import { endpoints } from "@/lib/endpoints";
 import { deltaColor, EMPTY, formatKst } from "@/lib/format";
 import {
+  accountProfile,
   apiUsageView,
   type Badge,
   bookCard,
@@ -41,6 +42,7 @@ import type {
   PaperRiskResult,
   PaperStatusResponse,
 } from "@/lib/types";
+import { AccountDetailPanel, accountDetailTitleId } from "./AccountDetailPanel";
 import { ClaudeStartSection } from "./ClaudeStartSection";
 import { GateIndicatorBody } from "./GateIndicatorBody";
 
@@ -62,16 +64,29 @@ const SPARE_COLORS = ["#A371F7", "#39C5CF", "#DB6D28"];
  */
 const EXPOSURE_COLORS: Record<string, string> = { target: SERIES_COLORS.orange, actual: SERIES_COLORS.blue };
 
+/** 계좌 상세 패널의 id — 카드 단추의 aria-controls가 가리킵니다(한 번에 하나만 열림). */
+const ACCOUNT_PANEL_ID = "paper-account-detail";
+const accountToggleId = (code: string) => `paper-account-toggle-${code}`;
+
 /**
- * 개요 탭 — 책 카드 네 개, 순자산 곡선(프레임 판 경계 세로선), Claude 노출 추이(목표 vs 실제), Claude 호출 사용량(오늘·이달·추정 비용 —
+ * 개요 탭 — 책 카드 네 개(누르면 카드 묶음 아래에 그 계좌의 상세 — 정의·핵심 숫자·구성 도넛·최근 체결, AccountDetailPanel), 순자산 곡선(프레임 판 경계 세로선), Claude 노출 추이(목표 vs 실제), Claude 호출 사용량(오늘·이달·추정 비용 —
  * 상태 응답), 신호 기관(최근
  * 선정), OS 게이트 지표(참고), 장부 관측치 신선도(와 재무 수집 범위 한 줄 — 상태 응답, D28), 작업 기록. 초기화 전이거나 벤치마크가
  * 아직 사후 체결을 기다리면(pendingBackfill) "초기화" 버튼, 규칙 책이 시작 전이면
- * "규칙 책 시작" 버튼, Claude 책이 시작 전이면 "미리보기"·"Claude 재량 책 시작" 버튼(ClaudeStartSection).
+ * "규칙 계좌 시작" 버튼, Claude 계좌가 시작 전이면 "미리보기"·"Claude 계좌 시작" 버튼(ClaudeStartSection).
  *
  * 숫자는 개요 응답 그대로 그립니다. 버튼이 성공하면 onChanged(개요 다시 읽기)를 불러 카드·곡선을 새 장부로 바꿉니다.
  */
-export function OverviewSection({ overview, onChanged }: { overview: PaperOverviewResponse; onChanged: () => void }) {
+export function OverviewSection({
+  overview,
+  onChanged,
+  onOpenTab,
+}: {
+  overview: PaperOverviewResponse;
+  onChanged: () => void;
+  /** 상세 패널의 "보유·체결 탭에서 전체 보기"·"결정 로그 보기" — 그 탭으로 바꾸며 이 계좌를 미리 고릅니다(page.tsx). */
+  onOpenTab?: (tab: "holdings" | "decisions", code: string) => void;
+}) {
   // 정기 작업이 꺼져 있는지·설정 버전·Claude 호출 사용량·재무 수집 범위는 개요 응답에 없어 상태 응답에서 읽습니다(실패해도 개요는 그대로).
   const status = useApi<PaperStatusResponse>(endpoints.paper.status, 60_000);
 
@@ -82,10 +97,23 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
   // 규칙 책 시작(초기 결정) — 선정·트랙레코드 계산과 사후 체결을 한 번에 하므로 오래 걸릴 수 있어 경과 초를 셉니다.
   const start = useAsyncAction(
     (book: string) => apiPost<PaperInitialDecisionResult>(endpoints.paper.runInitialDecision, { book }),
-    "규칙 책을 시작하지 못했습니다.",
+    "규칙 계좌를 시작하지 못했습니다.",
   );
   const startElapsed = useElapsedSeconds(start.busy);
   const [confirmingStart, setConfirmingStart] = useState(false);
+  // 상세를 연 계좌 코드(한 번에 하나). 이 화면은 주소 쿼리를 쓰지 않아 화면 상태로만 둡니다 — 개요를 다시 읽어도 그대로입니다.
+  const [selected, setSelected] = useState<string | null>(null);
+  // 패널을 열면 초점을 패널 제목으로 옮깁니다 — 화면만 패널로 내려가고 초점이 카드 단추에 남으면 다음 Tab이 다른 카드 단추를 돌며
+  // 화면을 다시 끌어올리고, Esc(패널 안에서만 들음)도 듣지 않았습니다. 닫으면 closeAccount가 그 카드 단추로 돌려보냅니다.
+  // 좁은 화면에서는 카드가 한 줄씩이라 패널이 맨 아래 카드 밑에 열립니다 — 연 패널이 보이도록 가까운 쪽으로만 스크롤하고,
+  // 움직임 줄이기(prefers-reduced-motion)를 켠 사람에게는 부드러운 스크롤 대신 바로 옮깁니다(브라우저가 스크립트 스크롤까지 바꿔
+  // 주지는 않음).
+  useEffect(() => {
+    if (!selected) return;
+    document.getElementById(accountDetailTitleId(ACCOUNT_PANEL_ID))?.focus({ preventScroll: true });
+    const reduceMotion = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.getElementById(ACCOUNT_PANEL_ID)?.scrollIntoView?.({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
+  }, [selected]);
 
   const runInit = async () => {
     if (await init.run()) onChanged();
@@ -101,6 +129,14 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
   };
 
   const books = overview.books ?? [];
+  const selectedBook = books.find((book) => book.code === selected) ?? null;
+  const toggleAccount = (code: string) => setSelected((current) => (current === code ? null : code));
+  const closeAccount = () => {
+    const code = selected;
+    setSelected(null);
+    // 키보드로 연 사람이 닫은 뒤 길을 잃지 않게 그 카드의 단추로 돌아갑니다.
+    if (code) document.getElementById(accountToggleId(code))?.focus();
+  };
   const chart = navChart(overview.navSeries, books);
   // 하루 움직임이 1달러 미만이면 정수 눈금이 같은 숫자로 반복됩니다 — 축을 조금 펼치고 자릿수를 간격에 맞춥니다.
   const navY = navAxis(chart);
@@ -181,7 +217,7 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
       <ClaudeStartSection overview={overview} onChanged={onChanged} />
 
       <Card
-        title="책"
+        title="계좌"
         subtitle={`순자산·수익률·노출은 마지막 관측치 기준 · 통계는 거래일별 순자산 기준${
           status.data?.settingsVersion ? ` · 설정 v${status.data.settingsVersion}` : ""
         }`}
@@ -197,19 +233,37 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
         {risk.error && <div className="mb-3"><Banner tone="warn">{risk.error}</Banner></div>}
         {risk.result && <div className="mb-3"><RiskResult result={risk.result} /></div>}
         {books.length === 0 ? (
-          <p className="text-sm text-muted">책이 없습니다. 초기화하면 생깁니다.</p>
+          <p className="text-sm text-muted">계좌가 없습니다. 초기화하면 생깁니다.</p>
         ) : (
-          <div className="grid gap-3 md:grid-cols-2">
-            {books.map((book) => (
-              <BookCard key={book.code} book={book} books={books} />
-            ))}
-          </div>
+          <>
+            <div className="grid gap-3 md:grid-cols-2">
+              {books.map((book) => (
+                <BookCard
+                  key={book.code}
+                  book={book}
+                  books={books}
+                  selected={book.code === selected}
+                  onToggle={() => toggleAccount(book.code)}
+                />
+              ))}
+            </div>
+            {selectedBook && (
+              <AccountDetailPanel
+                key={selectedBook.code}
+                id={ACCOUNT_PANEL_ID}
+                book={selectedBook}
+                books={books}
+                onClose={closeAccount}
+                onOpenTab={onOpenTab}
+              />
+            )}
+          </>
         )}
       </Card>
 
       <Card
         title="순자산 곡선"
-        subtitle="거래일별 순자산(달러). 그날 기록이 없는 책은 선을 끊어 그립니다 — 시작 전인 책은 선이 없습니다."
+        subtitle="거래일별 순자산(달러). 그날 기록이 없는 계좌는 선을 끊어 그립니다 — 시작 전인 계좌는 선이 없습니다."
         source={boundaries.text ? `${PAPER_SOURCES.ledger} · 프레임 경계는 ${PAPER_SOURCES.boundaries}` : PAPER_SOURCES.ledger}
       >
         <MultiLineSeries
@@ -231,7 +285,7 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
         >
           {exposure.rows.length === 0 ? (
             <p className="text-sm text-muted">
-              아직 Claude 결정 기록이 없습니다 — Claude 책을 시작하면 결정마다 정한 목표 노출과 그 거래일의 실제 노출을 그립니다.
+              아직 Claude 결정 기록이 없습니다 — Claude 계좌를 시작하면 결정마다 정한 목표 노출과 그 거래일의 실제 노출을 그립니다.
             </p>
           ) : (
             <>
@@ -264,14 +318,14 @@ export function OverviewSection({ overview, onChanged }: { overview: PaperOvervi
         <Card
           title="신호 기관"
           subtitle={selection
-            ? `${selection.asOfDate} 선정 — 규칙 책이 두 그룹을 합친 신호 풀의 13F 변화를 신호로 씁니다(다음 재선정일까지)`
-            : "규칙 책이 13F 신호를 읽는 기관(그룹 A: 후보 트랙레코드 상위 · 그룹 B: 기존 13F 메뉴 최근 상위)"}
+            ? `${selection.asOfDate} 선정 — 규칙 계좌가 두 그룹을 합친 신호 풀의 13F 변화를 신호로 씁니다(다음 재선정일까지)`
+            : "규칙 계좌가 13F 신호를 읽는 기관(그룹 A: 후보 트랙레코드 상위 · 그룹 B: 기존 13F 메뉴 최근 상위)"}
           source={PAPER_SOURCES.selection}
         >
           {!selection ? (
-            <p className="text-sm text-muted">아직 기관 선정이 없습니다 — 규칙 책을 시작하면 출발일 기준으로 선정하고, 그 뒤는 재선정일마다 다시 뽑습니다.</p>
+            <p className="text-sm text-muted">아직 기관 선정이 없습니다 — 규칙 계좌를 시작하면 출발일 기준으로 선정하고, 그 뒤는 재선정일마다 다시 뽑습니다.</p>
           ) : selection.groupA.length === 0 && selection.pool.length === 0 ? (
-            <p className="text-sm text-muted">선정이 비어 있습니다 — 자격 있는 기관이 없었습니다(규칙 책은 매수 없이 SHY만 듭니다).</p>
+            <p className="text-sm text-muted">선정이 비어 있습니다 — 자격 있는 기관이 없었습니다(규칙 계좌는 매수 없이 SHY만 듭니다).</p>
           ) : (
             <div className="flex flex-col gap-4">
               <div className="grid gap-3 sm:grid-cols-2">
@@ -433,17 +487,63 @@ function GroupBadge({ badge }: { badge: Badge }) {
   );
 }
 
-/** 책 하나의 카드 — 상태 배지, 순자산·수익률·노출·현금, 통계. */
-function BookCard({ book, books }: { book: PaperBookSummary; books: readonly PaperBookSummary[] }) {
+/**
+ * 책 하나의 카드 — 상태 배지, 한 줄 소개, 순자산·수익률·노출·현금, 통계. 누르면 상세가 열리고 다시 누르면 닫힙니다.
+ *
+ * 키보드·화면 낭독기는 이름 옆의 단추(aria-expanded·aria-controls)로 엽니다. 카드 전체에 버튼 역할을 주지 않는 이유 — 단추 안에는
+ * 제목·숫자 목록을 넣을 수 없고(HTML 규칙), 넣으면 낭독기가 카드 숫자 전부를 단추 이름으로 읽습니다. 마우스로는 카드 어디를 눌러도
+ * 열리게 하되, 숫자를 끌어 고르는(복사하려는) 중이면 열고 닫지 않습니다.
+ */
+function BookCard({
+  book,
+  books,
+  selected,
+  onToggle,
+}: {
+  book: PaperBookSummary;
+  books: readonly PaperBookSummary[];
+  selected: boolean;
+  onToggle: () => void;
+}) {
   const card = bookCard(book, books);
+  const summary = accountProfile(book.code)?.summary ?? null;
   return (
-    <article className="rounded-lg border border-border bg-canvas px-4 py-3" aria-label={book.label}>
+    <article
+      aria-label={book.label}
+      onClick={() => {
+        if (window.getSelection?.()?.toString()) return;
+        onToggle();
+      }}
+      className={`cursor-pointer rounded-lg border bg-canvas px-4 py-3 transition ${
+        selected ? "border-accent ring-1 ring-accent/50" : "border-border hover:border-muted"
+      }`}
+    >
       <header className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="text-sm font-semibold text-bright">{book.label}</h3>
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-bright">
+            <button
+              type="button"
+              id={accountToggleId(book.code)}
+              aria-expanded={selected}
+              aria-controls={ACCOUNT_PANEL_ID}
+              onClick={(event) => {
+                // 카드의 클릭과 두 번 겹쳐 열자마자 닫히지 않게 여기서 멈춥니다.
+                event.stopPropagation();
+                onToggle();
+              }}
+              className="rounded-sm text-left hover:text-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <span>{book.label}</span>{" "}
+              <span className={`ml-1 text-[11px] font-normal ${selected ? "text-accent" : "text-muted"}`}>
+                {selected ? "상세 닫기" : "상세 보기"}
+                <span aria-hidden> {selected ? "▴" : "▾"}</span>
+              </span>
+            </button>
+          </h3>
           <p className="text-[11px] text-muted">
             {card.kind} · 출발 {card.startedOn} · 처음 {card.initialCash}
           </p>
+          {summary && <p className="mt-0.5 text-[11px] text-body">{summary}</p>}
         </div>
         <span className={`rounded-sm border px-2 py-0.5 text-[11px] ${card.status.className}`}>{card.status.label}</span>
       </header>

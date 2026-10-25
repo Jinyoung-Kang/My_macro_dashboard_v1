@@ -582,7 +582,7 @@ describe("개요 — 프레임 판 경계(F5)", () => {
     const lines = await screen.findByRole("list", { name: "경계선" });
     expect(within(lines).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["2026-10-23 프레임 v0"]);
     expect(screen.getByText(
-      "프레임 경계(Claude 책 결정이 그 판을 처음 쓴 거래일) — 2026-10-23부터 임시 v0 · 2026-10-27부터 v1(그날 순자산 기록 없음 — 선 없음)",
+      "프레임 경계(Claude 계좌 결정이 그 판을 처음 쓴 거래일) — 2026-10-23부터 임시 v0 · 2026-10-27부터 v1(그날 순자산 기록 없음 — 선 없음)",
     )).toBeTruthy();
   });
 

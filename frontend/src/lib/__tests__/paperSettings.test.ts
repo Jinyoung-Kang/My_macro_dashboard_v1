@@ -50,7 +50,7 @@ const RESPONSE: PaperSettingsResponse = {
     decisionTimeKst: "07:30",
   },
   keys: [
-    key("model", { type: "string", options: ["claude-sonnet-5-5", "claude-haiku-5-5"], description: "Claude 책·제안 모델" }),
+    key("model", { type: "string", options: ["claude-sonnet-5-5", "claude-haiku-5-5"], description: "Claude 계좌·제안 모델" }),
     key("slippageBp", { min: 0, max: 100, description: "체결가 슬리피지(bp)" }),
     key("trackRecord.windowYears", { type: "integer", min: 3, max: 10, affectsRules: true }),
     key("maxPositions", { type: "integer", min: 1, max: 50, affectsRules: true }),
@@ -96,7 +96,7 @@ describe("설정 줄", () => {
 
   it("묶음은 점 경로의 첫 마디 — 서버 키 순서대로 처음 나온 묶음 순, 이름표는 알려진 묶음만", () => {
     expect(groups.map((group) => [group.key, group.title])).toEqual([
-      ["", "일반 — Claude 책 · 장부 · 검증기 · 규칙 책 · 메모"],
+      ["", "일반 — Claude 계좌 · 장부 · 검증기 · 규칙 계좌 · 메모"],
       ["trackRecord", "기관 선정 — 트랙레코드(그룹 A)"],
       ["blend", "두 기관 그룹 섞기(D27)"],
       ["gate", "OS 게이트 지표 — 참고 임계치(구속하지 않음)"],
@@ -183,7 +183,7 @@ describe("입력 읽기·바뀐 값", () => {
     const rules = settingsDraftView(groups, { "trackRecord.windowYears": "6", slippageBp: "10" }).changes;
     const text = settingsConfirmText(rules);
     expect(text).toContain(RULES_FROZEN_WARNING);
-    expect(text).toContain("바꾸는 규칙 책 영향 키: trackRecord.windowYears.");
+    expect(text).toContain("바꾸는 규칙 계좌 영향 키: trackRecord.windowYears.");
     expect(text).not.toContain("slippageBp");
     expect(settingsConfirmText(settingsDraftView(groups, { slippageBp: "10" }).changes)).toBeNull();
   });

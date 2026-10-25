@@ -12,7 +12,7 @@
 /** 책 종류 — 규칙 책 · Claude 재량 책 · 벤치마크(SPY 100%, SPY 60%·SHY 40%). */
 export type PaperBookKind = "RULES" | "CLAUDE" | "BENCHMARK";
 
-/** 책 상태. NOT_STARTED는 현금만 든 책(규칙·Claude 책은 개요의 '규칙 책 시작'·'Claude 재량 책 시작' — 초기 결정으로 시작). */
+/** 책 상태. NOT_STARTED는 현금만 든 책(규칙·Claude 책은 개요의 '규칙 계좌 시작'·'Claude 계좌 시작' — 초기 결정으로 시작). */
 export type PaperBookStatus = "NOT_STARTED" | "ACTIVE" | "PAUSED";
 
 /** 책 통계(PaperStats). 표본(일별 수익률 수)이 짧으면 cumReturnPct만 있고 나머지는 null입니다. */

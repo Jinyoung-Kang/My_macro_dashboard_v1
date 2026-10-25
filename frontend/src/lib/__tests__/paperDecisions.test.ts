@@ -37,10 +37,10 @@ function book(code: string, over: Partial<PaperBookSummary> = {}): PaperBookSumm
 }
 
 const BOOKS = [
-  book("rules", { kind: "RULES", label: "규칙 책", status: "NOT_STARTED", startedOn: null }),
-  book("claude", { kind: "CLAUDE", label: "Claude 재량 책", status: "NOT_STARTED", startedOn: null }),
-  book("bench_spy", { label: "SPY 100%" }),
-  book("bench_mix", { label: "SPY 60% · SHY 40%" }),
+  book("rules", { kind: "RULES", label: "규칙 계좌", status: "NOT_STARTED", startedOn: null }),
+  book("claude", { kind: "CLAUDE", label: "Claude 계좌", status: "NOT_STARTED", startedOn: null }),
+  book("bench_spy", { label: "SPY 계좌" }),
+  book("bench_mix", { label: "60/40 계좌" }),
 ];
 
 function summary(over: Partial<PaperDecisionSummary> = {}): PaperDecisionSummary {
@@ -61,7 +61,7 @@ describe("규칙 책 시작 카드", () => {
   it("규칙 책이 시작 전이면 카드 — 출발일·사후 체결·게이트 없음을 적고, 확인 문구는 되돌리는 길(책 초기화)을 적는다", () => {
     const prompt = rulesStartPrompt({ initialized: true, startDate: "2026-10-23", books: BOOKS });
     expect(prompt?.bookCode).toBe("rules");
-    expect(prompt?.title).toBe("규칙 책 시작");
+    expect(prompt?.title).toBe("규칙 계좌 시작");
     expect(prompt?.body).toContain("출발일(2026-10-23) 기준");
     expect(prompt?.body).toContain("출발일 종가에 사후 체결");
     expect(prompt?.body).toContain("매크로 게이트는 쓰지 않습니다");
@@ -74,7 +74,7 @@ describe("규칙 책 시작 카드", () => {
     expect(prompt?.body).not.toContain("동일 비중");
     expect(prompt?.body).not.toMatch(/상위 5곳을\s*선정/);
     expect(prompt?.confirm).toContain("정말 시작할까요?");
-    expect(prompt?.confirm).toContain("'책 초기화'");
+    expect(prompt?.confirm).toContain("'계좌 초기화'");
   });
 
   it("이미 시작했거나·초기화 전이거나·규칙 책이 없으면 카드 없음", () => {
@@ -88,17 +88,17 @@ describe("규칙 책 시작 카드", () => {
 
   it("시작 결과 — 주문·사후 체결 수(목록이든 건수든), 주문이 없으면 경고, ok:false는 서버 문구", () => {
     expect(initialDecisionResultView({ ok: true, decision: summary(), fills: [{} as never, {} as never, {} as never, {} as never] }))
-      .toEqual({ tone: "info", text: "규칙 책을 시작했습니다 · 2026-10-23 초기 결정 · 주문 4건 · 사후 체결 4건 — 매수 3 · SHY 1" });
+      .toEqual({ tone: "info", text: "규칙 계좌를 시작했습니다 · 2026-10-23 초기 결정 · 주문 4건 · 사후 체결 4건 — 매수 3 · SHY 1" });
     expect(initialDecisionResultView({ ok: true, decision: summary({ summary: null }), fills: 3 }).text)
-      .toBe("규칙 책을 시작했습니다 · 2026-10-23 초기 결정 · 주문 4건 · 사후 체결 3건");
+      .toBe("규칙 계좌를 시작했습니다 · 2026-10-23 초기 결정 · 주문 4건 · 사후 체결 3건");
     // 모르는 수는 "—"(0건으로 채우지 않음)
     expect(initialDecisionResultView({ ok: true, decision: summary({ orderCount: null, summary: null }), fills: null }).text)
-      .toBe("규칙 책을 시작했습니다 · 2026-10-23 초기 결정 · 주문 — · 사후 체결 —");
+      .toBe("규칙 계좌를 시작했습니다 · 2026-10-23 초기 결정 · 주문 — · 사후 체결 —");
     const noTrade = initialDecisionResultView({ ok: true, decision: summary({ status: "NO_TRADE", orderCount: 0, summary: null }), fills: 0 });
     expect(noTrade.tone).toBe("warn");
     expect(noTrade.text).toContain("주문이 없습니다 — 현금만 듭니다");
-    expect(initialDecisionResultView({ ok: false, message: "이미 시작한 책입니다." }))
-      .toEqual({ tone: "warn", text: "이미 시작한 책입니다." });
+    expect(initialDecisionResultView({ ok: false, message: "이미 시작한 계좌입니다." }))
+      .toEqual({ tone: "warn", text: "이미 시작한 계좌입니다." });
   });
 });
 
@@ -153,16 +153,16 @@ describe("결정 목록 표기", () => {
   });
 
   it("수동 결정 버튼 — 시작 전인 책·일시정지 중인 Claude 책은 막고 그 길을, 운용 중인 책·일시정지 규칙 책은 null", () => {
-    expect(decisionRunBlocked(BOOKS[0])).toContain("'규칙 책 시작'");
-    expect(decisionRunBlocked(BOOKS[1])).toContain("'Claude 재량 책 시작'");
+    expect(decisionRunBlocked(BOOKS[0])).toContain("'규칙 계좌 시작'");
+    expect(decisionRunBlocked(BOOKS[1])).toContain("'Claude 계좌 시작'");
     expect(decisionRunBlocked(BOOKS[1])).not.toContain("다음 단계");
     expect(decisionRunBlocked({ kind: "CLAUDE", status: "ACTIVE" })).toBeNull();
     expect(decisionRunBlocked({ kind: "RULES", status: "ACTIVE" })).toBeNull();
     expect(decisionRunBlocked({ kind: "RULES", status: "PAUSED" })).toBeNull();
     // 일시정지 중인 Claude 책 — 서버가 Claude를 부르지 않고 400을 내므로 버튼에서 먼저 막고 재개하는 길을
-    expect(decisionRunBlocked({ kind: "CLAUDE", status: "PAUSED" })).toContain("일시정지 중인 Claude 책");
+    expect(decisionRunBlocked({ kind: "CLAUDE", status: "PAUSED" })).toContain("일시정지 중인 Claude 계좌");
     expect(decisionRunBlocked({ kind: "CLAUDE", status: "PAUSED" })).toContain("재개한 뒤");
-    expect(decisionRunBlocked(null)).toBe("책이 없습니다.");
+    expect(decisionRunBlocked(null)).toBe("계좌가 없습니다.");
   });
 
   it("수동 결정 결과 — 요약 한 줄, 결정 오류·ok:false는 경고", () => {

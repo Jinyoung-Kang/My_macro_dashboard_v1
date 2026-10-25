@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { distinctLabels, truncateKeepingTag, truncateToWidth, valueDomain, visualWidth } from "@/lib/chartAxis";
+import { distinctLabels, donutLabelsFit, truncateKeepingTag, truncateToWidth, valueDomain, visualWidth } from "@/lib/chartAxis";
 
 describe("valueDomain", () => {
   it("값이 없으면 auto", () => {
@@ -72,5 +72,30 @@ describe("구분자를 남기는 이름표 (QA-120)", () => {
     const keys = ["VANGUARD INDEX FUNDS GROWTH", "VANGUARD INDEX FUNDS VALUE", "APPLE INC"];
     expect(keys.slice(0, 2).map((key) => truncateKeepingTag(key, 19))).toEqual(["VANGUARD INDEX FUN…", "VANGUARD INDEX FUN…"]);
     expect(distinctLabels(keys, 19)).toEqual(["VANGUARD INDEX FUNDS GROWTH", "VANGUARD INDEX FUNDS VALUE", "APPLE INC"]);
+  });
+});
+
+describe("도넛 직접 라벨이 들어가는 너비 (DV-2)", () => {
+  // DonutChart가 Recharts에 넘기는 값과 같습니다(여백 8 · 바깥 70% · 라벨 거리 20 · 11px).
+  const geometry = { margin: 8, outerPct: 70, offset: 20, fontSize: 11 };
+  const labels = ["NVDA 35.0%", "MSFT 30.0%", "AAPL 25.0%", "현금 10.0%"];
+
+  it("휴대폰 너비(화면 360·375·390px → 차트 260·275·290px)에서는 3시·9시 라벨이 SVG 끝에서 잘리므로 끈다", () => {
+    for (const width of [260, 275, 290]) expect(donutLabelsFit(width, 220, labels, geometry)).toBe(false);
+  });
+
+  it("넓은 패널(데스크톱 두 칸 중 하나)에서는 붙인다", () => {
+    expect(donutLabelsFit(460, 220, labels, geometry)).toBe(true);
+  });
+
+  it("긴 라벨(한글)이 있으면 더 넓어야 한다 — 가장 긴 라벨로 잰다", () => {
+    expect(donutLabelsFit(340, 220, ["AAA 50.0%"], geometry)).toBe(true);
+    expect(donutLabelsFit(340, 220, ["AAA 50.0%", "현금·현금성 40.0%"], geometry)).toBe(false);
+  });
+
+  it("너비를 아직 모르거나(측정 전) 붙일 라벨이 없으면 false", () => {
+    expect(donutLabelsFit(null, 220, labels, geometry)).toBe(false);
+    expect(donutLabelsFit(0, 220, labels, geometry)).toBe(false);
+    expect(donutLabelsFit(800, 220, [null, undefined, ""], geometry)).toBe(false);
   });
 });

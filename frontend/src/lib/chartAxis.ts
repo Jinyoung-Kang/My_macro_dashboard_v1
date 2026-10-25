@@ -114,3 +114,41 @@ export function distinctLabels(keys: readonly string[], maxWidth: number): strin
   }
 }
 
+
+/** 도넛 고리와 직접 라벨의 자리(픽셀·비율) — 차트 컴포넌트가 Recharts에 넘기는 값과 같아야 합니다. */
+export interface DonutLabelGeometry {
+  /** 차트 안쪽 여백(사방 같음). */
+  margin: number;
+  /** 바깥 반지름 = 최대 반지름(여백 안 너비·높이 중 작은 쪽의 절반) × 이 백분율 ÷ 100 — Recharts outerRadius "70%"면 70. */
+  outerPct: number;
+  /** 바깥 반지름에서 라벨 자리까지(Recharts Pie 라벨의 기본 offsetRadius 20). */
+  offset: number;
+  fontSize: number;
+}
+
+/** 라틴 한 칸(visualWidth 1)의 어림 폭 ÷ 글자 크기 — 한글(2칸)은 실제보다 조금 넓게 잡혀 잘리는 쪽으로 틀리지 않습니다. */
+const LABEL_UNIT_EM = 0.6;
+
+/**
+ * 도넛의 직접 라벨(고리 밖)이 차트 너비 안에 다 들어가는가 — 들어가지 않으면 부르는 쪽이 라벨을 끄고 범례·툴팁·표에 맡깁니다.
+ *
+ * Recharts는 라벨을 바깥 반지름 + offset 자리에 두고, 중심 오른쪽 라벨은 그 점에서 오른쪽으로, 왼쪽 라벨은 왼쪽으로 적습니다. 그래서
+ * 3시·9시 방향 라벨이 가장 멀리 나가고, 반폭 − (반지름 + offset)보다 긴 글자는 SVG 끝에서 잘립니다(인라인 SVG는 넘친 글자를 잘라 냄 —
+ * 좁은 화면 360px에서 "NVDA 35.0%"·"AAPL 25.0%"가 좌우로 잘렸음). 라벨이 어느 각도에 올지는 따지지 않고 가장 긴 라벨로 잽니다 —
+ * 일부만 잘리는 것보다 모두 끄는 편이 낫습니다. 너비를 아직 모르면(측정 전) false.
+ */
+export function donutLabelsFit(
+  width: number | null | undefined,
+  height: number,
+  labels: readonly (string | null | undefined)[],
+  geometry: DonutLabelGeometry,
+): boolean {
+  const texts = labels.filter((label): label is string => typeof label === "string" && label.length > 0);
+  if (texts.length === 0) return false;
+  if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) return false;
+  const maxRadius = Math.min(width - geometry.margin * 2, height - geometry.margin * 2) / 2;
+  if (maxRadius <= 0) return false;
+  const reach = (maxRadius * geometry.outerPct) / 100 + geometry.offset;
+  const longest = Math.max(...texts.map((text) => visualWidth(text))) * geometry.fontSize * LABEL_UNIT_EM;
+  return width / 2 - reach >= longest;
+}

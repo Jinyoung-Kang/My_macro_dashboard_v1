@@ -91,9 +91,9 @@ export function SettingsSection() {
         source={PAPER_SOURCES.settings}
       >
         <p className="text-xs leading-relaxed text-muted">
-          형·범위는 저장할 때 서버가 검사합니다. <span className={`rounded-sm border px-1 ${RULES_BADGE}`}>규칙 책 영향</span>이 붙은
-          키는 규칙 책(동결된 대조군)의 조건을 바꿉니다 — 저장 전에 한 번 더 묻습니다. 결정 기록마다 그때의 설정 버전이 남습니다.
-          책 일시정지·재개는 보유·체결 탭에서 합니다.
+          형·범위는 저장할 때 서버가 검사합니다. <span className={`rounded-sm border px-1 ${RULES_BADGE}`}>규칙 계좌 영향</span>이 붙은
+          키는 규칙 계좌(동결된 대조군)의 조건을 바꿉니다 — 저장 전에 한 번 더 묻습니다. 결정 기록마다 그때의 설정 버전이 남습니다.
+          계좌 일시정지·재개는 보유·체결 탭에서 합니다.
         </p>
 
         <section aria-label="바꿀 값" className="mt-4 flex flex-col gap-2">
@@ -106,7 +106,7 @@ export function SettingsSection() {
                 <li key={change.key} className="flex flex-wrap items-center gap-1">
                   <code className="text-bright">{change.key}</code>
                   <span>: {change.from} → {change.to}</span>
-                  {change.affectsRules && <span className={`rounded-sm border px-1 text-[10px] ${RULES_BADGE}`}>규칙 책 영향</span>}
+                  {change.affectsRules && <span className={`rounded-sm border px-1 text-[10px] ${RULES_BADGE}`}>규칙 계좌 영향</span>}
                 </li>
               ))}
             </ul>
@@ -181,9 +181,9 @@ export function SettingsSection() {
               { key: "changes", header: "바뀐 값", render: (row) => <span className="text-xs text-body">{row.changes}</span> },
               {
                 key: "rules",
-                header: "규칙 책 영향",
+                header: "규칙 계좌 영향",
                 render: (row) => (row.rulesAffected
-                  ? <span className={`whitespace-nowrap rounded-sm border px-1.5 py-px text-[10px] ${RULES_BADGE}`}>규칙 책 영향</span>
+                  ? <span className={`whitespace-nowrap rounded-sm border px-1.5 py-px text-[10px] ${RULES_BADGE}`}>규칙 계좌 영향</span>
                   : <span className="text-muted">{EMPTY}</span>),
               },
             ]}
@@ -221,10 +221,10 @@ function SettingField({
           <label htmlFor={id} className="break-all font-mono text-xs font-semibold text-bright">{row.key}</label>
           {row.affectsRules && (
             <span
-              title="규칙 책(동결된 대조군)의 조건을 바꾸는 키입니다 — 저장 전에 한 번 더 묻습니다."
+              title="규칙 계좌(동결된 대조군)의 조건을 바꾸는 키입니다 — 저장 전에 한 번 더 묻습니다."
               className={`whitespace-nowrap rounded-sm border px-1.5 py-px text-[10px] ${RULES_BADGE}`}
             >
-              규칙 책 영향
+              규칙 계좌 영향
             </span>
           )}
           {changed && <span className={`whitespace-nowrap rounded-sm border px-1.5 py-px text-[10px] ${CHANGED_BADGE}`}>바꿈</span>}

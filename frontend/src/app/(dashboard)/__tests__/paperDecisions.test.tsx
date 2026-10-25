@@ -40,11 +40,11 @@ function book(code: string, over: Record<string, unknown> = {}) {
   };
 }
 
-const RULES_ACTIVE = book("rules", { kind: "RULES", label: "규칙 책", benchmark: "bench_spy" });
+const RULES_ACTIVE = book("rules", { kind: "RULES", label: "규칙 계좌", benchmark: "bench_spy" });
 const RULES_NOT_STARTED = book("rules", {
-  kind: "RULES", label: "규칙 책", status: "NOT_STARTED", startedOn: null, benchmark: "bench_spy", positions: 0,
+  kind: "RULES", label: "규칙 계좌", status: "NOT_STARTED", startedOn: null, benchmark: "bench_spy", positions: 0,
 });
-const CLAUDE = book("claude", { kind: "CLAUDE", label: "Claude 재량 책", status: "NOT_STARTED", startedOn: null, benchmark: "bench_spy" });
+const CLAUDE = book("claude", { kind: "CLAUDE", label: "Claude 계좌", status: "NOT_STARTED", startedOn: null, benchmark: "bench_spy" });
 
 const GATE = {
   tradingDate: "2026-10-23",
@@ -63,7 +63,7 @@ const GATE = {
 function overview(rules: Record<string, unknown>, over: Record<string, unknown> = {}) {
   return {
     available: true, initialized: true, startDate: "2026-10-23", limits: [], jobs: [], pendingBackfill: [],
-    books: [rules, CLAUDE, book("bench_spy", { label: "SPY 100%" }), book("bench_mix", { label: "SPY 60% · SHY 40%" })],
+    books: [rules, CLAUDE, book("bench_spy", { label: "SPY 계좌" }), book("bench_mix", { label: "60/40 계좌" })],
     navSeries: { dates: [], books: {} },
     quotes: null,
     selection: {
@@ -262,9 +262,9 @@ describe("결정 로그 탭", () => {
   it("규칙 책이 기본이고, 목록은 서버 값 그대로 — 모르는 값은 '—'", async () => {
     await openDecisionsTab();
 
-    expect((screen.getByLabelText("책 고르기") as HTMLSelectElement).value).toBe("rules");
+    expect((screen.getByLabelText("계좌 고르기") as HTMLSelectElement).value).toBe("rules");
     // 벤치마크는 결정을 내지 않아 선택지에 없습니다.
-    expect(within(screen.getByLabelText("책 고르기")).getAllByRole("option").map((option) => option.getAttribute("value")))
+    expect(within(screen.getByLabelText("계좌 고르기")).getAllByRole("option").map((option) => option.getAttribute("value")))
       .toEqual(["rules", "claude"]);
     expect(api.apiGetShared).toHaveBeenCalledWith("/api/paper/decisions?book=rules&limit=50", 0);
     // 자리 문구는 이제 없습니다.
@@ -432,12 +432,12 @@ describe("결정 로그 탭", () => {
     reads["/api/paper/decisions?book=claude"] = () => Promise.resolve({ available: true, decisions: [] });
     await openDecisionsTab();
 
-    fireEvent.change(screen.getByLabelText("책 고르기"), { target: { value: "claude" } });
+    fireEvent.change(screen.getByLabelText("계좌 고르기"), { target: { value: "claude" } });
 
     expect(await screen.findByText(/검증기\(하드 규칙\)가 주문마다 통과·거절을 정하고/)).toBeTruthy();
     expect(screen.queryByText(/다음 단계\(3a\)/)).toBeNull();
     expect((screen.getByRole("button", { name: "지금 결정 실행" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/시작 전인 책은 결정을 내지 않습니다 — 개요 탭의 'Claude 재량 책 시작'/)).toBeTruthy();
+    expect(screen.getByText(/시작 전인 계좌는 결정을 내지 않습니다 — 개요 탭의 'Claude 계좌 시작'/)).toBeTruthy();
     expect(api.apiGetShared).toHaveBeenCalledWith("/api/paper/decisions?book=claude&limit=50", 0);
   });
 
@@ -468,12 +468,12 @@ describe("결정 로그 탭", () => {
   });
 
   it("수동 결정이 실패하면 서버 문구를 경고로", async () => {
-    api.apiPost.mockRejectedValue(new Error("선정이 없습니다 — 규칙 책을 먼저 시작하세요."));
+    api.apiPost.mockRejectedValue(new Error("선정이 없습니다 — 규칙 계좌를 먼저 시작하세요."));
     await openDecisionsTab();
     await screen.findByRole("row", { name: "2026-10-23 초기 결정" });
     fireEvent.click(screen.getByRole("button", { name: "지금 결정 실행" }));
 
-    const warning = await screen.findByText("선정이 없습니다 — 규칙 책을 먼저 시작하세요.");
+    const warning = await screen.findByText("선정이 없습니다 — 규칙 계좌를 먼저 시작하세요.");
     expect(warning.closest("div")?.className).toContain("text-warn");
   });
 });
@@ -492,9 +492,9 @@ describe("개요 — 규칙 책 시작", () => {
 
     render(<PaperPage />);
 
-    expect(await screen.findByText(/규칙 책은 아직 현금만 들고 있습니다/)).toBeTruthy();
+    expect(await screen.findByText(/규칙 계좌는 아직 현금만 들고 있습니다/)).toBeTruthy();
     // 첫 누름은 확인 단계만 엽니다 — 아직 서버를 부르지 않습니다.
-    fireEvent.click(screen.getByRole("button", { name: "규칙 책 시작" }));
+    fireEvent.click(screen.getByRole("button", { name: "규칙 계좌 시작" }));
     expect(screen.getByText(/정말 시작할까요\?/)).toBeTruthy();
     expect(api.apiPost).not.toHaveBeenCalled();
 
@@ -502,7 +502,7 @@ describe("개요 — 규칙 책 시작", () => {
     fireEvent.click(screen.getByRole("button", { name: "취소" }));
     expect(screen.queryByText(/정말 시작할까요\?/)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "규칙 책 시작" }));
+    fireEvent.click(screen.getByRole("button", { name: "규칙 계좌 시작" }));
     fireEvent.click(screen.getByRole("button", { name: "시작 확인" }));
 
     const busy = await screen.findByRole("button", { name: /시작 중… \d+초/ });
@@ -513,11 +513,11 @@ describe("개요 — 규칙 책 시작", () => {
 
     // 다시 읽은 개요에서 규칙 책이 운용 중이면 카드는 사라지고 결과는 남습니다.
     expect(await screen.findByText(
-      "규칙 책을 시작했습니다 · 2026-10-23 초기 결정 · 주문 2건 · 사후 체결 2건 — 매수 AAPL · 남는 현금 SHY",
+      "규칙 계좌를 시작했습니다 · 2026-10-23 초기 결정 · 주문 2건 · 사후 체결 2건 — 매수 AAPL · 남는 현금 SHY",
     )).toBeTruthy();
     await waitFor(() => expect(overviewReads).toBeGreaterThanOrEqual(2));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "규칙 책 시작" })).toBeNull());
-    expect(screen.getByText(/규칙 책을 시작했습니다/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "규칙 계좌 시작" })).toBeNull());
+    expect(screen.getByText(/규칙 계좌를 시작했습니다/)).toBeTruthy();
   });
 
   it("수집 중이라 서버가 거절(400)하면 그 문구를 경고로, 버튼은 다시 누를 수 있다", async () => {
@@ -526,12 +526,12 @@ describe("개요 — 규칙 책 시작", () => {
     api.apiPost.mockRejectedValue(new Error(message));
 
     render(<PaperPage />);
-    fireEvent.click(await screen.findByRole("button", { name: "규칙 책 시작" }));
+    fireEvent.click(await screen.findByRole("button", { name: "규칙 계좌 시작" }));
     fireEvent.click(screen.getByRole("button", { name: "시작 확인" }));
 
     const warning = await screen.findByText(message);
     expect(warning.closest("div")?.className).toContain("text-warn");
-    const again = screen.getByRole("button", { name: "규칙 책 시작" }) as HTMLButtonElement;
+    const again = screen.getByRole("button", { name: "규칙 계좌 시작" }) as HTMLButtonElement;
     expect(again.disabled).toBe(false);
   });
 
@@ -541,7 +541,7 @@ describe("개요 — 규칙 책 시작", () => {
     render(<PaperPage />);
 
     expect(await screen.findByText("신호 기관")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "규칙 책 시작" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "규칙 계좌 시작" })).toBeNull();
   });
 });
 
@@ -551,7 +551,7 @@ describe("개요 — 신호 기관·게이트 지표(참고)", () => {
 
     render(<PaperPage />);
 
-    expect(await screen.findByText(/2026-10-23 선정 — 규칙 책이 두 그룹을 합친 신호 풀의 13F 변화를 신호로 씁니다/)).toBeTruthy();
+    expect(await screen.findByText(/2026-10-23 선정 — 규칙 계좌가 두 그룹을 합친 신호 풀의 13F 변화를 신호로 씁니다/)).toBeTruthy();
     const groupA = screen.getByRole("region", { name: "그룹 A — 후보 기관 트랙레코드 상위" });
     expect(within(groupA).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["1위 듀케인", "— CIK 0009999999"]);
     const groupB = screen.getByRole("region", { name: "그룹 B — 기존 13F 메뉴 최근 상위" });

@@ -68,8 +68,17 @@ const RECENT_LIMIT = 50;
  * 숫자는 결정 기록(서버 계산) 그대로이고, 화면은 기관 이름을 붙이고 표로 늘어놓기만 합니다(ADR 0004). 책 목록은 개요 응답에서
  * 받습니다(page.tsx) — 수동 결정이 성공하면 이 탭의 목록과 개요(onChanged)를 함께 다시 읽습니다(결정이 주문을 내면 책 카드가 바뀜).
  */
-export function DecisionsSection({ books, onChanged }: { books: PaperBookSummary[]; onChanged: () => void }) {
-  const [picked, setPicked] = useState("");
+export function DecisionsSection({
+  books,
+  onChanged,
+  initialBook = "",
+}: {
+  books: PaperBookSummary[];
+  onChanged: () => void;
+  /** 처음 고를 계좌 코드(개요의 계좌 상세에서 넘어올 때). 목록에 없으면 기본 계좌로 엽니다. */
+  initialBook?: string;
+}) {
+  const [picked, setPicked] = useState(initialBook);
   const code = resolveDecisionBook(picked, books);
   const list = useApi<PaperDecisionsResponse>(code ? endpoints.paper.decisions(code, RECENT_LIMIT) : null, 60_000);
 
@@ -85,7 +94,7 @@ export function DecisionsSection({ books, onChanged }: { books: PaperBookSummary
   const [confirmingFor, setConfirmingFor] = useState<string | null>(null);
 
   if (!code) {
-    return <Banner tone="info">결정을 내는 책이 아직 없습니다 — 개요 탭에서 초기화하면 규칙 책·Claude 책이 생깁니다.</Banner>;
+    return <Banner tone="info">결정을 내는 계좌가 아직 없습니다 — 개요 탭에서 초기화하면 규칙 계좌·Claude 계좌가 생깁니다.</Banner>;
   }
 
   const book = books.find((entry) => entry.code === code) ?? null;
@@ -112,7 +121,7 @@ export function DecisionsSection({ books, onChanged }: { books: PaperBookSummary
       <Card title="결정" source={PAPER_SOURCES.decisions} actions={<Freshness refreshError={list.refreshError} />}>
         <div className="flex flex-wrap items-end gap-4">
           <Select
-            label="책 고르기"
+            label="계좌 고르기"
             value={code}
             onChange={(value) => {
               setPicked(value);
@@ -183,7 +192,7 @@ function DecisionTable({
   if (rows.length === 0) {
     return (
       <p className="text-sm text-muted">
-        아직 결정 기록이 없습니다 — 책을 시작한 뒤 거래일마다(KST 07:30 이후) 결정 작업이 남깁니다.
+        아직 결정 기록이 없습니다 — 계좌를 시작한 뒤 거래일마다(KST 07:30 이후) 결정 작업이 남깁니다.
       </p>
     );
   }

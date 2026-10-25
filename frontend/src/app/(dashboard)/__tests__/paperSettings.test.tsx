@@ -24,7 +24,7 @@ vi.mock("@/components/charts", () => ({
 
 import PaperPage from "../paper/page";
 
-const WARNING = "규칙 책은 동결된 대조군입니다 — 이 변경은 실험 조건을 바꿉니다";
+const WARNING = "규칙 계좌는 동결된 대조군입니다 — 이 변경은 실험 조건을 바꿉니다";
 
 const SETTINGS = {
   available: true,
@@ -45,7 +45,7 @@ const SETTINGS = {
   },
   keys: [
     {
-      key: "model", type: "string", min: null, max: null, affectsRules: false, description: "Claude 책·제안 모델",
+      key: "model", type: "string", min: null, max: null, affectsRules: false, description: "Claude 계좌·제안 모델",
       options: ["claude-sonnet-5-5", "claude-haiku-5-5"],
     },
     { key: "slippageBp", type: "number", min: 0, max: 100, affectsRules: false, description: "체결가에 얹는 슬리피지(bp)" },
@@ -119,7 +119,7 @@ describe("설정 탭", () => {
     const window = screen.getByLabelText("trackRecord.windowYears") as HTMLInputElement;
     expect(window.value).toBe("5");
     const field = window.closest("div.grid") as HTMLElement;
-    expect(within(field).getByText("규칙 책 영향")).toBeTruthy();
+    expect(within(field).getByText("규칙 계좌 영향")).toBeTruthy();
     expect(within(field).getByText("트랙레코드 창(년)")).toBeTruthy();
     expect(within(field).getByText("기본 7 · 범위 3~10 · 기본값과 다름")).toBeTruthy();
 
@@ -134,7 +134,7 @@ describe("설정 탭", () => {
     const history = (await screen.findByText("v3")).closest("table") as HTMLElement;
     const rows = within(history).getAllByRole("row").slice(1).map((tr) => within(tr).getAllByRole("cell").map((td) => td.textContent));
     expect(rows).toEqual([
-      ["v3", "2026-10-25 10:02", "trackRecord.windowYears = 5", "규칙 책 영향"],
+      ["v3", "2026-10-25 10:02", "trackRecord.windowYears = 5", "규칙 계좌 영향"],
       ["v2", "2026-10-24 21:00", "slippageBp", "—"],
       ["v1", "2026-10-24 09:00", "처음 값(초기화)", "—"],
     ]);
@@ -168,17 +168,17 @@ describe("설정 탭", () => {
 
     fireEvent.change(screen.getByLabelText("trackRecord.windowYears"), { target: { value: "6" } });
     fireEvent.click(screen.getByLabelText("parkCashInShy"));
-    expect(changes()).toEqual(["parkCashInShy: 예 → 아니오규칙 책 영향", "trackRecord.windowYears: 5 → 6규칙 책 영향"]);
+    expect(changes()).toEqual(["parkCashInShy: 예 → 아니오규칙 계좌 영향", "trackRecord.windowYears: 5 → 6규칙 계좌 영향"]);
 
     // 첫 누름은 확인만 엽니다 — 아직 서버를 부르지 않습니다.
     fireEvent.click(saveButton());
     expect(api.apiPost).not.toHaveBeenCalled();
-    const confirm = screen.getByText(/바꾸는 규칙 책 영향 키: parkCashInShy, trackRecord\.windowYears/);
+    const confirm = screen.getByText(/바꾸는 규칙 계좌 영향 키: parkCashInShy, trackRecord\.windowYears/);
     expect(confirm.textContent).toContain(WARNING);
 
     // 취소하면 처음으로, 값은 그대로
     fireEvent.click(screen.getByRole("button", { name: "취소" }));
-    expect(screen.queryByText(/바꾸는 규칙 책 영향 키/)).toBeNull();
+    expect(screen.queryByText(/바꾸는 규칙 계좌 영향 키/)).toBeNull();
     expect(changes()).toHaveLength(2);
 
     fireEvent.click(saveButton());
@@ -198,7 +198,7 @@ describe("설정 탭", () => {
 
     fireEvent.change(screen.getByLabelText("trackRecord.windowYears"), { target: { value: "8" } });
     expect(screen.queryByRole("button", { name: "저장 확인" })).toBeNull();
-    expect(changes()).toEqual(["trackRecord.windowYears: 5 → 8규칙 책 영향"]);
+    expect(changes()).toEqual(["trackRecord.windowYears: 5 → 8규칙 계좌 영향"]);
   });
 
   it("숫자가 아니면 그 키 아래 문구와 함께 저장이 막히고, 서버 400 문구는 경고로 그대로", async () => {

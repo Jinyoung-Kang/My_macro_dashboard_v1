@@ -45,16 +45,16 @@ function book(code: string, over: Record<string, unknown> = {}) {
   };
 }
 
-const RULES = book("rules", { kind: "RULES", label: "규칙 책", benchmark: "bench_spy" });
-const CLAUDE_ACTIVE = book("claude", { kind: "CLAUDE", label: "Claude 재량 책", benchmark: "bench_spy" });
+const RULES = book("rules", { kind: "RULES", label: "규칙 계좌", benchmark: "bench_spy" });
+const CLAUDE_ACTIVE = book("claude", { kind: "CLAUDE", label: "Claude 계좌", benchmark: "bench_spy" });
 const CLAUDE_NOT_STARTED = book("claude", {
-  kind: "CLAUDE", label: "Claude 재량 책", status: "NOT_STARTED", startedOn: null, benchmark: "bench_spy", positions: 0,
+  kind: "CLAUDE", label: "Claude 계좌", status: "NOT_STARTED", startedOn: null, benchmark: "bench_spy", positions: 0,
 });
 
 function overview(claude: Record<string, unknown>, over: Record<string, unknown> = {}) {
   return {
     available: true, initialized: true, startDate: "2026-10-23", limits: [], jobs: [], pendingBackfill: [],
-    books: [RULES, claude, book("bench_spy", { label: "SPY 100%" }), book("bench_mix", { label: "SPY 60% · SHY 40%" })],
+    books: [RULES, claude, book("bench_spy", { label: "SPY 계좌" }), book("bench_mix", { label: "60/40 계좌" })],
     navSeries: { dates: [], books: {} }, quotes: null, selection: null, gate: null,
     ...over,
   };
@@ -146,7 +146,7 @@ const rowsOf = (region: HTMLElement) =>
 async function openClaudeDecisions() {
   render(<PaperPage />);
   fireEvent.click(await screen.findByRole("tab", { name: "결정 로그" }));
-  fireEvent.change(await screen.findByLabelText("책 고르기"), { target: { value: "claude" } });
+  fireEvent.change(await screen.findByLabelText("계좌 고르기"), { target: { value: "claude" } });
 }
 
 describe("결정 로그 — Claude 책", () => {
@@ -340,7 +340,7 @@ describe("결정 로그 — 일시정지 중인 Claude 책", () => {
     reads["/api/paper/decisions?book=claude"] = () => Promise.resolve({ available: true, decisions: [] });
     await openClaudeDecisions();
 
-    expect(await screen.findByText(/일시정지 중인 Claude 책은 결정을 내지 않습니다/)).toBeTruthy();
+    expect(await screen.findByText(/일시정지 중인 Claude 계좌는 결정을 내지 않습니다/)).toBeTruthy();
     const button = screen.getByRole("button", { name: "지금 결정 실행" }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     fireEvent.click(button);
@@ -401,7 +401,7 @@ describe("개요 — 재무 수집 범위(D28)", () => {
       available: true, schemaReady: true, initialized: true, enabled: true, jobs: [],
       fundamentals: {
         available: true, universe: 596, mapped: 571, covered: 560, latestFetchKst: "2026-10-25 12:10 KST", staleCompanies: 2,
-        note: "SEC XBRL Company Facts — Claude 책 패킷(8b_fundamentals)에만 씁니다.",
+        note: "SEC XBRL Company Facts — Claude 계좌 패킷(8b_fundamentals)에만 씁니다.",
       },
     });
     render(<PaperPage />);
@@ -444,13 +444,13 @@ describe("개요 — Claude 책 시작", () => {
     reads["/api/paper/overview"] = () => Promise.resolve(overview(CLAUDE_NOT_STARTED));
     render(<PaperPage />);
 
-    expect(await screen.findByText(/Claude 재량 책은 아직 현금만 들고 있습니다/)).toBeTruthy();
+    expect(await screen.findByText(/Claude 계좌는 아직 현금만 들고 있습니다/)).toBeTruthy();
     const note = await screen.findByText(/지금 프레임은 임시 v0입니다 — OS 원문으로 v1을 만든 뒤 시작을 권합니다/);
     expect(note.closest("div")?.className).toContain("text-warn");
     expect(api.apiGetShared).toHaveBeenCalledWith("/api/paper/framework", 0);
     expect(screen.getByText(/비용: Sonnet 5\.5 호출 1회, 약 \$0\.1/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "미리보기" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Claude 재량 책 시작" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Claude 계좌 시작" })).toBeTruthy();
   });
 
   it("미리보기 — 확인 → POST {book:'claude', preview:true} → 경과 초 → 결과(검증 표·사용량·패킷), 장부는 다시 읽지 않는다", async () => {
@@ -492,7 +492,7 @@ describe("개요 — Claude 책 시작", () => {
     expect(within(result).getByText("입력 패킷(JSON)")).toBeTruthy();
     // 미리보기는 장부를 바꾸지 않아 개요를 다시 읽지 않고, 카드는 그대로 남습니다.
     expect(overviewReads).toBe(1);
-    expect(screen.getByRole("button", { name: "Claude 재량 책 시작" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Claude 계좌 시작" })).toBeTruthy();
   });
 
   it("미리보기가 실패하면(호출 상한 등) 서버 문구를 경고로, 다시 누를 수 있다", async () => {
@@ -522,20 +522,20 @@ describe("개요 — Claude 책 시작", () => {
 
     // 확인 문구의 프레임 판은 지금 판을 읽은 뒤에 붙습니다.
     await screen.findByText(/지금 프레임은 임시 v0입니다/);
-    fireEvent.click(await screen.findByRole("button", { name: "Claude 재량 책 시작" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Claude 계좌 시작" }));
     expect(api.apiPost).not.toHaveBeenCalled();
     const confirm = screen.getByText(/정말 시작할까요\? Sonnet 5\.5 호출 1회/);
-    expect(confirm.textContent).toContain("'책 초기화'");
+    expect(confirm.textContent).toContain("'계좌 초기화'");
     expect(confirm.textContent).toContain("프레임은 아직 임시 v0입니다");
     fireEvent.click(screen.getByRole("button", { name: "시작 확인" }));
 
     expect(api.apiPost).toHaveBeenCalledWith("/api/paper/run/initial-decision", { book: "claude" });
     expect(await screen.findByText(
-      "Claude 재량 책을 시작했습니다 · 2026-10-23 초기 결정 · 주문 3건 · 사후 체결 2건 — 노출 60%로 시작",
+      "Claude 계좌를 시작했습니다 · 2026-10-23 초기 결정 · 주문 3건 · 사후 체결 2건 — 노출 60%로 시작",
     )).toBeTruthy();
     await waitFor(() => expect(overviewReads).toBeGreaterThanOrEqual(2));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Claude 재량 책 시작" })).toBeNull());
-    expect(screen.getByText(/Claude 재량 책을 시작했습니다/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Claude 계좌 시작" })).toBeNull());
+    expect(screen.getByText(/Claude 계좌를 시작했습니다/)).toBeTruthy();
   });
 
   it("이미 시작했으면 카드가 없다", async () => {
@@ -543,7 +543,7 @@ describe("개요 — Claude 책 시작", () => {
     render(<PaperPage />);
     expect(await screen.findByText("Claude 노출 추이")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "미리보기" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Claude 재량 책 시작" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Claude 계좌 시작" })).toBeNull();
   });
 });
 

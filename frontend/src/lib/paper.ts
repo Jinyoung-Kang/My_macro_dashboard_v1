@@ -60,7 +60,7 @@ import type {
 export const PAPER_SOURCES = {
   ledger: "대시보드 모의 장부 (PostgreSQL paper_*) — 체결가는 Yahoo Finance(yfinance) 지연 시세, 사후 체결은 그날 종가",
   quotes: "Yahoo Finance (yfinance) — 모의 매매 유니버스 일봉(장중 마지막 봉 = 지연 시세, 저장본 paper.quotes)",
-  fundamentals: "SEC EDGAR XBRL Company Facts (data.sec.gov, 수집 상태 저장본 us.fundamentals.status) — Claude 책 패킷 재무 "
+  fundamentals: "SEC EDGAR XBRL Company Facts (data.sec.gov, 수집 상태 저장본 us.fundamentals.status) — Claude 계좌 패킷 재무 "
     + "8b_fundamentals의 자료",
   jobs: "대시보드 작업 기록 (PostgreSQL paper_job_runs)",
   trackRecord: "SEC EDGAR 13F-HR(후보 기관 분기 공시, 저장본 sec.13f.{cik}.q30) · 수정주가 Yahoo Finance(yfinance, equity_close) — "
@@ -80,7 +80,7 @@ export const PAPER_SOURCES = {
   framework: "대시보드 프레임 기록 (PostgreSQL paper_framework_versions — 렌더링·토큰 어림은 대시보드 백엔드 계산)",
   proposals: "대시보드 프레임 제안 (PostgreSQL paper_framework_proposals — 평가·변경 제안은 Claude 응답, Anthropic API)",
   notes: "사용자가 쓴 메모 (PostgreSQL paper_notes)",
-  boundaries: "대시보드 결정 기록 (PostgreSQL paper_decisions.framework_version — Claude 책 결정이 판마다 처음 쓴 거래일)",
+  boundaries: "대시보드 결정 기록 (PostgreSQL paper_decisions.framework_version — Claude 계좌 결정이 판마다 처음 쓴 거래일)",
 } as const;
 
 /**
@@ -138,10 +138,25 @@ export function bookStatusBadge(status: string | null | undefined): Badge {
   };
 }
 
-const BOOK_KIND: Record<string, string> = { RULES: "규칙", CLAUDE: "Claude 재량", BENCHMARK: "벤치마크" };
+const BOOK_KIND: Record<string, string> = { RULES: "규칙", CLAUDE: "Claude", BENCHMARK: "벤치마크" };
 
 export function bookKindLabel(kind: string | null | undefined): string {
   return kind ? (BOOK_KIND[kind] ?? kind) : EMPTY;
+}
+
+/** 받침 있는 말 뒤의 조사 → 받침 없는 말 뒤의 조사. */
+const PARTICLE_PAIR = { 을: "를", 은: "는", 이: "가", 과: "와" } as const;
+
+/**
+ * 이름 뒤에 조사를 붙입니다 — 마지막 글자에 받침이 있으면 "을·은·이·과", 없으면 "를·는·가·와"("규칙 계좌를", "규칙 계좌는").
+ * 계좌 이름은 서버가 보내므로(paper_books.label) 받침을 가정하지 않습니다 — 예전에는 "책"으로 끝나는지만 봐서, 이름이 바뀌면
+ * "계좌을"이 됐습니다. 한글로 끝나지 않으면(예: "SPY 100%") 받침을 알 수 없어 "을(를)"처럼 둘 다 적습니다.
+ */
+export function withParticle(word: string, particle: keyof typeof PARTICLE_PAIR): string {
+  const code = word.charCodeAt(word.length - 1);
+  const other = PARTICLE_PAIR[particle];
+  if (code >= 0xac00 && code <= 0xd7a3) return `${word}${(code - 0xac00) % 28 === 0 ? other : particle}`;
+  return `${word}${particle}(${other})`;
 }
 
 /** 달러 금액 — 장부는 책마다 10만 달러 규모라 조·억 단위로 줄이지 않고 센트까지 적습니다. */
@@ -227,6 +242,453 @@ export function bookCard(book: PaperBookSummary, books: readonly PaperBookSummar
     staleWarning: stale !== null && stale > 0 ? `가격 없음 ${formatNumber(stale, 0)}종목 — 지난 값으로 평가` : null,
     stats: statCells(book.stats, benchmarkLabel(book, books)),
     sample: sampleNote(book.stats),
+  };
+}
+
+// ---------------------------------------------------------------- 계좌 정의·상세(개요의 계좌 카드를 누르면 열림)
+
+/** 계좌 정의 한 줄 — 상세 패널의 "정의" 목록(화면 순서대로). */
+export interface AccountDefinition {
+  key: "method" | "buy" | "sell" | "cash" | "start" | "purpose";
+  label: string;
+  text: string;
+}
+
+/** 계좌 규칙을 정하는 설정 키 하나 — 상세 패널이 지금 값을 설정 응답에서 읽어 적습니다. */
+export interface AccountSettingSpec {
+  key: string;
+  label: string;
+  /** 값 뒤에 붙일 단위(예: "%", "거래일", " 달러"). 없으면 값만. */
+  unit?: string;
+}
+
+/** 계좌 하나의 소개 — 카드에 적는 한 줄(summary)과 상세 패널의 정의·관련 설정. */
+export interface AccountProfile {
+  summary: string;
+  definitions: AccountDefinition[];
+  settings: AccountSettingSpec[];
+}
+
+/** 시작 방법이 같은 두 벤치마크의 정의 한 줄. */
+const BENCHMARK_START =
+  "개요의 '초기화'로 시작합니다 — 출발일 종가를 받은 뒤 초기화하면 그 종가로 사후 체결하고, 종가가 아직 없으면 '시작 전'(현금만)으로 남습니다.";
+
+/**
+ * 네 계좌의 정의(계좌 코드 → 소개). 문장은 백엔드 규칙(RuleBookService·ClaudeBookService·OrderValidator·PaperAdminService·
+ * PaperLedgerService)을 옮긴 것이고, **설정에서 오는 숫자는 문장에 적지 않습니다** — 설정을 바꾸면 문장이 틀리게 되므로, 숫자는
+ * `settings`의 키로 설정 응답에서 읽어 따로 적습니다(accountSettingRows). 문장에 남은 숫자는 코드에 고정된 값입니다(확대 기준 +30% —
+ * RuleBookService.ADD_THRESHOLD_PCT, 벤치마크 구성 SPY 100%·SPY 60%·SHY 40% — PaperBooks).
+ */
+export const ACCOUNT_PROFILES: Readonly<Record<string, AccountProfile>> = {
+  rules: {
+    summary: "13F 신호만 규칙대로 따르는 대조군 — 매크로 판단·재량 없음",
+    definitions: [
+      {
+        key: "method",
+        label: "운용 방식",
+        text: "신호 기관 풀(그룹 A: 후보 기관의 장기 트랙레코드 상위 ∪ 그룹 B: 기존 13F 메뉴 기관의 최근 상위)의 13F 변화를 규칙대로 "
+          + "따릅니다. 거래일마다 한 번(확정 종가를 확인한 뒤) 결정하고, 매크로 게이트는 참고로 기록만 합니다.",
+      },
+      {
+        key: "buy",
+        label: "매수",
+        text: "재선정일(분기 13F 공시 기한 다음 거래일)과 시작 때만 삽니다 — 풀 기관이 최소 기관 수 이상 신규 편입하거나 주식 수를 "
+          + "30% 이상 늘린 종목을 점수(기관 가중 × 확신도) 순으로 골라, 종목·ETF 비중 상한 안에서 배분합니다.",
+      },
+      {
+        key: "sell",
+        label: "매도·리스크",
+        text: "보유 종목을 풀 기관이 최소 기관 수 이상 전량 매도하면 전량 매도합니다. 장부가 관측치마다 트레일링 스탑(최고가 대비 설정 "
+          + "비율만큼 떨어지면 전량 매도, 그 뒤 재진입 금지)을 봅니다 — 현금성 종목은 제외. 일시정지 중에는 스탑도 보지 않습니다(최고가만 "
+          + "따라감).",
+      },
+      {
+        key: "cash",
+        label: "현금",
+        text: "남는 현금은 SHY(현금성)에 둡니다(설정에서 끄면 현금 그대로). 재선정일이 아닌 날은 남는 현금이 기준(순자산 대비 %)을 넘을 "
+          + "때만 SHY를 사고, 매수에 현금이 모자라면 SHY를 팔아 메웁니다.",
+      },
+      {
+        key: "start",
+        label: "시작·출발일",
+        text: "개요의 '규칙 계좌 시작'(초기 결정)으로 시작합니다 — 출발일 기준(그날 이전 공시·가격만)으로 선정·신호를 만들어 고른 종목을 "
+          + "출발일 종가에 사후 체결합니다.",
+      },
+      {
+        key: "purpose",
+        label: "비교 목적",
+        text: "대조군 — 같은 13F 자료를 재량 없이 따랐을 때의 성과입니다. Claude 계좌가 이 계좌와 SPY 계좌를 이기는지 봅니다. 규칙 계좌 "
+          + "설정을 바꾸면 실험 조건이 바뀝니다.",
+      },
+    ],
+    settings: [
+      { key: "minHolders", label: "최소 기관 수", unit: "곳" },
+      { key: "rulesMaxNames", label: "매수 종목 수 상한", unit: "종목" },
+      { key: "maxWeightStockPct", label: "종목 비중 상한", unit: "%" },
+      { key: "maxWeightEtfPct", label: "ETF 비중 상한", unit: "%" },
+      { key: "blend.allocation", label: "배분 방식" },
+      { key: "trailingStopPct", label: "트레일링 스탑", unit: "%" },
+      { key: "lockoutTradingDays", label: "스탑 뒤 재진입 금지", unit: "거래일" },
+      { key: "parkCashInShy", label: "남는 현금을 SHY에" },
+      { key: "rules.parkCashThresholdPct", label: "SHY 매수 기준(순자산 대비)", unit: "%" },
+      { key: "minOrderNotional", label: "최소 주문 금액", unit: " 달러" },
+      { key: "cashLikeTickers", label: "현금성 종목" },
+    ],
+  },
+  claude: {
+    summary: "Claude가 패킷을 읽고 주문을 제안하고, 검증기가 하드 규칙으로 거르는 실험군",
+    definitions: [
+      {
+        key: "method",
+        label: "운용 방식",
+        text: "거래일마다 한 번(결정 시각 이후, 확정 종가를 확인한 뒤) 입력 패킷 — 매크로·레짐·게이트 지표·기관 트랙레코드·13F 변화·시세·"
+          + "재무·보유·최근 결정·메모·하드 규칙 — 을 Claude에 보내 주문 목록과 목표 주식 노출을 받습니다. 판단 원칙은 프레임 판(시스템 "
+          + "프롬프트)이 정합니다.",
+      },
+      {
+        key: "buy",
+        label: "매수",
+        text: "Claude가 제안한 매수 가운데 검증기(하드 규칙)를 통과한 것만 대기 주문이 됩니다 — 종목·ETF 비중 상한(현금성 제외), 최대 "
+          + "종목 수(현금성 제외), 보유 합계 100% 초과(큰 비중부터 받고 넘치는 매수는 거절), 최소 주문 금액, 월 재량 주문 상한, 재진입 "
+          + "금지, 유니버스, 데이터 신선도.",
+      },
+      {
+        key: "sell",
+        label: "매도·리스크",
+        text: "재량 매도는 최소 보유 거래일이 지난 종목만 통과합니다(현금성 종목은 예외). 트레일링 스탑(최고가 대비 설정 비율만큼 "
+          + "떨어지면 전량 매도, 재진입 금지)은 장부가 따로 적용합니다 — 현금성 종목은 제외. 호출 실패·형식 오류인 날은 재량 주문이 없고 "
+          + "스탑만 돕니다. 일시정지 중에는 스탑도 보지 않습니다(최고가만 따라감).",
+      },
+      {
+        key: "cash",
+        label: "현금",
+        text: "현금 비중·주식 노출은 Claude가 정하고 검증기는 보지 않습니다(0%·100%도 거절하지 않음). 목표 노출은 기록·표시용이고 집행은 "
+          + "주문 기준입니다.",
+      },
+      {
+        key: "start",
+        label: "시작·출발일",
+        text: "개요의 'Claude 계좌 시작'(초기 결정)으로 시작합니다 — 출발일 기준 초기 패킷(가격·FRED·13F·트랙레코드·재무는 그날 이하 "
+          + "값만, 매크로 카드는 그날 이력이 없어 지금 수집본을 참고로)으로 받은 주문 가운데 검증을 통과한 것을 출발일 종가에 사후 "
+          + "체결합니다.",
+      },
+      {
+        key: "purpose",
+        label: "비교 목적",
+        text: "실험군 — 매크로·13F·재무를 함께 읽는 재량 판단이 기계적 규칙(규칙 계좌)과 시장(SPY 계좌)을 이기는지 봅니다.",
+      },
+    ],
+    settings: [
+      { key: "model", label: "모델" },
+      { key: "decisionTimeKst", label: "결정 시각(KST)" },
+      { key: "apiDailyCallCap", label: "하루 호출 상한", unit: "회" },
+      { key: "maxWeightStockPct", label: "종목 비중 상한", unit: "%" },
+      { key: "maxWeightEtfPct", label: "ETF 비중 상한", unit: "%" },
+      { key: "maxPositions", label: "최대 종목 수(현금성 제외)", unit: "종목" },
+      { key: "minOrderNotional", label: "최소 주문 금액", unit: " 달러" },
+      { key: "maxDiscretionaryOrdersPerMonth", label: "월 재량 주문 상한", unit: "건" },
+      { key: "minHoldTradingDaysForSell", label: "재량 매도 전 최소 보유", unit: "거래일" },
+      { key: "trailingStopPct", label: "트레일링 스탑", unit: "%" },
+      { key: "lockoutTradingDays", label: "스탑 뒤 재진입 금지", unit: "거래일" },
+      { key: "cashLikeTickers", label: "현금성 종목" },
+    ],
+  },
+  bench_spy: {
+    summary: "출발일에 SPY 100%를 사서 그대로 드는 시장 기준선",
+    definitions: [
+      { key: "method", label: "운용 방식", text: "결정을 내지 않습니다. 출발일 종가로 SPY를 한 번 사고 그대로 듭니다." },
+      {
+        key: "buy",
+        label: "매수",
+        text: "초기화 때 한 번 — SPY 100%를 출발일 종가에 사후 체결합니다(정수 주라 1주에 못 미치는 잔돈은 현금으로 남음). 그 뒤로는 "
+          + "사지 않습니다.",
+      },
+      { key: "sell", label: "매도·리스크", text: "팔지 않습니다 — 트레일링 스탑을 걸지 않고 리밸런싱도 하지 않습니다." },
+      { key: "cash", label: "현금", text: "1주를 채우지 못한 잔돈뿐입니다." },
+      { key: "start", label: "시작·출발일", text: BENCHMARK_START },
+      {
+        key: "purpose",
+        label: "비교 목적",
+        text: "시장 기준선 — 다른 세 계좌 통계의 초과 수익률·베타는 이 계좌 대비입니다.",
+      },
+    ],
+    settings: [{ key: "slippageBp", label: "체결 슬리피지(네 계좌 공통)", unit: "bp" }],
+  },
+  bench_mix: {
+    summary: "출발일에 SPY 60%·SHY 40%를 사서 그대로 드는 단순 배분 기준 — 리밸런싱 없음",
+    definitions: [
+      { key: "method", label: "운용 방식", text: "결정을 내지 않습니다. 출발일 종가로 SPY 60%·SHY 40%를 한 번 사고 그대로 듭니다." },
+      {
+        key: "buy",
+        label: "매수",
+        text: "초기화 때 한 번 — 두 종목을 출발일 종가에 사후 체결합니다(정수 주라 잔돈은 현금으로 남음). 그 뒤로는 사지 않습니다.",
+      },
+      {
+        key: "sell",
+        label: "매도·리스크",
+        text: "팔지 않습니다 — 트레일링 스탑·리밸런싱이 없어 비중은 가격에 따라 60/40에서 벌어집니다.",
+      },
+      {
+        key: "cash",
+        label: "현금",
+        text: "SHY 40%가 현금성 몫입니다 — 현금성 종목(설정 cashLikeTickers, 기본 SHY)이라 구성 차트에서 현금과 한 묶음입니다. 그 밖의 "
+          + "현금은 잔돈뿐입니다.",
+      },
+      { key: "start", label: "시작·출발일", text: BENCHMARK_START },
+      {
+        key: "purpose",
+        label: "비교 목적",
+        text: "주식을 덜 든 단순 배분과의 비교 — 현금을 많이 들고 가는 판단이 이 배분보다 나았는지 봅니다. 통계는 SPY 계좌 대비입니다.",
+      },
+    ],
+    settings: [
+      { key: "slippageBp", label: "체결 슬리피지(네 계좌 공통)", unit: "bp" },
+      { key: "cashLikeTickers", label: "현금성 종목" },
+    ],
+  },
+};
+
+/** 계좌 코드의 소개. 모르는 코드(정의가 없는 계좌)는 null — 지어내지 않습니다. */
+export function accountProfile(code: string | null | undefined): AccountProfile | null {
+  return code && Object.hasOwn(ACCOUNT_PROFILES, code) ? ACCOUNT_PROFILES[code] : null;
+}
+
+/** 배분 방식(blend.allocation) 이름. */
+const ALLOCATION_LABEL: Record<string, string> = { CONVICTION: "확신도 비례(CONVICTION)", EQUAL: "동일 비중(EQUAL)" };
+
+/** 상세 패널의 "지금 설정" 한 줄. */
+export interface AccountSettingRow {
+  key: string;
+  label: string;
+  value: string;
+}
+
+/**
+ * 계좌 규칙을 정하는 설정의 지금 값(설정 응답의 body). 설정을 읽지 못했으면(body 없음) 빈 목록 — 화면은 숫자 없이 정의 문장만 보입니다.
+ * 키가 없거나 값을 모르면 "—"(기본값으로 채우지 않음 — 지금 설정과 다를 수 있음).
+ */
+export function accountSettingRows(code: string | null | undefined, body: unknown): AccountSettingRow[] {
+  const profile = accountProfile(code);
+  if (!profile || !isRecord(body)) return [];
+  return profile.settings.map((spec) => {
+    const value = settingValueAt(body, spec.key);
+    let text: string;
+    if (value === null || value === undefined) text = EMPTY;
+    else if (spec.key === "blend.allocation" && typeof value === "string") text = ALLOCATION_LABEL[value] ?? value;
+    else if (typeof value === "number") text = Number.isFinite(value) ? `${settingText(value)}${spec.unit ?? ""}` : EMPTY;
+    else text = settingText(value);
+    return { key: spec.key, label: spec.label, value: text };
+  });
+}
+
+/** 구성 묶음의 종류 — 이름을 따로 그리는 상위 종목 · 나머지 종목(기타) · 현금과 현금성 종목. */
+export type CompositionKind = "holding" | "other" | "cash";
+
+/** 구성 차트의 묶음 하나(조각). */
+export interface CompositionSegment {
+  key: string;
+  kind: CompositionKind;
+  /** 상위 종목의 범주 순서(0부터, 비중 큰 순) — 화면이 이 순서로 색을 고정 배정합니다. 기타·현금은 null(무채색). */
+  slot: number | null;
+  label: string;
+  /** 비중(순자산 대비 %, 표시 반올림 전). */
+  sharePct: number;
+  shareText: string;
+  valueText: string;
+  /**
+   * 묶음 내역(둘 이상 묶은 기타의 종목들, 현금성 종목이 있을 때 현금·현금성의 금액 내역). 종목 하나짜리 조각(상위 종목, 남은 종목이
+   * 하나뿐인 기타)과 현금만인 묶음은 null.
+   */
+  detail: string | null;
+  /** 고리 옆에 직접 적을 글자(묶음이 DIRECT_LABEL_MAX_SEGMENTS 이하이고 조각이 충분히 클 때만), 아니면 null. */
+  directLabel: string | null;
+}
+
+/** 구성 표(차트의 표 보기)의 한 줄 — 보유 종목 하나 또는 현금. */
+export interface CompositionRow {
+  key: string;
+  /** 티커, 현금 줄이면 "현금". */
+  label: string;
+  /** 이 줄이 든 차트 묶음(CompositionSegment.key) — 표의 색 표식이 차트 조각과 같게. */
+  segmentKey: string;
+  cashLike: boolean;
+  isCash: boolean;
+  shareText: string;
+  valueText: string;
+  unrealizedPct: number | null;
+  unrealizedText: string;
+  qtyText: string;
+}
+
+/** 계좌 구성 — 차트 모양·묶음·표. */
+export interface AccountComposition {
+  /**
+   * donut: 의미 있는 묶음이 셋 이상 · meter: 둘 이하(두 조각 파이는 숫자가 더 낫다 — 한 줄 막대로) · none: 비중을 몰라 그리지 않음.
+   */
+  form: "donut" | "meter" | "none";
+  segments: CompositionSegment[];
+  rows: CompositionRow[];
+  /** 묶음 비중의 합(표시 반올림 전). 그리지 않으면 null. 반올림 오차를 빼면 100입니다. */
+  totalPct: number | null;
+  /** 그리지 않는 이유(form "none"), 아니면 null. */
+  note: string | null;
+}
+
+/**
+ * 이름과 색을 따로 받는 상위 종목 수. 상위 셋 + 기타 + 현금·현금성 = 최대 다섯 조각.
+ *
+ * 넷이 아니라 셋인 까닭: 넷째 색(노랑)은 둘째(주황)와 색약 ΔE 4.8·정상 시각 10.6으로 가까워(dataviz 검증기 --pairs all), 묶음이 넷을
+ * 넘어 직접 라벨이 빠지는 규칙 계좌의 흔한 모양(종목 열 + SHY)에서 색만으로 둘째와 넷째 종목을 범례·표와 맞출 수 없었습니다. 앞 세
+ * 색은 모든 쌍이 통과합니다(색약 최소 9.4, 정상 시각 최소 20.9).
+ */
+export const COMPOSITION_TOP_N = 3;
+/** 직접 라벨을 붙이는 묶음 수의 상한 — 넷까지는 범례와 함께 고리 옆에도 이름을 적고, 넘으면 이웃 라벨이 겹쳐 범례·툴팁·표에 맡깁니다. */
+export const DIRECT_LABEL_MAX_SEGMENTS = 4;
+/** 이보다 작은 묶음은 그리고 범례·표에 적되, 도넛으로 그릴지 정하는 "의미 있는 묶음 수"에는 세지 않습니다(SPY 계좌의 잔돈 0.1% 같은 것). */
+export const COMPOSITION_MEANINGFUL_PCT = 0.5;
+/** 직접 라벨을 붙일 최소 조각(%) — 더 작은 조각은 이웃 라벨과 겹쳐 범례·툴팁·표가 대신 나릅니다. */
+const DIRECT_LABEL_MIN_PCT = 3;
+/** 기타 묶음 내역에 이름을 적을 종목 수 — 넘으면 "외 n종목". */
+const OTHER_DETAIL_NAMES = 6;
+
+/** 비중 큰 순, 같으면 티커 순 — 같은 장부면 늘 같은 순서(색 배정이 새로 읽을 때마다 바뀌지 않게). 비중을 모르면 맨 뒤. */
+function byShareThenTicker(a: { share: number | null; ticker: string }, b: { share: number | null; ticker: string }): number {
+  const left = a.share ?? Number.NEGATIVE_INFINITY;
+  const right = b.share ?? Number.NEGATIVE_INFINITY;
+  if (left !== right) return right - left;
+  return a.ticker < b.ticker ? -1 : a.ticker > b.ticker ? 1 : 0;
+}
+
+/**
+ * 계좌 구성(보유 응답 → 도넛·표). 상위 COMPOSITION_TOP_N 종목은 종목별(색), 나머지 종목은 "기타 n종목"(무채색), 현금과 현금성 종목(보유
+ * 응답의 cashLike — 설정 cashLikeTickers, 기본 SHY)은 "현금·현금성" 한 묶음입니다. 남은 종목이 하나뿐이면 "기타 1종목"으로 감추지 않고
+ * 그 티커를 그대로 적습니다(조각 수·색은 같고 이름만 사라지던 것). 현금성 종목이 없으면 그냥 "현금"이라 적습니다(SHY가 없는데
+ * '현금성'이라 하지 않게) — 고리 옆 직접 라벨도 같은 규칙입니다(SHY가 대부분인 묶음을 "현금"이라 적으면 현금 칸과 다른 숫자가 됨).
+ *
+ * 종목 비중은 장부가 계산해 보낸 weightPct(평가액 ÷ 순자산) 그대로입니다 — 보유·체결 탭과 같은 숫자. 현금 몫만 응답에 비중이 없어
+ * 같은 응답의 현금 ÷ 순자산으로 냅니다(묶음은 그 값들의 합). 순자산을 모르거나 한 종목이라도 비중을 모르면 그리지 않습니다(form
+ * "none") — 일부만 그린 도넛은 모르는 몫을 다른 조각이 차지해 틀린 그림이 됩니다. 표는 그때도 장부 값 그대로 보입니다.
+ */
+export function accountComposition(
+  positions: readonly PaperPosition[] | null | undefined,
+  cash: number | null | undefined,
+  nav: number | null | undefined,
+): AccountComposition {
+  const navValue = isNumber(nav) && nav > 0 ? nav : null;
+  const entries = (positions ?? []).map((position) => ({
+    position,
+    ticker: position.ticker,
+    share: isNumber(position.weightPct)
+      ? position.weightPct
+      : navValue !== null && isNumber(position.marketValue) ? (position.marketValue / navValue) * 100 : null,
+  }));
+  const stocks = entries.filter((entry) => !entry.position.cashLike).sort(byShareThenTicker);
+  const cashLike = entries.filter((entry) => entry.position.cashLike).sort(byShareThenTicker);
+  const cashValue = isNumber(cash) ? cash : null;
+  const cashShare = navValue !== null && cashValue !== null ? (cashValue / navValue) * 100 : null;
+
+  const top = stocks.slice(0, COMPOSITION_TOP_N);
+  const rest = stocks.slice(COMPOSITION_TOP_N);
+  const segmentOf = (index: number) => (index < COMPOSITION_TOP_N ? `holding:${stocks[index].ticker}` : "other");
+
+  const rows: CompositionRow[] = [
+    ...stocks.map((entry, index) => holdingRow(entry.position, entry.share, segmentOf(index))),
+    ...cashLike.map((entry) => holdingRow(entry.position, entry.share, "cash")),
+    {
+      key: "cash", label: "현금", segmentKey: "cash", cashLike: false, isCash: true,
+      shareText: formatWithUnit(cashShare, 1, "%"), valueText: formatDollars(cashValue),
+      unrealizedPct: null, unrealizedText: EMPTY, qtyText: EMPTY,
+    },
+  ];
+
+  const shares = [...entries.map((entry) => entry.share), cashShare];
+  if (navValue === null || shares.some((share) => share === null)) {
+    return {
+      form: "none", segments: [], rows, totalPct: null,
+      note: "순자산이나 비중을 몰라(—) 구성 차트를 그리지 않습니다 — 아래 표는 장부 값 그대로입니다.",
+    };
+  }
+  if (shares.some((share) => (share as number) < 0)) {
+    return { form: "none", segments: [], rows, totalPct: null, note: "음수인 몫이 있어 구성 차트를 그리지 않습니다 — 아래 표를 보세요." };
+  }
+
+  const valueOf = (position: PaperPosition) => (isNumber(position.marketValue) ? position.marketValue : 0);
+  // short: 고리 옆 직접 라벨에 쓰는 짧은 이름(범례·툴팁은 label 전체).
+  const segments: (Omit<CompositionSegment, "directLabel"> & { short: string })[] = top.map((entry, index) => ({
+    key: `holding:${entry.ticker}`,
+    kind: "holding",
+    slot: index,
+    label: entry.ticker,
+    short: entry.ticker,
+    sharePct: entry.share as number,
+    shareText: formatWithUnit(entry.share, 1, "%"),
+    valueText: formatDollars(entry.position.marketValue),
+    detail: null,
+  }));
+  if (rest.length > 0) {
+    const share = rest.reduce((sum, entry) => sum + (entry.share as number), 0);
+    const single = rest.length === 1 ? rest[0].ticker : null;
+    const names = rest.slice(0, OTHER_DETAIL_NAMES).map((entry) => entry.ticker).join("·");
+    const more = rest.length > OTHER_DETAIL_NAMES ? ` 외 ${formatNumber(rest.length - OTHER_DETAIL_NAMES, 0)}종목` : "";
+    segments.push({
+      key: "other",
+      kind: "other",
+      slot: null,
+      label: single ?? `기타 ${formatNumber(rest.length, 0)}종목`,
+      short: single ?? "기타",
+      sharePct: share,
+      shareText: formatWithUnit(share, 1, "%"),
+      valueText: formatDollars(rest.reduce((sum, entry) => sum + valueOf(entry.position), 0)),
+      detail: single ? null : `${names}${more}`,
+    });
+  }
+  const cashLikeShare = cashLike.reduce((sum, entry) => sum + (entry.share as number), 0);
+  const cashSegmentShare = (cashShare as number) + cashLikeShare;
+  if (cashSegmentShare > 0) {
+    const tickers = cashLike.map((entry) => entry.ticker);
+    segments.push({
+      key: "cash",
+      kind: "cash",
+      slot: null,
+      label: tickers.length > 0 ? `현금·현금성(${tickers.join("·")})` : "현금",
+      short: tickers.length > 0 ? "현금·현금성" : "현금",
+      sharePct: cashSegmentShare,
+      shareText: formatWithUnit(cashSegmentShare, 1, "%"),
+      valueText: formatDollars((cashValue as number) + cashLike.reduce((sum, entry) => sum + valueOf(entry.position), 0)),
+      detail: tickers.length > 0
+        ? [`현금 ${formatDollars(cashValue)}`, ...cashLike.map((entry) => `${entry.ticker} ${formatDollars(entry.position.marketValue)}`)]
+          .join(" + ")
+        : null,
+    });
+  }
+
+  const meaningful = segments.filter((segment) => segment.sharePct >= COMPOSITION_MEANINGFUL_PCT).length;
+  const labelled = segments.length <= DIRECT_LABEL_MAX_SEGMENTS;
+  return {
+    form: segments.length === 0 ? "none" : meaningful >= 3 ? "donut" : "meter",
+    segments: segments.map(({ short, ...segment }) => ({
+      ...segment,
+      directLabel: labelled && segment.sharePct >= DIRECT_LABEL_MIN_PCT ? `${short} ${segment.shareText}` : null,
+    })),
+    rows,
+    totalPct: segments.reduce((sum, segment) => sum + segment.sharePct, 0),
+    note: segments.length === 0 ? "그릴 몫이 없습니다." : null,
+  };
+}
+
+/** 구성 표의 보유 한 줄. 평가 손익(평단 대비)은 장부 값 그대로. */
+function holdingRow(position: PaperPosition, share: number | null, segmentKey: string): CompositionRow {
+  return {
+    key: `position:${position.ticker}`,
+    label: position.ticker,
+    segmentKey,
+    cashLike: position.cashLike,
+    isCash: false,
+    shareText: formatWithUnit(share, 1, "%"),
+    valueText: formatDollars(position.marketValue),
+    unrealizedPct: isNumber(position.unrealizedPct) ? position.unrealizedPct : null,
+    unrealizedText: formatPercent(position.unrealizedPct),
+    qtyText: formatNumber(position.qty, 0),
   };
 }
 
@@ -572,7 +1034,7 @@ export function heldText(position: Pick<PaperPosition, "openedOn" | "holdingTrad
 }
 
 /**
- * 일시정지·재개 버튼. 시작 전인 책은 null — 시작은 초기 결정이 합니다(규칙 책은 개요의 '규칙 책 시작', 백엔드도 거절).
+ * 일시정지·재개 버튼. 시작 전인 책은 null — 시작은 초기 결정이 합니다(규칙 책은 개요의 '규칙 계좌 시작', 백엔드도 거절).
  */
 export function statusToggle(status: string | null | undefined): { next: "ACTIVE" | "PAUSED"; label: string } | null {
   if (status === "ACTIVE") return { next: "PAUSED", label: "일시정지" };
@@ -586,18 +1048,18 @@ export function statusToggle(status: string | null | undefined): { next: "ACTIVE
  */
 export function notStartedNote(kind: string | null | undefined): string {
   if (kind === "BENCHMARK") {
-    return "시작 전인 벤치마크 책은 출발일 종가로 사후 체결해 시작합니다 — 종가를 받은 뒤 초기화를 다시 누르세요"
-      + "(개요 탭의 '초기화' 또는 아래 '책 초기화'). 지금은 현금만 듭니다.";
+    return "시작 전인 벤치마크 계좌는 출발일 종가로 사후 체결해 시작합니다 — 종가를 받은 뒤 초기화를 다시 누르세요"
+      + "(개요 탭의 '초기화' 또는 아래 '계좌 초기화'). 지금은 현금만 듭니다.";
   }
   if (kind === "RULES") {
-    return "시작 전인 규칙 책은 개요 탭의 '규칙 책 시작'(초기 결정)으로 시작합니다 — 출발일 기준 선정·신호로 고른 종목을 "
+    return "시작 전인 규칙 계좌는 개요 탭의 '규칙 계좌 시작'(초기 결정)으로 시작합니다 — 출발일 기준 선정·신호로 고른 종목을 "
       + "출발일 종가에 사후 체결합니다. 지금은 현금만 듭니다.";
   }
   if (kind === "CLAUDE") {
-    return "시작 전인 Claude 책은 개요 탭의 'Claude 재량 책 시작'(초기 결정)으로 시작합니다 — 출발일 기준 입력 패킷으로 Claude가 "
+    return "시작 전인 Claude 계좌는 개요 탭의 'Claude 계좌 시작'(초기 결정)으로 시작합니다 — 출발일 기준 입력 패킷으로 Claude가 "
       + "고른 주문 가운데 검증(하드 규칙)을 통과한 것만 출발일 종가에 사후 체결합니다. 지금은 현금만 듭니다.";
   }
-  return "시작 전인 책은 초기 결정으로 시작합니다 — 지금은 현금만 듭니다.";
+  return "시작 전인 계좌는 초기 결정으로 시작합니다 — 지금은 현금만 듭니다.";
 }
 
 /** 보유·체결 탭의 기본 책 — 고른 책이 목록에 있으면 그것, 아니면 처음으로 시작한 책, 그것도 없으면 첫 책. */
@@ -625,10 +1087,10 @@ export function initPrompt(
   if (overview.initialized === false) {
     return {
       title: "장부 초기화",
-      body: `아직 장부가 없습니다. 초기화하면 책 네 개를 만들고, 두 벤치마크 책을 출발일(${start}) 종가로 사후 체결합니다. `
-        + "규칙 책·Claude 책은 현금만 든 채 '시작 전'으로 둡니다 — 초기화 뒤 개요의 '규칙 책 시작'·'Claude 재량 책 시작'"
+      body: `아직 장부가 없습니다. 초기화하면 계좌 네 개를 만들고, 두 벤치마크 계좌를 출발일(${start}) 종가로 사후 체결합니다. `
+        + "규칙 계좌·Claude 계좌는 현금만 든 채 '시작 전'으로 둡니다 — 초기화 뒤 개요의 '규칙 계좌 시작'·'Claude 계좌 시작'"
         + "(초기 결정)으로 각각 시작합니다. "
-        + "여러 번 눌러도 이미 있는 책은 다시 만들지 않습니다.",
+        + "여러 번 눌러도 이미 있는 계좌는 다시 만들지 않습니다.",
     };
   }
   const pending = overview.pendingBackfill ?? [];
@@ -638,7 +1100,7 @@ export function initPrompt(
   return {
     title: "벤치마크 사후 체결 대기",
     body: `${names}: 출발일(${start}) 종가를 아직 받지 못해 시작하지 않았습니다(현금만). 종가를 받은 뒤 초기화를 다시 누르세요 — `
-      + "이미 있는 책은 다시 만들지 않고, 시작 전인 벤치마크만 그 종가로 사후 체결합니다.",
+      + "이미 있는 계좌는 다시 만들지 않고, 시작 전인 벤치마크만 그 종가로 사후 체결합니다.",
   };
 }
 
@@ -646,7 +1108,7 @@ export function initPrompt(
 export function initResultText(result: PaperInitResult): string {
   const created = result.created ?? [];
   const backfilled = result.backfilled ?? [];
-  const parts = [created.length > 0 ? `만든 책 ${created.join(", ")}` : "새로 만든 책 없음(이미 있음)"];
+  const parts = [created.length > 0 ? `만든 계좌 ${created.join(", ")}` : "새로 만든 계좌 없음(이미 있음)"];
   if (backfilled.length > 0) parts.push(`사후 체결 ${backfilled.join(", ")}`);
   for (const skip of result.skipped ?? []) parts.push(`${skip.code} 시작하지 않음 — ${skip.reason}`);
   return parts.join(" · ");
@@ -657,7 +1119,7 @@ export function riskOutcomeText(outcome: PaperRiskOutcome | null | undefined): s
   if (!outcome) return "결과를 받지 못했습니다.";
   const books = outcome.booksProcessed ?? [];
   const text = `체결 ${outcome.filled} · 스탑 ${outcome.stopped} · 만료 ${outcome.expired} · 분할 ${outcome.splits}` +
-    ` · 처리한 책 ${books.length > 0 ? books.join(", ") : "없음"}`;
+    ` · 처리한 계좌 ${books.length > 0 ? books.join(", ") : "없음"}`;
   return outcome.skippedReason ? `${text} — ${outcome.skippedReason}` : text;
 }
 
@@ -687,7 +1149,7 @@ export function riskResultView(result: PaperRiskResult): RiskResultView {
     warning: !failed
       ? null
       : errors.length > 0
-        ? "오류가 난 책이 있습니다 — 그 책은 이번 관측치 처리를 되돌렸습니다(장부는 그대로)."
+        ? "오류가 난 계좌가 있습니다 — 그 계좌는 이번 관측치 처리를 되돌렸습니다(장부는 그대로)."
         : "리스크 작업이 돌지 않았습니다.",
     // 테이블이 없을 때는 outcome 없이 서버 문구만 옵니다.
     summary: outcome ? riskOutcomeText(outcome) : (result.message ?? riskOutcomeText(null)),
@@ -708,7 +1170,7 @@ export function statusResultText(result: PaperBookStatusResult): string {
  * 사유를 버리면 "초기화했습니다 — 지금 시작 전"만 남아, 왜 벤치마크가 현금만 들고 있는지 알 수 없었습니다.
  */
 export function resetResultView(result: PaperBookResetResult): { tone: "warn" | "info"; text: string } {
-  const base = `${result.book.label}을(를) 초기화했습니다 — 지금 ${bookStatusBadge(result.book.status).label}`;
+  const base = `${withParticle(result.book.label, "을")} 초기화했습니다 — 지금 ${bookStatusBadge(result.book.status).label}`;
   if (result.skippedReason) {
     return { tone: "warn", text: `${base}. 출발일 종가로 다시 사후 체결하지 못했습니다 — ${result.skippedReason}` };
   }
@@ -785,7 +1247,7 @@ export function eligibilityBadge(
 /** 선정 배지 — 그 기준일의 선정에 든 기관만. */
 export function selectedBadge(candidate: Pick<PaperTrackRecordCandidate, "selected">): Badge | null {
   return candidate.selected
-    ? { key: "selected", label: "선정", className: TONE.info, title: "이 기준일의 선정(상위 기관)에 든 기관 — 규칙 책이 이 기관들의 13F 신호를 씁니다." }
+    ? { key: "selected", label: "선정", className: TONE.info, title: "이 기준일의 선정(상위 기관)에 든 기관 — 규칙 계좌가 이 기관들의 13F 신호를 씁니다." }
     : null;
 }
 
@@ -1118,14 +1580,14 @@ export function rulesStartPrompt(
   return {
     bookCode: rules.code,
     title: `${rules.label} 시작`,
-    body: `${rules.label}은 아직 현금만 들고 있습니다. 시작하면 출발일(${start}) 기준으로(그날 이전 공시·가격만) 신호 기관 두 그룹을 `
+    body: `${withParticle(rules.label, "은")} 아직 현금만 들고 있습니다. 시작하면 출발일(${start}) 기준으로(그날 이전 공시·가격만) 신호 기관 두 그룹을 `
       + "뽑습니다 — 그룹 A는 후보 기관의 7년 트랙레코드 상위 5곳, 그룹 B는 기존 '기관 13F 포트폴리오 분석' 메뉴 기관의 최근 2년 상위 "
       + "4곳입니다. 두 그룹을 합친 신호 풀의 최신 분기 13F에서 2곳 이상이 신규 편입하거나 주식 수를 30% 이상 늘린 종목마다 점수"
       + "(기관 가중 × 확신도 — 그 종목이 그 기관 13F에서 차지하는 비중, 10%에서 상한)를 매기고, 점수 순 상위 10종목을 확신도 비례 "
       + "비중(가장 높은 점수가 종목 상한 10%, 목표 1% 미만은 뺌)으로 출발일 종가에 사후 체결합니다. 남는 현금은 SHY에 둡니다. "
       + "숫자는 모두 설정의 기본값입니다. 매크로 게이트는 쓰지 않습니다(참고 지표로 기록만).",
-    confirm: `정말 시작할까요? 출발일(${start}) 종가로 사후 체결하고 책을 '운용 중'으로 바꿉니다. 되돌리려면 보유·체결 탭의 `
-      + "'책 초기화'로 이 책의 장부를 모두 지워야 합니다. 후보 기관의 13F 수집이 끝나지 않았으면 서버가 거절합니다.",
+    confirm: `정말 시작할까요? 출발일(${start}) 종가로 사후 체결하고 계좌를 '운용 중'으로 바꿉니다. 되돌리려면 보유·체결 탭의 `
+      + "'계좌 초기화'로 이 계좌의 장부를 모두 지워야 합니다. 후보 기관의 13F 수집이 끝나지 않았으면 서버가 거절합니다.",
   };
 }
 
@@ -1134,13 +1596,13 @@ export function rulesStartPrompt(
  * 주문이 하나도 없으면(NO_TRADE) 시작은 했지만 현금만 든다는 것을 경고색으로 적습니다 — 정보색이면 "종목을 샀다"로 읽힙니다.
  * 결정에 오류가 있으면(Claude 책의 응답 형식 오류·모델 거절·API 오류) 경고색으로 오류를 붙입니다 — 그때는 그날 재량 주문이 없습니다.
  *
- * @param bookLabel 시작한 책 이름(기본 "규칙 책"). Claude 책 카드는 그 책 이름을 넘깁니다.
+ * @param bookLabel 시작한 책 이름(기본 "규칙 계좌"). Claude 책 카드는 그 책 이름을 넘깁니다.
  */
 export function initialDecisionResultView(
   result: PaperInitialDecisionResult,
-  bookLabel = "규칙 책",
+  bookLabel = "규칙 계좌",
 ): { tone: "warn" | "info"; text: string } {
-  const object = `${bookLabel}${bookLabel.endsWith("책") ? "을" : "을(를)"}`;
+  const object = withParticle(bookLabel, "을");
   if (result.ok === false) return { tone: "warn", text: result.message ?? `${object} 시작하지 못했습니다.` };
   const decision = result.decision ?? null;
   const noTrade = decision?.status === "NO_TRADE";
@@ -1213,19 +1675,19 @@ export function resolveDecisionBook(picked: string, books: readonly PaperBookSum
 /** 책마다 결정이 언제·무엇을 하는지 한 문단. */
 export function decisionBookNote(kind: string | null | undefined): string {
   if (kind === "CLAUDE") {
-    return "Claude 책은 거래일마다 한 번(KST 07:30 이후, 확정 종가를 확인한 뒤 — 12:00까지 오지 않으면 있는 값으로 '확정 전 값') 입력 "
+    return "Claude 계좌는 거래일마다 한 번(KST 07:30 이후, 확정 종가를 확인한 뒤 — 12:00까지 오지 않으면 있는 값으로 '확정 전 값') 입력 "
       + "패킷을 Claude에 보내 주문 목록과 목표 주식 노출을 받습니다. 검증기(하드 규칙)가 주문마다 통과·거절을 정하고 통과한 주문만 "
       + "대기 주문이 됩니다. 현금 비중은 Claude가 정하고 검사하지 않습니다 — 목표 노출은 기록·표시용이고 집행은 주문 기준입니다. "
       + "응답 형식 오류·모델 거절·API 오류면 그날 재량 주문이 없고(API 오류는 같은 거래일에 한 번 다시 시도), 트레일링 스탑은 계속 돕니다. "
       + "하루 호출 상한(설정 apiDailyCallCap)에 닿으면 그날 결정은 건너뜁니다. '지금 결정 실행'은 시각 조건 없이 Claude를 한 번 "
       + "부릅니다(종류 '수동' — Sonnet 5.5 호출 1회, 약 $0.1, 상한에 셈).";
   }
-  return "규칙 책은 거래일마다 한 번(KST 07:30 이후, 확정 종가를 확인한 뒤) 결정을 남깁니다. 매수는 재선정일(분기 13F 공시 기한 "
+  return "규칙 계좌는 거래일마다 한 번(KST 07:30 이후, 확정 종가를 확인한 뒤) 결정을 남깁니다. 매수는 재선정일(분기 13F 공시 기한 "
     + "다음 거래일)과 초기 결정 때만 내고(재선정일 결정을 놓쳤거나 그날 선정을 건너뛰었으면 다음 결정 날에 그 재선정일 기준 선정으로 "
     + "한 번 따라잡습니다), 그 밖의 날은 보유 종목의 매도 신호(신호 풀 기관 여러 곳의 전량 매도)와 남는 현금만 봅니다(남는 현금이 "
     + "순자산의 기준(기본 2%, 설정 rules.parkCashThresholdPct)을 넘으면 SHY에 둠 — 신호 매수가 아닌 현금 관리). "
     + "신호는 선정 기준일까지 공시된 13F만 씁니다. 매크로 게이트는 쓰지 않고 참고로 기록만 합니다. "
-    + "'지금 결정 실행'은 시각 조건 없이 이 책만 한 번 결정하고(종류 '수동' — 매도 신호와 남는 현금만), 확정 종가가 아니면 '확정 전 값'으로 남깁니다.";
+    + "'지금 결정 실행'은 시각 조건 없이 이 계좌만 한 번 결정하고(종류 '수동' — 매도 신호와 남는 현금만), 확정 종가가 아니면 '확정 전 값'으로 남깁니다.";
 }
 
 /**
@@ -1235,14 +1697,14 @@ export function decisionBookNote(kind: string | null | undefined): string {
  * 기록 — 비용 없음). 서버도 다시 판단하고, 그 문구는 버튼 결과로 그대로 보입니다.
  */
 export function decisionRunBlocked(book: Pick<PaperBookSummary, "status" | "kind"> | null | undefined): string | null {
-  if (!book) return "책이 없습니다.";
+  if (!book) return "계좌가 없습니다.";
   if (book.kind === "CLAUDE" && book.status === "PAUSED") {
-    return "일시정지 중인 Claude 책은 결정을 내지 않습니다(Claude를 부르지 않음) — 보유·체결 탭에서 재개한 뒤 누르세요.";
+    return "일시정지 중인 Claude 계좌는 결정을 내지 않습니다(Claude를 부르지 않음) — 보유·체결 탭에서 재개한 뒤 누르세요.";
   }
   if (book.status !== "NOT_STARTED") return null;
   return book.kind === "RULES"
-    ? "시작 전인 책은 결정을 내지 않습니다 — 개요 탭의 '규칙 책 시작'으로 먼저 시작하세요."
-    : "시작 전인 책은 결정을 내지 않습니다 — 개요 탭의 'Claude 재량 책 시작'(초기 결정)으로 먼저 시작하세요.";
+    ? "시작 전인 계좌는 결정을 내지 않습니다 — 개요 탭의 '규칙 계좌 시작'으로 먼저 시작하세요."
+    : "시작 전인 계좌는 결정을 내지 않습니다 — 개요 탭의 'Claude 계좌 시작'(초기 결정)으로 먼저 시작하세요.";
 }
 
 /** 수동 결정 결과 — 배너 색과 한 줄. ok:false면 서버 문구를, 결정에 오류가 있으면 경고색으로 오류를 붙입니다. */
@@ -2223,7 +2685,7 @@ export function claudeDecisionView(source: ClaudeDecisionSource): ClaudeDecision
   };
 }
 
-/** 개요의 "Claude 재량 책 시작" 카드. */
+/** 개요의 "Claude 계좌 시작" 카드. */
 export interface ClaudeStartPrompt {
   /** 초기 결정을 보낼 책 코드(본문 `{book}`). */
   bookCode: string;
@@ -2251,7 +2713,7 @@ function startFrameworkNote(framework: FrameworkInfo | null): ClaudeStartPrompt[
     };
   }
   // 사용자 판을 만드는 길은 '직접 고치기'의 저장 — 'OS 원문으로 새 판 만들기'의 제안 승인은 임시 상태를 이어받습니다(F1).
-  const tail = " 시작은 한 번뿐입니다(되돌리려면 책 초기화). 프레임 탭의 '직접 고치기'(수동 편집 — 저장하면 사용자 판)로 OS 원문의 원칙·"
+  const tail = " 시작은 한 번뿐입니다(되돌리려면 계좌 초기화). 프레임 탭의 '직접 고치기'(수동 편집 — 저장하면 사용자 판)로 OS 원문의 원칙·"
     + "규칙을 옮길 수 있습니다('OS 원문으로 새 판 만들기'의 Claude 제안을 승인한 판은 임시 상태를 이어받음). 미리보기로 지금 판의 판단을 먼저 "
     + "볼 수 있습니다.";
   if (framework?.status === "INTERIM") {
@@ -2286,7 +2748,7 @@ export function claudeStartPrompt(
   if (!claude || claude.status !== "NOT_STARTED") return null;
   const start = overview.startDate ?? EMPTY;
   const label = claude.label;
-  const object = `${label}${label.endsWith("책") ? "을" : "을(를)"}`;
+  const object = withParticle(label, "을");
   const version = framework?.version ?? null;
   const frameworkTail = version === null
     ? ""
@@ -2297,7 +2759,7 @@ export function claudeStartPrompt(
     bookCode: claude.code,
     bookLabel: label,
     title: `${label} 시작`,
-    body: `${label}은 아직 현금만 들고 있습니다. 시작하면 출발일(${start}) 기준 입력 패킷 — 그날 이전의 가격·FRED·13F·트랙레코드만, `
+    body: `${withParticle(label, "은")} 아직 현금만 들고 있습니다. 시작하면 출발일(${start}) 기준 입력 패킷 — 그날 이전의 가격·FRED·13F·트랙레코드만, `
       + "매크로 카드는 그날 이력이 없어 지금 수집본을 참고로 — 을 Claude에 한 번 보내 주문 목록과 목표 주식 노출을 받고, 검증기(하드 규칙)를 "
       + "통과한 주문만 출발일 종가에 사후 체결합니다. 현금 비중은 Claude가 정합니다 — 노출 0%도 100%도 거절 사유가 아닙니다. 응답 형식 "
       + "오류·모델 거절·API 오류면 주문 없이 결정 기록에 사유가 남습니다.",
@@ -2306,7 +2768,7 @@ export function claudeStartPrompt(
     confirmPreview: `미리보기를 부를까요? ${CLAUDE_COST_NOTE} 출발일 기준 패킷으로 호출·검증까지 하고, 장부·결정·주문 기록은 바꾸지 않습니다`
       + "(사용량과, 없을 때만 출발일 기관 선정·제안 종목의 출발일 종가를 남김 — 시작이 같은 값을 씀).",
     confirmStart: `정말 시작할까요? ${CLAUDE_COST_NOTE} 검증을 통과한 주문을 출발일(${start}) 종가로 사후 체결하고 ${object} '운용 중'으로 `
-      + "바꿉니다. 미리보기와 같은 답이 나온다는 보장은 없습니다(다시 부름). 되돌리려면 보유·체결 탭의 '책 초기화'로 이 책의 장부를 모두 "
+      + "바꿉니다. 미리보기와 같은 답이 나온다는 보장은 없습니다(다시 부름). 되돌리려면 보유·체결 탭의 '계좌 초기화'로 이 계좌의 장부를 모두 "
       + `지워야 합니다.${frameworkTail}`,
   };
 }
@@ -2466,10 +2928,10 @@ export type SettingKind = "number" | "integer" | "boolean" | "list" | "text" | "
 
 /** 설정 키 묶음(점 경로의 첫 마디) 이름. 모르는 묶음은 이름 그대로. */
 const SETTING_GROUP: Record<string, string> = {
-  "": "일반 — Claude 책 · 장부 · 검증기 · 규칙 책 · 메모",
+  "": "일반 — Claude 계좌 · 장부 · 검증기 · 규칙 계좌 · 메모",
   trackRecord: "기관 선정 — 트랙레코드(그룹 A)",
   blend: "두 기관 그룹 섞기(D27)",
-  rules: "규칙 책",
+  rules: "규칙 계좌",
   gate: "OS 게이트 지표 — 참고 임계치(구속하지 않음)",
 };
 
@@ -2683,7 +3145,7 @@ export function settingsPatch(changes: readonly SettingChange[]): Record<string,
 }
 
 /** 규칙 책 영향 키를 바꿀 때의 경고 — 서버 warning과 같은 문장(명세 S3). */
-export const RULES_FROZEN_WARNING = "규칙 책은 동결된 대조군입니다 — 이 변경은 실험 조건을 바꿉니다";
+export const RULES_FROZEN_WARNING = "규칙 계좌는 동결된 대조군입니다 — 이 변경은 실험 조건을 바꿉니다";
 
 /**
  * 저장 전 확인 문구 — 바뀐 값에 규칙 책 영향 키(서버 keys[].affectsRules)가 있을 때만, 없으면 null(바로 저장).
@@ -2692,7 +3154,7 @@ export const RULES_FROZEN_WARNING = "규칙 책은 동결된 대조군입니다 
 export function settingsConfirmText(changes: readonly SettingChange[]): string | null {
   const keys = changes.filter((change) => change.affectsRules).map((change) => change.key);
   if (keys.length === 0) return null;
-  return `${RULES_FROZEN_WARNING}. 바꾸는 규칙 책 영향 키: ${keys.join(", ")}. 이 뒤의 규칙 책 결정은 다른 조건으로 낸 것이 됩니다`
+  return `${RULES_FROZEN_WARNING}. 바꾸는 규칙 계좌 영향 키: ${keys.join(", ")}. 이 뒤의 규칙 계좌 결정은 다른 조건으로 낸 것이 됩니다`
     + "(결정 기록마다 설정 버전이 남습니다). 그래도 저장할까요?";
 }
 
@@ -2866,7 +3328,7 @@ export function frameworkCurrentView(
     // 사용자 판(v1)을 만드는 길은 '직접 고치기'의 저장뿐이라 그것을 먼저 적습니다 — 제안 승인은 기준 판의 상태(임시)를 이어받습니다(F1).
     interimNote: status === "INTERIM"
       ? `지금 판은 ${frameworkVersionLabel(version, status)}입니다 — 사용자 OS 원문을 받기 전, 명세·설계의 지침으로 만든 판입니다. 아래 '직접 `
-        + "고치기'로 OS 원문의 원칙·규칙을 옮겨 저장하면 사용자 판(v1)이 됩니다 — 그 뒤 Claude 책을 시작하기를 권합니다. 'OS 원문으로 새 판 "
+        + "고치기'로 OS 원문의 원칙·규칙을 옮겨 저장하면 사용자 판(v1)이 됩니다 — 그 뒤 Claude 계좌를 시작하기를 권합니다. 'OS 원문으로 새 판 "
         + "만들기'(원문 → 방법론 메모 → Claude 제안 → 승인)는 원문과 지금 판을 대조한 제안을 받는 길이고, 제안을 승인한 판은 기준 판의 상태를 "
         + "이어받아 임시로 남습니다."
       : null,
@@ -3226,7 +3688,7 @@ export function frameworkSaveResultView(
   const version = isNumber(result.version) ? `v${result.version}` : EMPTY;
   return {
     tone: "info",
-    text: `새 판 ${version}(사용자 판)을 저장했습니다 — 다음 Claude 결정부터 이 판으로 판단합니다(규칙 책은 프레임을 쓰지 않음).`,
+    text: `새 판 ${version}(사용자 판)을 저장했습니다 — 다음 Claude 결정부터 이 판으로 판단합니다(규칙 계좌는 프레임을 쓰지 않음).`,
     warning: textOf(result.warning),
   };
 }
@@ -3716,7 +4178,7 @@ export function notesIntro(startDate: string | null | undefined): string {
   return "시황 메모(MARKET)는 기준일~만료일 사이 Claude 결정 패킷(섹션 11)에 구분자로 감싼 자료로 실립니다 — 지시가 아니고, 메모의 숫자보다 "
     + "패킷의 숫자가 우선합니다. 유효한 메모는 최신부터 합계 글자 수 상한(설정 notesMaxCharsInPacket)까지 싣습니다. 방법론 메모(INSIGHT)는 "
     + "패킷에 싣지 않고 프레임 제안에만 씁니다. "
-    + `Claude 책 시작(초기 결정) 패킷에는 기준일이 출발일(${startDate ?? EMPTY}) 이하인 메모만 실립니다. 규칙 책은 메모를 읽지 않습니다.`;
+    + `Claude 계좌 시작(초기 결정) 패킷에는 기준일이 출발일(${startDate ?? EMPTY}) 이하인 메모만 실립니다. 규칙 계좌는 메모를 읽지 않습니다.`;
 }
 
 /**
@@ -3793,6 +4255,6 @@ export function frameworkBoundaryView(boundaries: unknown, dates: readonly strin
     + (known.has(entry.date) ? "" : "(그날 순자산 기록 없음 — 선 없음)"));
   return {
     markers: entries.filter((entry) => known.has(entry.date)).map((entry) => ({ x: entry.date, label: `프레임 v${entry.version}` })),
-    text: `프레임 경계(Claude 책 결정이 그 판을 처음 쓴 거래일) — ${parts.join(" · ")}`,
+    text: `프레임 경계(Claude 계좌 결정이 그 판을 처음 쓴 거래일) — ${parts.join(" · ")}`,
   };
 }

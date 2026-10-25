@@ -30,7 +30,7 @@ function book(code: string, over: Partial<PaperBookSummary> = {}): PaperBookSumm
   };
 }
 
-const CLAUDE_NOT_STARTED = book("claude", { kind: "CLAUDE", label: "Claude 재량 책", status: "NOT_STARTED", startedOn: null });
+const CLAUDE_NOT_STARTED = book("claude", { kind: "CLAUDE", label: "Claude 계좌", status: "NOT_STARTED", startedOn: null });
 
 /** decision.schema.json 모양의 응답 + 검증 결과(자바 record 그대로 — 주문이 order 안에). */
 const RESPONSE = {
@@ -281,7 +281,7 @@ describe("Claude 결정 상세", () => {
 });
 
 describe("Claude 책 시작 카드", () => {
-  const BOOKS = [book("rules", { kind: "RULES", label: "규칙 책" }), CLAUDE_NOT_STARTED];
+  const BOOKS = [book("rules", { kind: "RULES", label: "규칙 계좌" }), CLAUDE_NOT_STARTED];
 
   it("시작 전이면 카드 — 출발일 패킷·검증·사후 체결·노출은 Claude가, 임시 v0이면 OS 원문으로 v1을 만든 뒤 시작 권고, 비용 안내", () => {
     const prompt = claudeStartPrompt(
@@ -289,7 +289,7 @@ describe("Claude 책 시작 카드", () => {
       { version: 0, status: "INTERIM", title: "임시 v0 — OS 원문 반영 전" },
     );
     expect(prompt?.bookCode).toBe("claude");
-    expect(prompt?.title).toBe("Claude 재량 책 시작");
+    expect(prompt?.title).toBe("Claude 계좌 시작");
     expect(prompt?.body).toContain("출발일(2026-10-23) 기준 입력 패킷");
     expect(prompt?.body).toContain("검증기(하드 규칙)를 통과한 주문만 출발일 종가에 사후 체결");
     expect(prompt?.body).toContain("노출 0%도 100%도 거절 사유가 아닙니다");
@@ -300,7 +300,7 @@ describe("Claude 책 시작 카드", () => {
     expect(prompt?.confirmPreview).toContain("장부·결정·주문 기록은 바꾸지 않습니다(사용량과, 없을 때만 출발일 기관 선정");
     expect(prompt?.confirmPreview).toContain(CLAUDE_COST_NOTE);
     expect(prompt?.confirmStart).toContain("정말 시작할까요?");
-    expect(prompt?.confirmStart).toContain("'책 초기화'");
+    expect(prompt?.confirmStart).toContain("'계좌 초기화'");
     expect(prompt?.confirmStart).toContain("미리보기와 같은 답이 나온다는 보장은 없습니다");
     expect(prompt?.confirmStart).toContain("프레임은 아직 임시 v0입니다.");
   });
@@ -354,12 +354,12 @@ describe("Claude 책 시작 카드", () => {
         frameworkVersion: null, settingsVersion: 1, selectionAsOf: null, targetExposurePct: null, summary: null, orderCount: 0,
         rejectedCount: 0, pricesFinal: true, error: "응답이 스키마와 다릅니다",
       },
-    }, "Claude 재량 책");
+    }, "Claude 계좌");
     expect(started.tone).toBe("warn");
-    expect(started.text).toBe("Claude 재량 책을 시작했습니다 · 2026-10-23 초기 결정 · 주문 0건 · 사후 체결 0건 — 오류: 응답이 스키마와 다릅니다");
-    expect(initialDecisionResultView({ ok: false }, "Claude 재량 책").text).toBe("Claude 재량 책을 시작하지 못했습니다.");
+    expect(started.text).toBe("Claude 계좌를 시작했습니다 · 2026-10-23 초기 결정 · 주문 0건 · 사후 체결 0건 — 오류: 응답이 스키마와 다릅니다");
+    expect(initialDecisionResultView({ ok: false }, "Claude 계좌").text).toBe("Claude 계좌를 시작하지 못했습니다.");
     // 기본 이름은 그대로 규칙 책입니다.
-    expect(initialDecisionResultView({ ok: false }).text).toBe("규칙 책을 시작하지 못했습니다.");
+    expect(initialDecisionResultView({ ok: false }).text).toBe("규칙 계좌를 시작하지 못했습니다.");
   });
 });
 

@@ -317,7 +317,7 @@ describe("두 기관 그룹(D27)", () => {
       ["버크셔 해서웨이 (Berkshire Hathaway)CIK 0001067983", "A", "1위", "—", "50.0%"],
       ["🇺🇸 듀케인 패밀리 오피스 (Duquesne Family Office)CIK 0001536411", "B", "—", "1위", "50.0%"],
     ]);
-    expect(screen.getByText(/2026-10-23 선정 — 규칙 책이 이 기관들의 13F 변화를 신호로 씁니다/)).toBeTruthy();
+    expect(screen.getByText(/2026-10-23 선정 — 규칙 계좌가 이 기관들의 13F 변화를 신호로 씁니다/)).toBeTruthy();
     expect(screen.getByText(/그룹 A 50\.0% · 그룹 B 50\.0%/)).toBeTruthy();
   });
 

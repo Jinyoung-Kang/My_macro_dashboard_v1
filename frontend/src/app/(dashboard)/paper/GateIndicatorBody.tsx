@@ -29,7 +29,7 @@ export function GateIndicatorBody({ gate, compact = false }: { gate: PaperGateIn
       </div>
       {view.levelNote && <p className="text-xs leading-relaxed text-body">{view.levelNote}</p>}
       <p className="text-[11px] leading-relaxed text-muted">
-        {view.note}. 규칙 책은 이 지표를 쓰지 않고(매크로 게이트 없음), Claude 책에는 참고 자료로만 들어갑니다.
+        {view.note}. 규칙 계좌는 이 지표를 쓰지 않고(매크로 게이트 없음), Claude 계좌에는 참고 자료로만 들어갑니다.
       </p>
       <section aria-label="게이트 조건" className="flex flex-col gap-1">
         <Table<GateConditionRow>

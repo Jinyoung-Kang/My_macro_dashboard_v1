@@ -45,7 +45,7 @@ export function ClaudeStartSection({ overview, onChanged }: { overview: PaperOve
   );
   const start = useAsyncAction(
     (book: string) => apiPost<PaperInitialDecisionResult>(endpoints.paper.runInitialDecision, { book }),
-    "Claude 책을 시작하지 못했습니다.",
+    "Claude 계좌를 시작하지 못했습니다.",
   );
   const previewElapsed = useElapsedSeconds(preview.busy);
   const startElapsed = useElapsedSeconds(start.busy);
@@ -53,7 +53,7 @@ export function ClaudeStartSection({ overview, onChanged }: { overview: PaperOve
 
   const label = prompt?.bookLabel
     ?? (overview.books ?? []).find((book) => book.kind === "CLAUDE")?.label
-    ?? "Claude 재량 책";
+    ?? "Claude 계좌";
   const startView = start.result ? initialDecisionResultView(start.result, label) : null;
   const startResult = startView && <Banner tone={startView.tone}>{startView.text}</Banner>;
 

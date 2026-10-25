@@ -53,8 +53,17 @@ const RECENT_LIMIT = 50;
  * 책 목록은 개요 응답에서 받습니다(page.tsx). 책을 바꾸면 useApi가 이전 책의 표를 바로 비워, 새 책 제목 아래 옛 책의
  * 숫자가 잠깐 보이지 않습니다. 버튼이 성공하면 이 탭의 표와 개요(onChanged)를 함께 다시 읽습니다.
  */
-export function HoldingsSection({ books, onChanged }: { books: PaperBookSummary[]; onChanged: () => void }) {
-  const [picked, setPicked] = useState("");
+export function HoldingsSection({
+  books,
+  onChanged,
+  initialBook = "",
+}: {
+  books: PaperBookSummary[];
+  onChanged: () => void;
+  /** 처음 고를 계좌 코드(개요의 계좌 상세에서 넘어올 때). 목록에 없으면 기본 계좌로 엽니다. */
+  initialBook?: string;
+}) {
+  const [picked, setPicked] = useState(initialBook);
   const code = resolveBookCode(picked, books);
 
   const positions = useApi<PaperPositionsResponse>(code ? endpoints.paper.positions(code) : null, 60_000);
@@ -64,11 +73,11 @@ export function HoldingsSection({ books, onChanged }: { books: PaperBookSummary[
   const toggle = useAsyncAction(
     (bookCode: string, status: "ACTIVE" | "PAUSED") =>
       apiPost<PaperBookStatusResult>(endpoints.paper.bookStatus(bookCode), { status }),
-    "책 상태를 바꾸지 못했습니다.",
+    "계좌 상태를 바꾸지 못했습니다.",
   );
   const reset = useAsyncAction(
     (bookCode: string, confirm: string) => apiPost<PaperBookResetResult>(endpoints.paper.bookReset(bookCode), { confirm }),
-    "책을 초기화하지 못했습니다.",
+    "계좌를 초기화하지 못했습니다.",
   );
   const [confirm, setConfirm] = useState("");
 
@@ -80,7 +89,7 @@ export function HoldingsSection({ books, onChanged }: { books: PaperBookSummary[
   };
 
   if (!code) {
-    return <Banner tone="info">아직 책이 없습니다 — 개요 탭에서 초기화하면 생깁니다.</Banner>;
+    return <Banner tone="info">아직 계좌가 없습니다 — 개요 탭에서 초기화하면 생깁니다.</Banner>;
   }
 
   // 보유 응답의 책 요약이 가장 새것입니다(버튼 뒤 다시 읽음). 아직 없으면 개요의 책 요약을 씁니다.
@@ -105,13 +114,13 @@ export function HoldingsSection({ books, onChanged }: { books: PaperBookSummary[
   return (
     <>
       <Card
-        title="책"
+        title="계좌"
         source={PAPER_SOURCES.ledger}
         actions={<Freshness refreshError={positions.refreshError ?? orders.refreshError ?? fills.refreshError} />}
       >
         <div className="flex flex-wrap items-end gap-4">
           <Select
-            label="책 고르기"
+            label="계좌 고르기"
             value={code}
             onChange={(value) => {
               setPicked(value);
@@ -154,14 +163,14 @@ export function HoldingsSection({ books, onChanged }: { books: PaperBookSummary[
           </div>
 
           <div className="flex flex-col gap-2">
-            <h3 className="text-sm font-semibold text-bright">책 초기화</h3>
+            <h3 className="text-sm font-semibold text-bright">계좌 초기화</h3>
             <p className="text-xs leading-relaxed text-muted">
-              이 책의 체결·주문·보유·재진입 금지·순자산 기록을 모두 지웁니다. 되돌릴 수 없습니다. 벤치마크 책은 출발일 종가로
-              다시 사후 체결하고(종가가 없으면 &quot;시작 전&quot;으로 남고 사유를 보입니다), 규칙·Claude 책은 현금만 든
+              이 계좌의 체결·주문·보유·재진입 금지·순자산 기록을 모두 지웁니다. 되돌릴 수 없습니다. 벤치마크 계좌는 출발일 종가로
+              다시 사후 체결하고(종가가 없으면 &quot;시작 전&quot;으로 남고 사유를 보입니다), 규칙·Claude 계좌는 현금만 든
               &quot;시작 전&quot;으로 돌아갑니다.
             </p>
             <label className="text-xs text-muted">
-              확인하려면 책 코드 <code className="text-body">{code}</code>를 입력하세요
+              확인하려면 계좌 코드 <code className="text-body">{code}</code>를 입력하세요
               <input
                 value={confirm}
                 onChange={(event) => setConfirm(event.target.value)}
@@ -173,7 +182,7 @@ export function HoldingsSection({ books, onChanged }: { books: PaperBookSummary[
             <div>
               {/* 서버도 confirm이 책 코드와 같은지 다시 봅니다(아니면 400). 여기서는 잘못 누르기를 먼저 막습니다. */}
               <Button onClick={() => void runReset()} disabled={reset.busy || confirm !== code}>
-                {reset.busy ? "초기화 중…" : "책 초기화"}
+                {reset.busy ? "초기화 중…" : "계좌 초기화"}
               </Button>
             </div>
             {reset.error && <Banner tone="warn">{reset.error}</Banner>}

@@ -191,7 +191,7 @@ export function SelectionSection() {
         <Table<SelectionHistoryRow>
           rows={history}
           rowKey={(row) => row.asOfDate}
-          emptyMessage="아직 선정 기록이 없습니다 — 초기 선정은 규칙 책 초기화 때, 그 뒤는 재선정일마다 남습니다."
+          emptyMessage="아직 선정 기록이 없습니다 — 초기 선정은 규칙 계좌 초기화 때, 그 뒤는 재선정일마다 남습니다."
           columns={[
             { key: "asOf", header: "기준일", render: (row) => row.asOfDate },
             { key: "names", header: "선정 기관", render: (row) => <span className="text-xs text-body">{row.names}</span> },
@@ -258,8 +258,8 @@ function PoolCard({ rows, asOfDate, groupWeightA }: { rows: PoolRow[]; asOfDate:
     <Card
       title="신호 풀"
       subtitle={asOfDate
-        ? `${asOfDate} 선정 — 규칙 책이 이 기관들의 13F 변화를 신호로 씁니다(다음 재선정일까지)`
-        : "규칙 책이 13F 신호를 읽는 기관(두 그룹의 선정)"}
+        ? `${asOfDate} 선정 — 규칙 계좌가 이 기관들의 13F 변화를 신호로 씁니다(다음 재선정일까지)`
+        : "규칙 계좌가 13F 신호를 읽는 기관(두 그룹의 선정)"}
       source={PAPER_SOURCES.pool}
     >
       <p className="mb-3 text-xs leading-relaxed text-muted">{poolWeightNote(groupWeightA)}</p>

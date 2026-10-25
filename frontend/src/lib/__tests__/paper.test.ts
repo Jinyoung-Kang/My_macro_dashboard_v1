@@ -42,6 +42,7 @@ import {
   timingLabel,
   trackMetricLabel,
   trackRecordRows,
+  withParticle,
 } from "../paper";
 import { formatNumber } from "../format";
 import type {
@@ -66,10 +67,10 @@ function book(code: string, over: Partial<PaperBookSummary> = {}): PaperBookSumm
 }
 
 const BOOKS = [
-  book("rules", { kind: "RULES", label: "규칙 책", status: "NOT_STARTED", benchmark: "bench_spy" }),
-  book("claude", { kind: "CLAUDE", label: "Claude 재량 책", status: "NOT_STARTED", benchmark: "bench_spy" }),
-  book("bench_spy", { label: "SPY 100%" }),
-  book("bench_mix", { label: "SPY 60% · SHY 40%", benchmark: "bench_spy" }),
+  book("rules", { kind: "RULES", label: "규칙 계좌", status: "NOT_STARTED", benchmark: "bench_spy" }),
+  book("claude", { kind: "CLAUDE", label: "Claude 계좌", status: "NOT_STARTED", benchmark: "bench_spy" }),
+  book("bench_spy", { label: "SPY 계좌" }),
+  book("bench_mix", { label: "60/40 계좌", benchmark: "bench_spy" }),
 ];
 
 function position(over: Partial<PaperPosition> = {}): PaperPosition {
@@ -97,7 +98,7 @@ describe("책 카드", () => {
     expect(card.status.label).toBe("운용 중");
     expect(card.staleWarning).toBeNull();
     expect(card.stats.find((s) => s.key === "excessPct")).toEqual({
-      key: "excessPct", label: "초과 수익률(SPY 100% 대비)", value: "-0.52%p",
+      key: "excessPct", label: "초과 수익률(SPY 계좌 대비)", value: "-0.52%p",
     });
   });
 
@@ -148,9 +149,9 @@ describe("순자산 곡선", () => {
       BOOKS,
     );
     expect(series).toEqual([
-      { key: "rules", name: "규칙 책" },
-      { key: "bench_spy", name: "SPY 100%" },
-      { key: "bench_mix", name: "SPY 60% · SHY 40%" },
+      { key: "rules", name: "규칙 계좌" },
+      { key: "bench_spy", name: "SPY 계좌" },
+      { key: "bench_mix", name: "60/40 계좌" },
       { key: "ghost", name: "ghost" },
     ]);
     expect(rows).toEqual([
@@ -354,10 +355,10 @@ describe("버튼", () => {
   it("시작 전 안내 — 벤치마크는 종가를 받은 뒤 초기화를 다시 누르라고, 규칙 책·Claude 책은 개요의 시작 카드로", () => {
     expect(notStartedNote("BENCHMARK")).toContain("종가를 받은 뒤 초기화를 다시 누르세요");
     expect(notStartedNote("BENCHMARK")).not.toContain("초기 결정");
-    expect(notStartedNote("RULES")).toContain("개요 탭의 '규칙 책 시작'");
+    expect(notStartedNote("RULES")).toContain("개요 탭의 '규칙 계좌 시작'");
     expect(notStartedNote("RULES")).not.toContain("다음 단계");
     // 단계 3a부터 Claude 책도 개요의 시작 카드(초기 결정)로 시작합니다.
-    expect(notStartedNote("CLAUDE")).toContain("개요 탭의 'Claude 재량 책 시작'(초기 결정)");
+    expect(notStartedNote("CLAUDE")).toContain("개요 탭의 'Claude 계좌 시작'(초기 결정)");
     expect(notStartedNote("CLAUDE")).toContain("검증(하드 규칙)을 통과한 것만");
     expect(notStartedNote("CLAUDE")).not.toContain("다음 단계");
     expect(notStartedNote("CLAUDE")).not.toContain("종가를 받은 뒤");
@@ -373,17 +374,17 @@ describe("버튼", () => {
   it("결과 문구", () => {
     expect(initResultText({ ok: true, created: ["rules", "claude", "bench_spy", "bench_mix"], backfilled: ["bench_spy"],
       skipped: [{ code: "bench_mix", reason: "2026-10-23 SHY 종가 없음" }], settingsCreated: true, startPricesCaptured: 153 }))
-      .toBe("만든 책 rules, claude, bench_spy, bench_mix · 사후 체결 bench_spy · bench_mix 시작하지 않음 — 2026-10-23 SHY 종가 없음");
-    expect(initResultText({ ok: true, created: [], backfilled: [], skipped: [], settingsCreated: false, startPricesCaptured: 0 })).toBe("새로 만든 책 없음(이미 있음)");
+      .toBe("만든 계좌 rules, claude, bench_spy, bench_mix · 사후 체결 bench_spy · bench_mix 시작하지 않음 — 2026-10-23 SHY 종가 없음");
+    expect(initResultText({ ok: true, created: [], backfilled: [], skipped: [], settingsCreated: false, startPricesCaptured: 0 })).toBe("새로 만든 계좌 없음(이미 있음)");
     expect(riskOutcomeText(outcome({ filled: 1, expired: 2, booksProcessed: ["bench_spy"] })))
-      .toBe("체결 1 · 스탑 0 · 만료 2 · 분할 0 · 처리한 책 bench_spy");
+      .toBe("체결 1 · 스탑 0 · 만료 2 · 분할 0 · 처리한 계좌 bench_spy");
     expect(riskOutcomeText(outcome({ skippedReason: "새 저장본 없음" })))
-      .toBe("체결 0 · 스탑 0 · 만료 0 · 분할 0 · 처리한 책 없음 — 새 저장본 없음");
+      .toBe("체결 0 · 스탑 0 · 만료 0 · 분할 0 · 처리한 계좌 없음 — 새 저장본 없음");
     expect(riskOutcomeText(null)).toBe("결과를 받지 못했습니다.");
-    expect(statusResultText({ ok: true, book: book("bench_spy", { label: "SPY 100%", status: "PAUSED" }), cancelledOrders: 3 }))
-      .toBe("SPY 100%: 일시정지 · 대기 주문 3건 취소");
-    expect(statusResultText({ ok: true, book: book("bench_spy", { label: "SPY 100%" }), cancelledOrders: null }))
-      .toBe("SPY 100%: 운용 중");
+    expect(statusResultText({ ok: true, book: book("bench_spy", { label: "SPY 계좌", status: "PAUSED" }), cancelledOrders: 3 }))
+      .toBe("SPY 계좌: 일시정지 · 대기 주문 3건 취소");
+    expect(statusResultText({ ok: true, book: book("bench_spy", { label: "SPY 계좌" }), cancelledOrders: null }))
+      .toBe("SPY 계좌: 운용 중");
   });
 });
 
@@ -399,7 +400,7 @@ describe("초기화 카드", () => {
       initialized: true, startDate: "2026-10-23", books: PENDING_BOOKS, pendingBackfill: ["bench_spy", "bench_mix"],
     });
     expect(prompt?.title).toBe("벤치마크 사후 체결 대기");
-    expect(prompt?.body).toContain("SPY 100%, SPY 60% · SHY 40%: 출발일(2026-10-23) 종가를 아직 받지 못해");
+    expect(prompt?.body).toContain("SPY 계좌, 60/40 계좌: 출발일(2026-10-23) 종가를 아직 받지 못해");
     expect(prompt?.body).toContain("종가를 받은 뒤 초기화를 다시 누르세요");
   });
 
@@ -425,10 +426,10 @@ describe("리스크 작업 결과", () => {
       }),
     });
     expect(view.tone).toBe("warn");
-    expect(view.warning).toContain("오류가 난 책이 있습니다");
+    expect(view.warning).toContain("오류가 난 계좌가 있습니다");
     expect(view.errors).toEqual(["claude: IllegalStateException 상태 저장 실패"]);
     expect(view.notes).toEqual(["bench_spy: 주문 7 BUY SPY 현금 부족으로 10주 중 9주"]);
-    expect(view.summary).toBe("체결 1 · 스탑 0 · 만료 0 · 분할 0 · 처리한 책 bench_spy");
+    expect(view.summary).toBe("체결 1 · 스탑 0 · 만료 0 · 분할 0 · 처리한 계좌 bench_spy");
   });
 
   it("ok:true면 안내색, 경고 없음, 처리 메모는 그대로 보인다", () => {
@@ -449,21 +450,42 @@ describe("리스크 작업 결과", () => {
 });
 
 describe("책 초기화 결과", () => {
-  const spy = book("bench_spy", { label: "SPY 100%" });
+  const spy = book("bench_spy", { label: "SPY 계좌" });
 
   it("벤치마크를 다시 사후 체결하지 못했으면 서버 사유를 경고로", () => {
     const reason = "2026-10-23 SPY 종가가 아직 없습니다 — 수집기가 받은 뒤 초기화를 다시 누르세요.";
     const view = resetResultView({ ok: true, book: { ...spy, status: "NOT_STARTED" }, backfilled: false, skippedReason: reason });
     expect(view.tone).toBe("warn");
-    expect(view.text).toBe(`SPY 100%을(를) 초기화했습니다 — 지금 시작 전 · 현금만. 출발일 종가로 다시 사후 체결하지 못했습니다 — ${reason}`);
+    expect(view.text).toBe(`SPY 계좌를 초기화했습니다 — 지금 시작 전 · 현금만. 출발일 종가로 다시 사후 체결하지 못했습니다 — ${reason}`);
   });
 
   it("다시 사후 체결했으면 그렇다고, 규칙·Claude 책은 상태만", () => {
     expect(resetResultView({ ok: true, book: spy, backfilled: true, skippedReason: null }))
-      .toEqual({ tone: "info", text: "SPY 100%을(를) 초기화했습니다 — 지금 운용 중 · 출발일 종가로 다시 사후 체결했습니다" });
+      .toEqual({ tone: "info", text: "SPY 계좌를 초기화했습니다 — 지금 운용 중 · 출발일 종가로 다시 사후 체결했습니다" });
     expect(resetResultView({
-      ok: true, book: book("rules", { label: "규칙 책", status: "NOT_STARTED" }), backfilled: false, skippedReason: null,
-    })).toEqual({ tone: "info", text: "규칙 책을(를) 초기화했습니다 — 지금 시작 전 · 현금만" });
+      ok: true, book: book("rules", { label: "규칙 계좌", status: "NOT_STARTED" }), backfilled: false, skippedReason: null,
+    })).toEqual({ tone: "info", text: "규칙 계좌를 초기화했습니다 — 지금 시작 전 · 현금만" });
+  });
+
+  it("옛 이름(서버가 아직 맞추지 않은 행)이나 모르는 이름도 조사를 맞추고, 받침을 모르면 둘 다 적는다", () => {
+    const old = { ok: true, book: book("rules", { label: "규칙 책", status: "NOT_STARTED" }), backfilled: false, skippedReason: null };
+    expect(resetResultView(old).text).toBe("규칙 책을 초기화했습니다 — 지금 시작 전 · 현금만");
+    expect(resetResultView({ ...old, book: { ...old.book, label: "SPY 100%" } }).text)
+      .toBe("SPY 100%을(를) 초기화했습니다 — 지금 시작 전 · 현금만");
+  });
+});
+
+describe("조사 붙이기", () => {
+  it("마지막 글자의 받침으로 고르고, 한글로 끝나지 않으면 둘 다", () => {
+    expect(withParticle("규칙 계좌", "을")).toBe("규칙 계좌를");
+    expect(withParticle("Claude 계좌", "은")).toBe("Claude 계좌는");
+    expect(withParticle("60/40 계좌", "이")).toBe("60/40 계좌가");
+    expect(withParticle("SPY 계좌", "과")).toBe("SPY 계좌와");
+    expect(withParticle("규칙 책", "을")).toBe("규칙 책을");
+    expect(withParticle("규칙 책", "은")).toBe("규칙 책은");
+    expect(withParticle("SPY 100%", "을")).toBe("SPY 100%을(를)");
+    expect(withParticle("Claude", "은")).toBe("Claude은(는)");
+    expect(withParticle("", "이")).toBe("이(가)");
   });
 });
 

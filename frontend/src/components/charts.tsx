@@ -1,6 +1,6 @@
 "use client";
 
-import { useId } from "react";
+import { useId, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -12,17 +12,22 @@ import {
   Legend,
   Line,
   LineChart,
+  Pie,
+  PieChart,
+  type PieLabelRenderProps,
+  type PieSectorShapeProps,
   ReferenceLine,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
+  Sector,
   Tooltip,
   XAxis,
   YAxis,
   ZAxis,
 } from "recharts";
 import { EMPTY, formatNumber } from "@/lib/format";
-import { truncateToWidth, valueDomain } from "@/lib/chartAxis";
+import { type DonutLabelGeometry, donutLabelsFit, truncateToWidth, valueDomain } from "@/lib/chartAxis";
 
 const AXIS = { stroke: "#8B949E", fontSize: 11 };
 const GRID = "#30363D";
@@ -664,5 +669,118 @@ export function WeightHeatmap({
         &quot;{EMPTY}&quot;는 <b>값을 모른다</b>는 뜻입니다 — 둘은 다릅니다.
       </p>
     </div>
+  );
+}
+
+/** 도넛 조각 하나. 색·이름·표시 값은 부르는 쪽이 정합니다(값 계산은 lib — ADR 0004). */
+export interface DonutSegment {
+  key: string;
+  name: string;
+  /** 조각 크기(같은 차트 안에서 비례 — 보통 비중 %). */
+  value: number;
+  color: string;
+  /** 툴팁 맨 앞에 굵게 적는 값(예: "12.3%"). */
+  valueText: string;
+  /** 툴팁 둘째 줄(예: 평가액). */
+  caption?: string | null;
+  /** 툴팁 셋째 줄(묶음 내역). */
+  detail?: string | null;
+  /** 고리 밖에 적을 직접 라벨. 없으면 범례·툴팁·표가 나릅니다. */
+  label?: string | null;
+}
+
+/** 도넛 툴팁 — 값이 앞(굵게), 이름이 뒤. 이름 앞의 짧은 선이 조각 색입니다(글자에는 계열 색을 입히지 않음). */
+function DonutTooltip({ active, payload }: { active?: boolean; payload?: ReadonlyArray<{ payload?: unknown }> }) {
+  const datum = payload?.[0]?.payload as DonutSegment | undefined;
+  if (!active || !datum) return null;
+  return (
+    <div style={tooltipStyle().contentStyle}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span aria-hidden style={{ display: "inline-block", width: 12, height: 2, borderRadius: 1, backgroundColor: datum.color }} />
+        <strong style={{ color: "#F0F6FC", fontVariantNumeric: "tabular-nums" }}>{datum.valueText}</strong>
+        <span style={{ color: "#C9D1D9" }}>{datum.name}</span>
+      </div>
+      {datum.caption && <div style={{ marginTop: 2, color: "#C9D1D9" }}>{datum.caption}</div>}
+      {datum.detail && <div style={{ marginTop: 2, maxWidth: 260, color: AXIS.stroke }}>{datum.detail}</div>}
+    </div>
+  );
+}
+
+/** 라벨을 붙인 도넛의 자리 — 아래 Pie에 넘기는 값(여백 8 · 바깥 70% · 라벨 거리 20 · 글자 11px)과 같습니다. */
+const DONUT_LABEL_GEOMETRY: DonutLabelGeometry = { margin: 8, outerPct: 70, offset: 20, fontSize: 11 };
+
+/** 직접 라벨 — 고리 밖, 본문 글자색(조각 색이 아님). 라벨이 없는 조각은 그리지 않습니다. */
+function DonutLabel(props: PieLabelRenderProps) {
+  const label = (props.payload as DonutSegment | undefined)?.label;
+  if (!label) return null;
+  return (
+    <text x={props.x} y={props.y} textAnchor={props.textAnchor} dominantBaseline="central" fill="#C9D1D9" fontSize={DONUT_LABEL_GEOMETRY.fontSize}>
+      {label}
+    </text>
+  );
+}
+
+/** 가리킨 조각을 4px 바깥으로 — 마우스에 반응하는 것이 보이게(색은 바꾸지 않음). */
+function DonutSector(props: PieSectorShapeProps) {
+  return <Sector {...props} outerRadius={props.isActive ? props.outerRadius + 4 : props.outerRadius} />;
+}
+
+/**
+ * 부분-전체 도넛(조각 여섯 개 이하에서만 — 부르는 쪽이 지킴).
+ *
+ * <p>조각 사이는 표면색 2px 선으로 띄웁니다(테두리가 아니라 틈 — 이웃 조각이 색으로만 붙어 보이지 않게). 그래서 {@code surface}는
+ * 차트가 놓이는 바탕색이어야 합니다. 12시 방향에서 시계 방향으로, 받은 순서대로 그립니다. 조각마다 툴팁이 있고, 범례·표는 부르는
+ * 쪽이 함께 그립니다(툴팁은 보조 — 값은 범례·표에서도 읽힘).
+ */
+export function DonutChart({
+  segments,
+  surface,
+  height = 220,
+  ariaLabel,
+}: {
+  segments: DonutSegment[];
+  surface: string;
+  height?: number;
+  /** 차트 전체를 한 문장으로(화면 낭독기용 — 표가 같은 값을 나름). */
+  ariaLabel: string;
+}) {
+  // 그려진 너비 — 직접 라벨이 SVG 끝에서 잘리지 않을 만큼 넓을 때만 라벨을 붙입니다(측정 전에는 붙이지 않음).
+  const [width, setWidth] = useState<number | null>(null);
+  if (segments.length === 0) {
+    return <div className="py-10 text-center text-sm text-muted">표시할 구성이 없습니다.</div>;
+  }
+  const labelled = donutLabelsFit(width, height, segments.map((segment) => segment.label), DONUT_LABEL_GEOMETRY);
+  const margin = DONUT_LABEL_GEOMETRY.margin;
+  // recharts는 조각 색을 자료의 fill에서 읽습니다(Cell은 3.x에서 폐기 예정).
+  const data = segments.map((segment) => ({ ...segment, fill: segment.color }));
+  return (
+    <figure className="m-0">
+      <ResponsiveContainer width="100%" height={height} onResize={(nextWidth) => setWidth(nextWidth)}>
+        {/*
+          이름은 Tab으로 닿는 SVG 자체에 붙입니다 — Recharts의 접근성 층이 SVG에 role="application"·tabindex=0을 달아 화살표로 조각을
+          고르게 하는데, 이름을 바깥 figure에 두면 Tab으로 들어간 화면 낭독기가 이름 없는 'application'만 읽었습니다. figure에는 같은
+          이름을 다시 달지 않습니다(두 번 읽힘).
+        */}
+        <PieChart aria-label={ariaLabel} margin={{ top: margin, right: margin, bottom: margin, left: margin }}>
+          <Tooltip content={(props) => <DonutTooltip active={props.active} payload={props.payload} />} wrapperStyle={{ outline: "none", zIndex: 40 }} />
+          <Pie
+            data={data}
+            dataKey="value"
+            nameKey="name"
+            startAngle={90}
+            endAngle={-270}
+            // 직접 라벨을 고리 밖에 적을 때는 고리를 조금 줄여 글자 자리를 남깁니다(바깥 비율은 DONUT_LABEL_GEOMETRY와 같음).
+            innerRadius={labelled ? "50%" : "58%"}
+            outerRadius={labelled ? `${DONUT_LABEL_GEOMETRY.outerPct}%` : "82%"}
+            stroke={surface}
+            strokeWidth={2}
+            isAnimationActive={false}
+            label={labelled ? DonutLabel : false}
+            labelLine={false}
+            shape={DonutSector}
+          />
+        </PieChart>
+      </ResponsiveContainer>
+    </figure>
   );
 }

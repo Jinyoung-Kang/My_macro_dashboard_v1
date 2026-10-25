@@ -77,7 +77,7 @@ export function NotesSection({ startDate }: { startDate: string | null }) {
     <>
       <Card
         title="메모"
-        subtitle="Claude 책의 자료 — 시황 메모는 결정 패킷에, 방법론 메모는 프레임 제안에"
+        subtitle="Claude 계좌의 자료 — 시황 메모는 결정 패킷에, 방법론 메모는 프레임 제안에"
         source={PAPER_SOURCES.notes}
         actions={
           <label className="flex items-center gap-2 text-xs text-muted">
