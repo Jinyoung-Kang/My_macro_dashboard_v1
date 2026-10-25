@@ -274,6 +274,32 @@ public class PaperQueryService {
         out.put("fundamentals", fundamentalsStatus());
         out.put("calendar", calendarStatus());
         out.put("news", newsStatus());
+        out.put("earnings", earningsStatus());
+        return out;
+    }
+
+    /**
+     * 어닝 서프라이즈 수집 범위(2단계 C) — 수집기 상태 저장본 {@code us.earnings_surprise.status}의 요약
+     * {@code {available, covered, universe, withEstimate4, generatedAtKst}}. covered = 저장된 분기 행이 하나라도 있는 종목 수,
+     * universe = 대상(유니버스 주식 — ETF 제외, 실적 일정과 같은 범위) 수, withEstimate4 = 추정치가 있는 분기가 4개 이상 저장된 종목 수
+     * (셋 다 수집기가 이번 응답이 아니라 저장된 행으로 셈), generatedAtKst = 저장본을 마지막으로 쓴 수집 시각(저장본의
+     * {@code generatedAt}, 없으면 저장 시각). 한 종목도 받지 못한 실행·yfinance 내부 API가 바뀐 실행은 저장본을 쓰지 않으므로(수집기
+     * 규칙 — 직전 저장본 유지) 그때는 시각이 멈춰 보입니다. 저장본이 없으면 숫자·시각은 null(0으로 채우지 않음). 수집 요청 없이
+     * 저장본만 읽습니다(화면이 수집기를 깨우지 않게).
+     */
+    private Map<String, Object> earningsStatus() {
+        Optional<Snapshot> found = reader.readStored(Datasets.SNAP_EARNINGS_SURPRISE_STATUS);
+        JsonNode payload = found.map(Snapshot::payload).filter(JsonNode::isObject).orElse(null);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("available", payload != null);
+        out.put("covered", payload == null ? null : integer(payload, "covered"));
+        out.put("universe", payload == null ? null : integer(payload, "universe"));
+        out.put("withEstimate4", payload == null ? null : integer(payload, "withEstimate4"));
+        Instant generated = payload == null ? null : parseInstant(Json.asText(payload, "generatedAt"));
+        if (generated == null && payload != null) {
+            generated = found.get().collectedAt();
+        }
+        out.put("generatedAtKst", generated == null ? null : Kst.stamp(generated));
         return out;
     }
 

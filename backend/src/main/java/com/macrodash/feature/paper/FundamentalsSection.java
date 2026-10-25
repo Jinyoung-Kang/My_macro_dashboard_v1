@@ -1,16 +1,23 @@
 package com.macrodash.feature.paper;
 
+import com.macrodash.Kst;
+import com.macrodash.analytics.EarningsHistory;
 import com.macrodash.analytics.Fundamentals;
 import com.macrodash.store.Datasets;
 import com.macrodash.support.Json;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -28,6 +35,13 @@ import java.util.regex.Pattern;
  *
  * <p>단위: 금액은 <b>백만 달러</b>(소수 1자리, 보고 통화가 USD가 아니면 null — {@link Fundamentals}가 비움), 비율·성장률은
  * %(소수 1자리), 듀퐁의 회전율·레버리지는 배수({@link #multiple} — 소수 2자리, 1배 미만이면 유효숫자 3자리).
+ *
+ * <p><b>어닝 서프라이즈</b>(2단계 C — {@code eps} 칸): 같은 줄에 저장본 {@code observations us.earnings_surprise}에서 기준일에
+ * 알 수 있었던 최근 4분기 EPS 실제치·컨센서스·서프라이즈율을 붙입니다({@link EarningsHistory}가 고름 — 발표일(미국 동부) ≤ 기준일,
+ * 결정 시각 전 발표). 열 이름은 머리말 {@code epsColumns}에 한 번만 두고 줄의 {@code eps}는 값 배열의 목록입니다 — 25종목 × 4분기에
+ * 키를 되풀이하면 그것만 수백 토큰입니다. 같은 이유로 USD가 아닌 통화({@code epsCurrency})와 작은 추정치 표시
+ * ({@code epsSmallBase})는 해당 종목·분기가 있을 때만 머리말에 모아 적습니다(대부분의 줄은 USD·보통 추정치). 재무 계산과 따로 둔
+ * 것은 출처가 다르기 때문입니다 — 재무는 SEC 공시(10-Q 전까지 직전 분기 값), EPS는 실적 발표 당일의 yfinance 값.
  */
 final class FundamentalsSection {
 
@@ -54,6 +68,16 @@ final class FundamentalsSection {
             "DUSA", "EEM", "EWY", "EWZ", "FXI", "GDX", "GLD", "IEF", "IEMG", "IGSB", "IVV", "IWM", "KWEB", "LQD",
             "MBB", "MCHI", "MUB", "QQQ", "SLV", "SPSB", "SPY", "TLT", "VCIT", "VEA", "VWO", "XLE", "XLF");
 
+    /**
+     * {@link #epsNote}의 출처 구분 문구 — eps는 SEC 공시가 아니고, 고정 규칙의 '8b = 공시 원자료'는 eps 밖 칸의 말입니다
+     * ({@link #epsNote} 설명).
+     */
+    static final String EPS_NOT_FILED = "eps는 SEC 공시 값이 아님(Yahoo 집계 실제치·컨센서스 — 인용 시 출처 yfinance) — "
+            + "'8b = 공시 원자료' 규칙은 eps 밖 칸.";
+
+    /** {@link #epsNote}의 결정 시각(KST 시:분). */
+    private static final DateTimeFormatter HH_MM = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT).withZone(Kst.ZONE);
+
     /** 메모 안의 개념 이름({@code 분류체계:개념}) — 범례 코드로 바꿉니다. */
     private static final Pattern CONCEPT = Pattern.compile("\\b(?:us-gaap|ifrs-full|dei):[A-Za-z]+");
 
@@ -67,7 +91,7 @@ final class FundamentalsSection {
             "taxonomy", "revenueTtmUsdM", "revenueYoYPct", "netIncomeTtmUsdM", "netMarginPct", "ocfTtmUsdM",
             "capexTtmUsdM", "fcfTtmUsdM", "fcfConversionPct", "assetTurnoverX", "leverageX", "roePct",
             "receivablesYoYPct", "inventoryYoYPct", "sharesYoYPct", "buybacksTtmUsdM", "dividendsTtmUsdM",
-            "longTermDebtUsdM", "debtToEquityPct", "isStale", "isProxy", "conceptsUsed", "notes");
+            "longTermDebtUsdM", "debtToEquityPct", "isStale", "isProxy", "conceptsUsed", "eps", "notes");
 
     /** 설계 §4-5 ⑦의 문구 그대로. */
     static final String NOTE = "SEC XBRL 공시 원자료로 기계 계산(공시일 ≤ 기준일). 빈 값은 자료 없음 — [확인 필요]. 회사마다 태그가 "
@@ -101,6 +125,14 @@ final class FundamentalsSection {
     }
 
     /**
+     * 섹션과 그 섹션에서 정한 어닝 서프라이즈 측정 태그(2단계 명세 §6 — {@link DecisionMeasure#withEarnings}).
+     *
+     * @param earnings 줄마다의 {@code eps}에서 셈(데이터셋이 없으면 두 칸 모두 null)
+     */
+    record Built(Map<String, Object> section, EarningsHistory.Measure earnings) {
+    }
+
+    /**
      * 저장본 한 행 → 계산 입력. 공시일은 {@code obsDate}(저장소가 붙임)이고, 칸이 빠지거나 형이 틀린 사실은 계산이 버리도록
      * null로 둡니다(0으로 채우지 않음). {@code fy}·{@code fp}는 공시의 회계연도·분기라 기간 판단에 쓰지 않아 옮기지 않습니다.
      */
@@ -127,21 +159,80 @@ final class FundamentalsSection {
     }
 
     /**
-     * 섹션 본문.
+     * 어닝 서프라이즈 저장본 한 행({@code observations us.earnings_surprise}) → 계산 입력. 발표일은 {@code obsDate}(저장소가 붙임 —
+     * 수집기가 발표 시각의 미국 동부 날짜로 씀), 발표 시각은 {@code reportedAt}(동부 오프셋을 붙인 ISO). 칸이 빠지거나 형이 틀리면
+     * null로 둡니다 — 숫자가 아닌 {@code estimate}를 0으로 읽으면 '추정치 0'(서프라이즈율 없음)과 '추정치 없음'이 섞입니다.
+     */
+    static EarningsHistory.Report report(JsonNode payload) {
+        JsonNode smallBase = Json.child(payload, "smallBase");
+        return new EarningsHistory.Report(Json.parseDate(Json.asText(payload, "obsDate")),
+                Json.parseDate(Json.asText(payload, "periodEnd")), Json.asDouble(payload, "actual"),
+                Json.asDouble(payload, "estimate"), Json.asDouble(payload, "surprisePct"),
+                Json.asText(payload, "currency"), smallBase != null && smallBase.isBoolean() ? smallBase.asBoolean() : null,
+                instant(Json.asText(payload, "reportedAt")));
+    }
+
+    static List<EarningsHistory.Report> reports(List<JsonNode> payloads) {
+        List<EarningsHistory.Report> out = new ArrayList<>();
+        if (payloads != null) {
+            payloads.forEach(p -> out.add(report(p)));
+        }
+        return out;
+    }
+
+    /** ISO 시각(오프셋 포함). 없거나 읽을 수 없으면 null — 그 행은 날짜 규칙만 따릅니다({@link EarningsHistory#compute}). */
+    private static Instant instant(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            return OffsetDateTime.parse(text.strip()).toInstant();
+        } catch (DateTimeParseException e) {
+            return null;
+        }
+    }
+
+    /** {@link #build}의 섹션 — 어닝 서프라이즈 저장본이 없는 판(줄의 {@code eps}가 모두 null). 재무 표시만 보는 시험용. */
+    static Map<String, Object> section(LocalDate asOf, List<Target> shown, int omitted, List<String> excluded,
+                                       Map<String, List<JsonNode>> stored) {
+        return build(asOf, shown, omitted, excluded, stored, null, null).section();
+    }
+
+    /**
+     * 섹션 본문과 측정 태그.
      *
-     * @param asOf     기준 거래일 — 공시일 ≤ 이 날인 사실만 계산에 씁니다({@link Fundamentals#compute})
+     * @param asOf     기준 거래일 — 공시일 ≤ 이 날인 사실만 계산에 씁니다({@link Fundamentals#compute}). EPS도 발표일 ≤ 이 날
      * @param shown    실을 종목(상한 안, 보유 → 후보 → watchlist 순)
      * @param omitted  상한으로 뺀 종목 수
      * @param excluded 대상이었지만 ETF·현금성이라 뺀 종목(재무 없음)
      * @param stored   종목 → 저장본 행들(기준일 뒤 공시가 섞여 있어도 계산이 거름)
+     * @param earnings 종목 → 어닝 서프라이즈 저장본 행들(기준일 뒤 발표가 섞여 있어도 {@link EarningsHistory}가 거름, 행이 없는 종목은
+     *                 키가 없어도 됨). 데이터셋 자체가 없으면 null — 줄의 {@code eps}가 null(자료 없음)이고 빈 목록(알려진 발표 없음)과
+     *                 구분됩니다
+     * @param knownBy  이 결정의 결정 시각({@code NewsEvents.window}의 끝) — 기준일 저녁 그 뒤에 나온 발표는 뺍니다. 모르면 null(날짜 규칙만)
      */
-    static Map<String, Object> section(LocalDate asOf, List<Target> shown, int omitted, List<String> excluded,
-                                       Map<String, List<JsonNode>> stored) {
+    static Built build(LocalDate asOf, List<Target> shown, int omitted, List<String> excluded,
+                       Map<String, List<JsonNode>> stored, Map<String, List<JsonNode>> earnings, Instant knownBy) {
         Map<String, String> legend = new LinkedHashMap<>();
         List<String> usedCodes = new ArrayList<>();
         List<List<Object>> rows = new ArrayList<>();
+        List<EarningsHistory.Result> epsResults = new ArrayList<>();
+        // 머리말의 통화·작은 추정치 — 줄 순서 그대로(LinkedHashMap, 결정적).
+        Map<String, String> epsCurrency = new LinkedHashMap<>();
+        List<String> epsSmallBase = new ArrayList<>();
         for (Target target : shown) {
             Fundamentals.Result r = Fundamentals.compute(rows(stored.get(target.ticker())), asOf);
+            EarningsHistory.Result eps = EarningsHistory.compute(
+                    earnings == null ? null : reports(earnings.get(target.ticker())), asOf, knownBy);
+            epsResults.add(eps);
+            if (!eps.entries().isEmpty()) {
+                // 통화를 모르는 종목은 null로 적습니다 — 빼면 USD로 읽혀 CNY EPS를 달러로 볼 수 있습니다.
+                String currency = eps.currency();
+                if (currency == null || !EarningsHistory.USD.equals(currency)) {
+                    epsCurrency.put(target.ticker(), currency);
+                }
+                epsSmallBase.addAll(eps.smallBaseKeys(target.ticker()));
+            }
             List<String> codes = new ArrayList<>();
             r.conceptsUsed().forEach((field, concept) -> {
                 String code = code(field, concept);
@@ -186,6 +277,7 @@ final class FundamentalsSection {
             row.put("isStale", r.isStale());
             row.put("isProxy", r.isProxy());
             row.put("conceptsUsed", codes.isEmpty() ? null : String.join(" ", codes));
+            row.put("eps", eps.compact());
             row.put("notes", notes);
             List<Object> values = new ArrayList<>(COLUMNS.size());
             COLUMNS.forEach(column -> values.add(row.get(column)));
@@ -202,8 +294,9 @@ final class FundamentalsSection {
         });
 
         Map<String, Object> out = new LinkedHashMap<>();
+        // eps 칸은 출처가 달라(yfinance) 범위를 좁혀 적습니다 — 섹션 전체를 SEC 공시로 적으면 eps를 공시 [사실]로 인용할 수 있습니다.
         out.put("source", "observations " + Datasets.OBS_US_FUNDAMENTALS + "(SEC XBRL Company Facts) — 공시일 ≤ 기준일(" + asOf
-                + ")");
+                + "). eps 칸은 제외(epsNote)");
         out.put("note", NOTE);
         // 설명은 짧게 — 패킷 목표(30,000토큰)에서 이 섹션 몫은 약 4,000토큰이고, 대부분은 25줄의 값입니다.
         out.put("units", "…UsdM 백만 달러(USD가 아니면 null — 비율만), …Pct %, …X 배. TTM = 최근 4개 분기(연간 + 당해 누계 − 전년 "
@@ -215,12 +308,41 @@ final class FundamentalsSection {
         out.put("conceptsNote", "conceptsUsed = 필드 코드(rev 매출·ni 순이익·ocf 영업CF·capex 설비투자·assets 자산·eq 자본·ar 매출채권·"
                 + "inv 재고·ltd 장기부채·bb 자사주·div 배당·sh 주식수) + 후보 번호, 뜻은 conceptLegend(notes 안의 코드도). 코드가 없는 필드는 그 "
                 + "기간 값 없음");
+        out.put("epsNote", epsNote(earnings != null, knownBy));
+        out.put("epsColumns", EarningsHistory.COLUMNS);
+        if (!epsCurrency.isEmpty()) {
+            out.put("epsCurrency", epsCurrency);
+        }
+        if (!epsSmallBase.isEmpty()) {
+            out.put("epsSmallBase", epsSmallBase);
+        }
         out.put("columns", COLUMNS);
         out.put("rows", rows);
         out.put("conceptLegend", legend);
         out.put("omitted", omitted);
         out.put("excluded", excluded);
-        return out;
+        return new Built(out, EarningsHistory.measure(earnings != null, epsResults));
+    }
+
+    /**
+     * {@code eps} 칸 설명. 기준일 장 마감 뒤 발표를 넣는 이유(결정이 다음 날 아침 KST)와 결정 시각을 적어, 모델이 "기준일 저녁 실적이
+     * 왜 들어 있나"·"왜 빠졌나"를 패킷 안에서 읽게 합니다. 시스템 프롬프트(ClaudePrompts)는 바꾸지 않고 안내는 여기에 둡니다. 결정
+     * 시각은 날짜 없이 "기준일 다음 날 HH:mm KST"로 적습니다 — 날짜를 쓰면 초기 결정 패킷에 기준일 뒤 날짜(10-24)가 섞여 보입니다.
+     * 운영 중인 고정 규칙(ClaudePrompts.FIXED_RULES "재무(8b_fundamentals)는 공시 원자료")과 기본 프레임 E3("공시 값만")는 eps가
+     * 생기기 전 문구라, eps가 SEC 공시가 아니라는 것과 그 규칙이 eps 밖 칸의 말이라는 것을 여기서 밝힙니다 — 그러지 않으면 모델이
+     * eps를 공시 [사실]로 인용하거나 규칙대로 버릴 수 있습니다(LIVE 프롬프트는 바꾸지 않음).
+     */
+    static String epsNote(boolean available, Instant knownBy) {
+        if (!available) {
+            return "eps = 어닝 서프라이즈 — 저장본(observations " + Datasets.OBS_US_EARNINGS_SURPRISE + ")이 아직 없어 모든 줄 null"
+                    + "(자료 없음 — [확인 필요])";
+        }
+        return "eps = 최근 4분기 EPS [epsColumns], 발표일 최신순 — observations " + Datasets.OBS_US_EARNINGS_SURPRISE
+                + "(yfinance quoteSummary earnings.earningsChart, 한 번에 4분기만 줌). " + EPS_NOT_FILED + " 발표일(미국 동부) ≤ 기준일"
+                + (knownBy == null ? "" : "이고 결정 시각(기준일 다음 날 " + HH_MM.format(knownBy) + " KST) 전")
+                + " — 기준일 장 마감 뒤 발표도 듦(결정이 다음 날 아침 KST라 이미 공개). EPS는 보고 통화(USD 아니면 epsCurrency, "
+                + "null = 모름), surprisePct = (actual − estimate) ÷ |estimate| × 100, 추정치 없으면 null. epsSmallBase = "
+                + "|estimate| < " + EarningsHistory.SMALL_BASE + "라 비율이 부풂. [] = 기준일까지 알려진 발표 없음(아직 받지 않은 종목 포함)";
     }
 
     /** "rev2" — 필드 약어 + 그 필드 후보 목록에서의 순번(1부터). 목록에 없는 개념이면(있을 수 없음) 이름 그대로. */

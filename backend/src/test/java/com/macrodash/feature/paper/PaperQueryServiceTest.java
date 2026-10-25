@@ -499,5 +499,51 @@ class PaperQueryServiceTest {
         assertThat(oddView.path("failedFeeds").isEmpty()).isTrue();
     }
 
+    @Test
+    @DisplayName("상태의 어닝 서프라이즈 수집 범위(2단계 C): 상태 저장본에서 행이 있는 종목/대상·추정치 4분기 이상 종목·갱신 시각(KST) — 없으면 null")
+    void earningsStatus() {
+        var mapper = PaperFixtures.MAPPER;
+        tools.jackson.databind.JsonNode missing = mapper.valueToTree(query.status().get("earnings"));
+        assertThat(missing.path("available").asBoolean(true)).isFalse();
+        for (String key : List.of("covered", "universe", "withEstimate4", "generatedAtKst")) {
+            assertThat(missing.path(key).isNull()).as(key + " — 저장본이 없으면 0이 아니라 null").isTrue();
+        }
+
+        com.macrodash.read.StoreReader reader = PaperFixtures.quietReader();
+        // 수집기 상태 저장본 모양(earnings_surprise 태스크) — items는 요약에 쓰지 않음.
+        tools.jackson.databind.JsonNode payload = mapper.valueToTree(Map.of(
+                "generatedAt", "2026-10-25T12:30:05+00:00", "universe", 576, "covered", 98, "withEstimate4", 91,
+                "budget", 100, "fetchedThisRun", 100, "failedThisRun", 2,
+                "items", Map.of("AAPL", Map.of("fetchedAt", "2026-10-25T12:30:05+00:00", "rows", 4,
+                        "latestReported", "2026-07-30"))));
+        when(reader.readStored(com.macrodash.store.Datasets.SNAP_EARNINGS_SURPRISE_STATUS)).thenReturn(Optional.of(
+                new com.macrodash.store.Snapshot(com.macrodash.store.Datasets.SNAP_EARNINGS_SURPRISE_STATUS, payload,
+                        "json", "ok", null, Instant.parse("2026-10-25T12:30:09Z"))));
+        PaperQueryService withEarnings = new PaperQueryService(store, marketData, reader, PaperFixtures.settings(store),
+                PaperFixtures.config(), NOW);
+
+        tools.jackson.databind.JsonNode view = mapper.valueToTree(withEarnings.status().get("earnings"));
+        assertThat(view.path("available").asBoolean()).isTrue();
+        assertThat(view.path("covered").asInt()).isEqualTo(98);
+        assertThat(view.path("universe").asInt()).isEqualTo(576);
+        assertThat(view.path("withEstimate4").asInt()).isEqualTo(91);
+        assertThat(view.path("generatedAtKst").asString()).as("수집 시각(generatedAt, UTC) → KST")
+                .isEqualTo("2026-10-25 21:30 KST");
+        List<String> keys = new ArrayList<>();
+        view.propertyNames().forEach(keys::add);
+        assertThat(keys).containsExactly("available", "covered", "universe", "withEstimate4", "generatedAtKst");
+
+        // generatedAt이 없으면 저장 시각, 숫자가 아닌 칸은 null(0이 아님).
+        tools.jackson.databind.JsonNode odd = mapper.valueToTree(Map.of("covered", "many", "universe", 576));
+        when(reader.readStored(com.macrodash.store.Datasets.SNAP_EARNINGS_SURPRISE_STATUS)).thenReturn(Optional.of(
+                new com.macrodash.store.Snapshot(com.macrodash.store.Datasets.SNAP_EARNINGS_SURPRISE_STATUS, odd, "json",
+                        "ok", null, Instant.parse("2026-10-25T00:31:00Z"))));
+        tools.jackson.databind.JsonNode oddView = mapper.valueToTree(withEarnings.status().get("earnings"));
+        assertThat(oddView.path("covered").isNull()).isTrue();
+        assertThat(oddView.path("withEstimate4").isNull()).isTrue();
+        assertThat(oddView.path("universe").asInt()).isEqualTo(576);
+        assertThat(oddView.path("generatedAtKst").asString()).isEqualTo("2026-10-25 09:31 KST");
+    }
+
     private static final java.time.LocalDate TUE_EXPIRY = java.time.LocalDate.of(2026, 10, 29);
 }

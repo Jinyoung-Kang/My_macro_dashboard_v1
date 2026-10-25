@@ -87,7 +87,8 @@ import java.util.function.Function;
  * {@code 2_macroCards} 매크로 카드 18장과 환율 일봉 · {@code 3_fred} FRED 9개 · {@code 4_regime} 국면 · {@code 5_gate} OS 게이트
  * 지표(참고) · {@code 6_trackRecord} 트랙레코드(그룹 A 상위 10·그룹 B 12곳·신호 풀) · {@code 6b_institutionProfiles} 신호 풀 기관의
  * 전략 프로필(D27) · {@code 7_13fChanges} 13F 변화와 교집합 후보 · {@code 8_prices} 가격·모멘텀(≤ 60종목) ·
- * {@code 8b_fundamentals} 미국 종목 재무(D28, ≤ 25종목 — {@link FundamentalsSection}) · {@code 9_portfolio} 장부 ·
+ * {@code 8b_fundamentals} 미국 종목 재무(D28, ≤ 25종목 — {@link FundamentalsSection})와 줄마다 최근 4분기 어닝 서프라이즈(2단계 C) ·
+ * {@code 9_portfolio} 장부 ·
  * {@code 10_recentDecisions} 최근 결정 5건 · {@code 11_notes} 유효한 시황 메모(구분자로 감싼 자료 — {@link NoteService#activeMarketNotes}) ·
  * {@code 11b_events} 직전 결정 이후(평일 24시간, 주말·휴장 뒤는 그 사이 전부)의 사건 헤드라인(2단계 B — 대상 종목·매크로 키워드에
  * 걸린 것만, 구분자로 감싼 자료 — {@link EventsSection}) · {@code 12_hardRules} 하드 규칙.
@@ -102,13 +103,14 @@ import java.util.function.Function;
  *
  * <p><b>Point-in-Time</b>(초기 결정, 명세 C6·설계 §5-6): {@code initial=true}면 가격은 기준일까지({@link DailySeries#until}), FRED는
  * 기준일에 <b>알려진</b> 값({@link PointInTime} — 2026-10-23 결정의 10년물은 10-22 관측), 환율은 기준일 이하 일봉, 13F·트랙레코드·
- * 선정은 기준일 이하 선정(그 선정 기준일까지 낸 공시)만, 재무는 공시일 ≤ 기준일인 사실만 씁니다. 매크로 카드는 이력이 없어
+ * 선정은 기준일 이하 선정(그 선정 기준일까지 낸 공시)만, 재무는 공시일 ≤ 기준일인 사실만, 어닝 서프라이즈는 발표일 ≤ 기준일이고
+ * 결정 시각 전에 나온 분기만 씁니다. 매크로 카드는 이력이 없어
  * 지금 수집본을 싣고 {@code asOfMismatch:true}와 "기준값 없음 — 현재 수집본, 참고만"을 붙입니다(앞날 일정 {@code 1b_calendar}도
  * 지금 수집본뿐이라 같고, 사건 {@code 11b_events}는 창이 기준일로 정해지지만 제목이 지금 저장본에서 고른 것이라 같음). 게이트 지표는 그날 기록 대신
  * 기준일에 알려진 값으로 다시 계산합니다(기록은 결정 작업이 돈 시각의 카드 값이라 늦게 돌았으면 기준일 뒤 값일 수 있음). 정기
  * 결정도 가격·FRED는 같은 규칙으로 기준 거래일에서 자릅니다 — 다음 세션 장중에 늦게 돌아도 다음 세션 봉이 섞이지 않게.
  *
- * <p><b>크기</b>: 목표 32,500토큰 이하(설계 §5-2 — D28 전 25,000에 재무 25종목, 2단계 일정·사건·서프라이즈를 더함,
+ * <p><b>크기</b>: 목표 35,500토큰 이하(설계 §5-2 — D28 전 25,000에 재무 25종목, 2단계 일정·사건·서프라이즈를 더함,
  * {@link #TARGET_TOKENS}). 목록마다
  * 상한을 둡니다(카드 18·프로필 8곳·13F 변화 10곳·기관당 변화 15·후보 20·가격 60·재무 25·결정 5). 기관 상한은 그룹마다 먼저
  * 절반씩 채우고({@link #capByGroup}) 자르면 몇 곳을 뺐는지 적습니다. 줄이 많은 표(13F 변화·가격·재무)는 열 이름을 한 번만
@@ -162,9 +164,9 @@ public class PacketBuilder {
 
     /**
      * 패킷 모양의 판 — 섹션·칸을 바꾸면 올립니다(결정 기록끼리 비교할 때 같은 모양인지 알게). 2 = 재무 섹션 8b(D28), 3 = 일정 섹션
-     * 1b(2단계 A), 4 = 사건 섹션 11b(2단계 B).
+     * 1b(2단계 A), 4 = 사건 섹션 11b(2단계 B), 5 = 8b 줄의 어닝 서프라이즈 {@code eps}와 머리말 {@code epsColumns}·{@code epsNote}(2단계 C).
      */
-    static final int PACKET_VERSION = 4;
+    static final int PACKET_VERSION = 5;
     /**
      * 목표 크기(설계 §5-2). {@link #estimateTokens}의 어림으로 잽니다. D28 전 25,000 — 재무 25종목 × 약 30칸을 더해 올렸고, 메모
      * 6,000자를 포함한 최대치 기준입니다. 상한을 꽉 채운 시험 패킷은 D28 전 약 24,900 → 약 29,100토큰(8b 약 4,200 — 줄마다 계산
@@ -172,11 +174,19 @@ public class PacketBuilder {
      * 29,900토큰(1b 약 800)이었습니다. 2단계 B의 사건 섹션 11b와 C의 어닝 서프라이즈(8b 줄마다 4분기)를 담으려고 32,000으로
      * 올렸다가, 11b의 실제 최대 크기를 다시 재서 32,500으로 맞췄습니다(2단계 명세 §4-4). 11b를 가장 크게 채우면(기본 상한 10건 ×
      * 300자 + … 제목, 가장 긴 출처, 줄마다 걸린 이유 상한 넷을 기본 사전에서 가장 긴 것으로 + 나머지 수, 수집 공백·실패 피드 메모)
-     * 약 2,370(보통 제목이면 약 600~1,000)이라 시험 패킷이 약 32,280으로 목표 안이고, 여유가 220 남짓이라 C를 더할 때 다시 정해야
-     * 합니다. {@code news.maxPerDay}를 기본보다 올리거나 {@code news.keywords}에 긴 구절(60자까지)을 넣으면 넘을 수 있습니다(경고 로그만).
-     * 1b는 실적 대상을 8b와 같은 25종목으로 두어 따로 늘지 않습니다({@link #calendar}).
+     * 약 2,370(보통 제목이면 약 600~1,000)이라 시험 패킷이 약 32,280이었습니다. 2단계 C의 어닝 서프라이즈(8b 줄마다 최근 4분기 —
+     * {@link FundamentalsSection}의 {@code eps})를 가장 크게 채우면 <b>35,500</b>을 조금 밑돌아 그 값으로 올렸습니다(2단계 명세 §5-4).
+     * 가장 큰 모양은 전제(|EPS| &lt; 1만, 추정치가 패킷에 0이 아닌 값으로 찍힘 — |추정치| ≥ 0.00005) 안에서 잽니다: 25종목 × 4분기,
+     * EPS −9999.9999, 추정치 −0.000051(패킷에는 −0.0001 — 모든 분기에 작은 추정치 표시), 서프라이즈율은 저장된 원래 추정치로 계산한
+     * 값이라 14자(−19607842841.2), 분기마다 통화가 섞여 25종목 모두 {@code epsCurrency} "CNY,USD". 이때 8b가 약 3,150 늘어(출처를
+     * 가르는 epsNote 문구 포함) 시험 패킷이 약 35,425, 여유 약 75입니다. 처음 잰 약 35,230(여유 270)은 추정치 −0.0001로 서프라이즈율이
+     * 11자인 모양이라 가장 큰 모양이 아니었습니다. 추정치가 0에 더 가까우면 서프라이즈율 자릿수에는 상한이 없습니다(실제로는 보지 못한
+     * 모양). 보통 모양(USD, 작은 추정치 없음, AAPL 같은 자릿수)이면 eps는 약 1,760(머리말 약 310 포함 — 출처 구분 문구 약 60)입니다. 실제 티커가 5자면
+     * {@code epsSmallBase}·{@code epsCurrency}에서 약 40이 더 붙습니다. {@code news.maxPerDay}를 기본보다 올리거나 {@code news.keywords}에
+     * 긴 구절(60자까지)을 넣으면 넘을 수 있습니다(경고 로그만). 1b는 실적 대상을 8b와 같은 25종목으로 두어 따로 늘지 않습니다
+     * ({@link #calendar}).
      */
-    static final int TARGET_TOKENS = 32_500;
+    static final int TARGET_TOKENS = 35_500;
 
     /** 결정 종류(paper_decisions.kind). */
     static final List<String> KINDS = List.of(RuleBookService.SCHEDULED, RuleBookService.MANUAL,
@@ -407,7 +417,8 @@ public class PacketBuilder {
         root.put(PROFILES, profiles(chosen, pool, names, trackA, trackB));
         root.put(CHANGES, changes(chosen, context, ruleSettings, names, universe, ledger, lockedOut));
         root.put(PRICES, priceSection(shownPrices, prices, asOf, initial, noPrice));
-        root.put(FUNDAMENTALS, fundamentals(asOf, stockTargets));
+        FundamentalsSection.Built fundamentals = fundamentals(asOf, stockTargets, settingsBody);
+        root.put(FUNDAMENTALS, fundamentals.section());
         root.put(PORTFOLIO, portfolio(asOf, initial, ledger, paper, limits));
         root.put(DECISIONS, recentDecisions(prior));
         // 메모는 기준일(as_of) ≤ 기준 거래일인 것만 — 초기 결정 패킷도 같은 거름으로 출발일 이하 메모만 봅니다(PIT, 계약 보충 §5).
@@ -424,7 +435,8 @@ public class PacketBuilder {
             log.warn("Claude 패킷이 목표보다 큽니다: {} {} 약 {}토큰(목표 {}) — 목록 상한을 확인하세요", asOf, kind, tokens,
                     TARGET_TOKENS);
         }
-        return new Packet(body, text, sha256(text), packetNotes.ids(), calendar.measure().withEvents(events.result()));
+        return new Packet(body, text, sha256(text), packetNotes.ids(),
+                calendar.measure().withEvents(events.result()).withEarnings(fundamentals.earnings()));
     }
 
     // ------------------------------------------------------------------ 0·1 지시·기준
@@ -1538,14 +1550,29 @@ public class PacketBuilder {
      *
      * <p>저장본은 기준일까지 공시만 읽고({@code obs_date ≤ asOf}), 계산({@code Fundamentals.compute})이 같은 규칙으로 한 번 더
      * 거릅니다 — 읽기 범위가 틀려도 기준일 뒤 정정값이 섞이지 않게(초기 결정은 공시일 ≤ 2026-10-23).
+     *
+     * <p><b>어닝 서프라이즈</b>(2단계 C, 줄의 {@code eps}): 같은 종목의 {@code observations us.earnings_surprise}를 발표일
+     * ({@code obs_date}, 미국 동부) ≤ 기준일로 읽고, {@link com.macrodash.analytics.EarningsHistory}가 같은 규칙과 결정 시각으로 한 번 더
+     * 거릅니다. 결정 시각은 사건 섹션 11b의 창 끝과 같은 시각({@link NewsEvents#window} — 기준일 다음 KST 날짜의 {@code decisionTimeKst},
+     * 이 결정이 읽은 설정 행)입니다: 기준일 장 마감 뒤 발표는 결정(다음 날 아침 KST) 때 이미 공개라 넣고, 그보다 늦게(동부 저녁 늦게) 나온
+     * 발표는 그 결정이 볼 수 없었으므로 뺍니다 — 날짜만으로 자르면 나중에 다시 만든 패킷(초기 결정 10-23 등)에 섞입니다. 시계를 읽지
+     * 않아 결정적입니다. 데이터셋이 아예 없으면(수집기가 아직 돌지 않음) 줄의 {@code eps}는 null이고, 있으면 기준일까지 발표가 없는
+     * 종목은 빈 목록입니다(0건과 자료 없음 구분 — 측정 태그도 같음). 저장본은 {@code quietly} 안에서 읽습니다(이 메서드는
+     * {@link #assemble} 안).
      */
-    private Map<String, Object> fundamentals(LocalDate asOf, FundamentalsTargets targets) {
+    private FundamentalsSection.Built fundamentals(LocalDate asOf, FundamentalsTargets targets, JsonNode settingsBody) {
         List<FundamentalsSection.Target> shown = targets.shown();
+        List<String> tickers = shown.stream().map(FundamentalsSection.Target::ticker).toList();
         Map<String, List<JsonNode>> stored = shown.isEmpty() ? Map.of()
-                : repository.readObservationsUntil(Datasets.OBS_US_FUNDAMENTALS,
-                        shown.stream().map(FundamentalsSection.Target::ticker).toList(), asOf);
-        return FundamentalsSection.section(asOf, shown, targets.all().size() - shown.size(), targets.excluded(),
-                stored);
+                : repository.readObservationsUntil(Datasets.OBS_US_FUNDAMENTALS, tickers, asOf);
+        Map<String, List<JsonNode>> earnings = shown.isEmpty() ? Map.of()
+                : repository.readObservationsUntil(Datasets.OBS_US_EARNINGS_SURPRISE, tickers, asOf);
+        // 대상 종목에 행이 있으면 데이터셋이 있는 것이고, 없을 때만 데이터셋 전체를 한 번 봅니다(가장 최근 날짜 — 기본키 앞 열).
+        boolean earningsAvailable = !earnings.isEmpty()
+                || repository.latestObservationDate(Datasets.OBS_US_EARNINGS_SURPRISE) != null;
+        Instant knownBy = NewsEvents.window(asOf, PaperDecisionJob.decisionTime(settingsBody)).to();
+        return FundamentalsSection.build(asOf, shown, targets.all().size() - shown.size(), targets.excluded(),
+                stored, earningsAvailable ? earnings : null, knownBy);
     }
 
     /**

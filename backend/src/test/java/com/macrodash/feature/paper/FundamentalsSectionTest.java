@@ -159,4 +159,55 @@ class FundamentalsSectionTest {
         assertThat(r.get("fcfConversionPct")).isNull();
         assertThat((String) r.get("notes")).isEqualTo("fcfConversion: 순이익 ≤ 0 — 전환율 의미 없음");
     }
+
+    /** 어닝 서프라이즈 저장본 한 행(수집기 payload + 저장소가 붙이는 obsDate). 통화가 null이면 칸을 비웁니다. */
+    private static JsonNode eps(String reportedAt, String periodEnd, double actual, double estimate, String currency) {
+        ObjectNode p = MAPPER.createObjectNode();
+        p.put("obsDate", reportedAt.substring(0, 10));
+        p.put("periodEnd", periodEnd);
+        p.put("actual", actual);
+        p.put("estimate", estimate);
+        p.put("surprisePct", Math.round((actual - estimate) / Math.abs(estimate) * 10_000) / 100.0);
+        if (currency == null) {
+            p.putNull("currency");
+        } else {
+            p.put("currency", currency);
+        }
+        p.put("smallBase", Math.abs(estimate) < 0.05);
+        p.put("reportedAt", reportedAt);
+        return p;
+    }
+
+    @Test
+    @DisplayName("서프라이즈 머리말: 통화를 모르면 epsCurrency에 null(USD로 읽히지 않게), USD 줄은 적지 않음, 작은 추정치는 티커/분기 말 — 줄 순서")
+    void earningsHeader() {
+        List<FundamentalsSection.Target> shown = List.of(new FundamentalsSection.Target("AAA", FundamentalsSection.HOLDING),
+                new FundamentalsSection.Target("UNK", FundamentalsSection.CANDIDATE),
+                new FundamentalsSection.Target("TINY", FundamentalsSection.CANDIDATE),
+                new FundamentalsSection.Target("NONE", FundamentalsSection.WATCHLIST));
+        Map<String, List<JsonNode>> earnings = Map.of(
+                "AAA", List.of(eps("2026-07-30T16:30:00-04:00", "2026-06-27", 2.02, 1.89243, "USD")),
+                "UNK", List.of(eps("2026-08-05T07:00:00-04:00", "2026-06-30", 0.5, 0.4, null)),
+                "TINY", List.of(eps("2026-07-23T16:01:00-04:00", "2026-06-30", 0.23, 0.00705, "USD"),
+                        eps("2026-04-23T16:01:00-04:00", "2026-03-31", 0.15, 0.08264, "USD")));
+        FundamentalsSection.Built built = FundamentalsSection.build(AS_OF, shown, 0, List.of(), Map.of(), earnings,
+                java.time.Instant.parse("2026-10-23T22:30:00Z"));
+        Map<String, Object> section = built.section();
+
+        Map<String, Object> currency = new LinkedHashMap<>();
+        currency.put("UNK", null);
+        assertThat(section.get("epsCurrency")).isEqualTo(currency);
+        assertThat(section.get("epsSmallBase")).isEqualTo(List.of("TINY/2026-06-30"));
+        assertThat(row(section, 2).get("eps").toString()).isEqualTo("[[2026-07-23, 2026-06-30, 0.23, 0.0071, 3162.4], "
+                + "[2026-04-23, 2026-03-31, 0.15, 0.0826, 81.5]]");
+        assertThat(row(section, 3).get("eps")).as("행이 없는 종목은 빈 목록").isEqualTo(List.of());
+        assertThat(built.earnings().hasEarnings()).isTrue();
+        assertThat(built.earnings().earningsRows()).isEqualTo(3);
+
+        FundamentalsSection.Built missing = FundamentalsSection.build(AS_OF, shown, 0, List.of(), Map.of(), null, null);
+        assertThat(row(missing.section(), 0).get("eps")).as("데이터셋이 없으면 null").isNull();
+        assertThat(missing.section()).doesNotContainKeys("epsCurrency", "epsSmallBase");
+        assertThat(missing.earnings().hasEarnings()).isNull();
+        assertThat((String) missing.section().get("epsNote")).contains("아직 없어");
+    }
 }

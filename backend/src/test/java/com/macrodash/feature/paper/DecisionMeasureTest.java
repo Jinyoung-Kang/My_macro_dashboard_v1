@@ -1,6 +1,7 @@
 package com.macrodash.feature.paper;
 
 import com.macrodash.analytics.CalendarWindow;
+import com.macrodash.analytics.EarningsHistory;
 import com.macrodash.analytics.NewsEvents;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -17,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 결정 기록의 측정 태그(2단계 명세 §6) — 키 순서 고정, 아직 없는 항목은 null(0·false가 아님), 저장본이 없으면 hasCalendar=false·
  * calendarItems=null(0건과 구분). 사건(B6): hasEvents = 실은 건수·eventIds = entity 목록, 섹션이 사건을 고르지 않았으면(끔·자료 없음)
- * 둘 다 null.
+ * 둘 다 null. 서프라이즈(C): hasEarnings = 8b 줄 가운데 분기가 있는 줄이 있었나·earningsRows = 그런 줄 수, 데이터셋이 없으면 둘 다 null.
  */
 class DecisionMeasureTest {
 
@@ -40,9 +41,10 @@ class DecisionMeasureTest {
                 new CalendarWindow.MacroEvent("GDP", LocalDate.of(2026, 10, 29), CalendarWindow.RELEASE, 53, "f",
                         null, null))), AS_OF, List.of());
         DecisionMeasure m = DecisionMeasure.ofCalendar(r);
-        assertThat(m).isEqualTo(new DecisionMeasure(true, 2, null, null, null));
+        assertThat(m).isEqualTo(new DecisionMeasure(true, 2, null, null, null, null));
         assertThat(json(m)).isEqualTo(
-                "{\"hasCalendar\":true,\"calendarItems\":2,\"hasEvents\":null,\"eventIds\":null,\"hasEarnings\":null}");
+                "{\"hasCalendar\":true,\"calendarItems\":2,\"hasEvents\":null,\"eventIds\":null,\"hasEarnings\":null,"
+                        + "\"earningsRows\":null}");
         assertThat(DecisionMeasure.KEY).isEqualTo("measure");
     }
 
@@ -51,14 +53,16 @@ class DecisionMeasureTest {
     void calendarEmptyWindow() {
         DecisionMeasure m = DecisionMeasure.ofCalendar(CalendarWindow.compute(stored(List.of()), AS_OF, List.of()));
         assertThat(json(m)).isEqualTo(
-                "{\"hasCalendar\":true,\"calendarItems\":0,\"hasEvents\":null,\"eventIds\":null,\"hasEarnings\":null}");
+                "{\"hasCalendar\":true,\"calendarItems\":0,\"hasEvents\":null,\"eventIds\":null,\"hasEarnings\":null,"
+                        + "\"earningsRows\":null}");
     }
 
     @Test
     @DisplayName("저장본 없음·결과 없음 — hasCalendar=false·calendarItems=null")
     void calendarMissing() {
         String expected =
-                "{\"hasCalendar\":false,\"calendarItems\":null,\"hasEvents\":null,\"eventIds\":null,\"hasEarnings\":null}";
+                "{\"hasCalendar\":false,\"calendarItems\":null,\"hasEvents\":null,\"eventIds\":null,\"hasEarnings\":null,"
+                        + "\"earningsRows\":null}";
         assertThat(json(DecisionMeasure.ofCalendar(CalendarWindow.compute(null, AS_OF, List.of("AMZN")))))
                 .isEqualTo(expected);
         assertThat(json(DecisionMeasure.ofCalendar(null))).isEqualTo(expected);
@@ -88,7 +92,7 @@ class DecisionMeasureTest {
         assertThat(m.hasEvents()).isEqualTo(2);
         assertThat(m.eventIds()).containsExactly("aaaa", "bbbb");
         assertThat(json(m)).isEqualTo("{\"hasCalendar\":false,\"calendarItems\":null,\"hasEvents\":2,"
-                + "\"eventIds\":[\"aaaa\",\"bbbb\"],\"hasEarnings\":null}");
+                + "\"eventIds\":[\"aaaa\",\"bbbb\"],\"hasEarnings\":null,\"earningsRows\":null}");
 
         NewsEvents.Result none = NewsEvents.compute(List.of(headline("cccc", "Celebrity chef opens bistro"), FRESH),
                 WINDOW, NewsEvents.Settings.defaults(), null, t -> t);
@@ -119,5 +123,39 @@ class DecisionMeasureTest {
             assertThat(m.eventIds()).isNull();
             assertThat(json(m)).contains("\"hasEvents\":null,\"eventIds\":null");
         }
+    }
+
+    // ------------------------------------------------------------------ 서프라이즈(C)
+    private static EarningsHistory.Report report(String reported, String periodEnd, Double estimate) {
+        return new EarningsHistory.Report(LocalDate.parse(reported), LocalDate.parse(periodEnd), 1.25, estimate,
+                estimate == null ? null : 5.0, "USD", null, null);
+    }
+
+    @Test
+    @DisplayName("서프라이즈: 분기가 있는 8b 줄 수와 hasEarnings — 데이터셋은 있는데 기준일까지 발표가 없으면 false·0, 데이터셋이 없으면 둘 다 null")
+    void earnings() {
+        DecisionMeasure base = DecisionMeasure.ofCalendar(null).withEvents(null);
+        EarningsHistory.Result two = EarningsHistory.compute(List.of(report("2026-07-30", "2026-06-30", 1.2),
+                report("2026-04-30", "2026-03-31", null)), AS_OF);
+        EarningsHistory.Result later = EarningsHistory.compute(List.of(report("2026-10-29", "2026-09-30", 1.0)), AS_OF);
+        EarningsHistory.Result none = EarningsHistory.compute(List.of(), AS_OF);
+
+        DecisionMeasure m = base.withEarnings(EarningsHistory.measure(true, List.of(two, later, none)));
+        assertThat(m.hasEarnings()).isTrue();
+        assertThat(m.earningsRows()).as("분기 칸의 합(2)이 아니라 분기가 있는 줄 수").isEqualTo(1);
+        assertThat(json(m)).endsWith("\"hasEarnings\":true,\"earningsRows\":1}");
+
+        DecisionMeasure empty = base.withEarnings(EarningsHistory.measure(true, List.of(later, none)));
+        assertThat(json(empty)).as("기준일 뒤 발표만 있는 줄·행 없는 줄 — 골랐는데 없음")
+                .endsWith("\"hasEarnings\":false,\"earningsRows\":0}");
+
+        for (DecisionMeasure missing : List.of(base.withEarnings(EarningsHistory.measure(false, List.of(two))),
+                base.withEarnings(null))) {
+            assertThat(missing.hasEarnings()).isNull();
+            assertThat(missing.earningsRows()).isNull();
+            assertThat(json(missing)).endsWith("\"hasEarnings\":null,\"earningsRows\":null}");
+        }
+        // 사건 태그를 나중에 더해도 서프라이즈 칸은 그대로(두 갈래가 서로 지우지 않음).
+        assertThat(m.withEvents(null).earningsRows()).isEqualTo(1);
     }
 }

@@ -1,6 +1,7 @@
 package com.macrodash.feature.paper;
 
 import com.macrodash.analytics.CalendarWindow;
+import com.macrodash.analytics.EarningsHistory;
 import com.macrodash.analytics.NewsEvents;
 
 import java.util.LinkedHashMap;
@@ -19,10 +20,12 @@ import java.util.Map;
  * @param hasEvents     {@code 11b_events}에 실은 사건 헤드라인 건수(기능 B — {@link NewsEvents.Result#eventCount}). 섹션이 사건을
  *                      고르지 않았으면(설정으로 끔·저장본 없음·피드 선택 없음) null — 0은 '골랐는데 걸린 것이 없었다'
  * @param eventIds      그 헤드라인의 entity(제목 해시, 섹션 순서 — B6). hasEvents가 null이면 null
- * @param hasEarnings   어닝 서프라이즈가 들어 있었는지(기능 C) — 아직 없음(null)
+ * @param hasEarnings   {@code 8b_fundamentals}의 줄 가운데 하나라도 어닝 서프라이즈 분기({@code eps})가 1개 이상 있었는지(기능 C —
+ *                      {@link EarningsHistory#measure}). 저장본이 있는데 기준일까지 알려진 발표가 없으면 false, 데이터셋이 없으면 null
+ * @param earningsRows  분기가 1개 이상 있는 8b 줄 수(종목 수 — 분기 칸의 합이 아님). 데이터셋이 없으면 null(0건과 구분)
  */
 record DecisionMeasure(boolean hasCalendar, Integer calendarItems, Integer hasEvents, List<String> eventIds,
-                       Boolean hasEarnings) {
+                       Boolean hasEarnings, Integer earningsRows) {
 
     /** 결정 기록 응답 JSON의 키. */
     static final String KEY = "measure";
@@ -31,10 +34,10 @@ record DecisionMeasure(boolean hasCalendar, Integer calendarItems, Integer hasEv
         eventIds = eventIds == null ? null : List.copyOf(eventIds);
     }
 
-    /** 일정 섹션만 정한 태그 — 사건·서프라이즈는 null({@link #withEvents}로 사건을 더함). */
+    /** 일정 섹션만 정한 태그 — 사건·서프라이즈는 null({@link #withEvents}·{@link #withEarnings}로 더함). */
     static DecisionMeasure ofCalendar(CalendarWindow.Result calendar) {
         boolean has = calendar != null && calendar.available();
-        return new DecisionMeasure(has, has ? calendar.rows().size() : null, null, null, null);
+        return new DecisionMeasure(has, has ? calendar.rows().size() : null, null, null, null, null);
     }
 
     /**
@@ -44,7 +47,17 @@ record DecisionMeasure(boolean hasCalendar, Integer calendarItems, Integer hasEv
     DecisionMeasure withEvents(NewsEvents.Result events) {
         Integer count = events == null ? null : events.eventCount();
         return new DecisionMeasure(hasCalendar, calendarItems, count, count == null ? null : events.eventIds(),
-                hasEarnings);
+                hasEarnings, earningsRows);
+    }
+
+    /**
+     * 재무 섹션 8b의 어닝 서프라이즈 결과를 더한 태그({@link FundamentalsSection.Built#earnings}). 결과가 없으면 두 칸 모두 null —
+     * 사건과 같이 둘을 함께 정해 한쪽만 null인 기록이 생기지 않게.
+     */
+    DecisionMeasure withEarnings(EarningsHistory.Measure earnings) {
+        boolean known = earnings != null && earnings.hasEarnings() != null && earnings.earningsRows() != null;
+        return new DecisionMeasure(hasCalendar, calendarItems, hasEvents, eventIds,
+                known ? earnings.hasEarnings() : null, known ? earnings.earningsRows() : null);
     }
 
     /**
@@ -58,6 +71,7 @@ record DecisionMeasure(boolean hasCalendar, Integer calendarItems, Integer hasEv
         out.put("hasEvents", hasEvents);
         out.put("eventIds", eventIds);
         out.put("hasEarnings", hasEarnings);
+        out.put("earningsRows", earningsRows);
         return out;
     }
 }

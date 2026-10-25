@@ -194,7 +194,7 @@ class CalendarSectionTest {
         sources.put("s4", BLS);
         assertThat(s.get("sources")).isEqualTo(sources);
 
-        assertThat(built.measure()).isEqualTo(new DecisionMeasure(true, 6, null, null, null));
+        assertThat(built.measure()).isEqualTo(new DecisionMeasure(true, 6, null, null, null, null));
         assertThat(built.result().macroCount()).isEqualTo(4);
         assertThat(built.result().earningsCount()).isEqualTo(2);
     }
@@ -211,7 +211,7 @@ class CalendarSectionTest {
                     "missing");
             assertThat(s.get("missing")).isEqualTo("자료 없음 — 일정 저장본이 없습니다(calendar.us_events)");
             assertThat(s.get("generatedAtKst")).isNull();
-            assertThat(built.measure()).isEqualTo(new DecisionMeasure(false, null, null, null, null));
+            assertThat(built.measure()).isEqualTo(new DecisionMeasure(false, null, null, null, null, null));
         }
         // Optional 자체가 null이어도(호출부 실수) 같은 '자료 없음'.
         assertThat(CalendarSection.build(DATASET, null, AS_OF, List.of(), false).measure().hasCalendar()).isFalse();

@@ -77,7 +77,8 @@ import static org.mockito.Mockito.when;
  * 재구성, 트랙레코드·전략 프로필·13F 변화 섹션(그룹별 기관 상한), 하드 규칙 문구, 정기 패킷의 장부·대기 주문·최근 결정, 검증기와 같은
  * 가격 없음·묵은 입력 표시, 재무 섹션 8b(대상 순서·ETF 제외·공시일 ≤ 기준일·단위·개념 범례), 일정 섹션 1b(10거래일 창·8b와 같은
  * 대상·자료 없음·FRED 키 미설정·측정 태그), 사건 섹션 11b(직전 결정 이후(평일 24시간, 주말·휴장 뒤는 그 사이 전부)·대상 티커·키워드·구분자 지우기·설정·초기 패킷·측정 태그),
- * 크기 목표(32,500토큰).
+ * 8b 줄의 어닝 서프라이즈(발표일 ≤ 기준일·결정 시각 전, 10-23 초기 결정 재현, 4분기·통화·작은 추정치·자료 없음과 0건, 측정 태그),
+ * 크기 목표(35,500토큰).
  *
  * <p>저장소·리더는 가짜이고, 시계열 가짜는 읽기 범위(from·to)를 <b>일부러 무시</b>합니다 — 기준일 뒤 값(10-26 가격·FRED, 11-13에
  * 낸 3분기 13F, 10-30에 낸 재무 10-K)이 들어와도 패킷이 스스로 자르는지 봅니다. 선정은 출발일(2026-10-23) 하나: 그룹 A = F1·F2, 그룹 B = F1·버크셔
@@ -117,6 +118,13 @@ class PacketBuilderTest {
     private Map<String, List<JsonNode>> fundamentals;
     /** 패킷이 재무 저장본을 읽을 때 넘긴 기준일(마지막 호출). */
     private LocalDate fundamentalsUntil;
+    /**
+     * 어닝 서프라이즈 저장본(observations us.earnings_surprise) — 종목 → 발표일별 행. 가짜 저장소는 기준일(until)을 일부러
+     * 무시합니다(기준일 뒤 발표가 와도 패킷이 스스로 거르는지). 비어 있으면 데이터셋이 없는 것(가장 최근 날짜 null).
+     */
+    private Map<String, List<JsonNode>> earnings;
+    /** 패킷이 어닝 서프라이즈 저장본을 읽을 때 넘긴 기준일(마지막 호출). */
+    private LocalDate earningsUntil;
     /** 사건 저장본(observations news_headline) 행 — 가짜 저장소는 읽기 시작일(obs_date ≥ from)만 지킵니다. */
     private List<JsonNode> news;
     /** 패킷이 사건 저장본을 읽을 때 넘긴 시작일(마지막 호출)과 읽은 횟수. */
@@ -135,6 +143,8 @@ class PacketBuilderTest {
         regimeEntries = new ArrayList<>();
         fundamentals = new TreeMap<>();
         fundamentalsUntil = null;
+        earnings = new TreeMap<>();
+        earningsUntil = null;
         news = new ArrayList<>();
         newsFrom = null;
         newsReads = 0;
@@ -164,18 +174,26 @@ class PacketBuilderTest {
         });
         when(repository.readObservationsUntil(anyString(), anyCollection(), any())).thenAnswer(invocation -> {
             Collection<String> ids = invocation.getArgument(1);
-            fundamentalsUntil = invocation.getArgument(2);
-            Map<String, List<JsonNode>> out = new LinkedHashMap<>();
-            if (Datasets.OBS_US_FUNDAMENTALS.equals(invocation.getArgument(0))) {
-                // 기준일(until)은 일부러 무시합니다 — 기준일 뒤 공시가 와도 계산이 공시일로 스스로 거르는지 보려고.
-                new TreeSet<>(ids).forEach(id -> {
-                    if (fundamentals.containsKey(id)) {
-                        out.put(id, fundamentals.get(id));
-                    }
-                });
+            String dataset = invocation.getArgument(0);
+            Map<String, List<JsonNode>> source = Datasets.OBS_US_FUNDAMENTALS.equals(dataset) ? fundamentals
+                    : Datasets.OBS_US_EARNINGS_SURPRISE.equals(dataset) ? earnings : Map.of();
+            if (source == fundamentals) {
+                fundamentalsUntil = invocation.getArgument(2);
+            } else if (source == earnings) {
+                earningsUntil = invocation.getArgument(2);
             }
+            // 기준일(until)은 일부러 무시합니다 — 기준일 뒤 공시·발표가 와도 계산이 공시일·발표일로 스스로 거르는지 보려고.
+            Map<String, List<JsonNode>> out = new LinkedHashMap<>();
+            new TreeSet<>(ids).forEach(id -> {
+                if (source.containsKey(id)) {
+                    out.put(id, source.get(id));
+                }
+            });
             return out;
         });
+        when(repository.latestObservationDate(anyString())).thenAnswer(invocation ->
+                Datasets.OBS_US_EARNINGS_SURPRISE.equals(invocation.getArgument(0)) && !earnings.isEmpty()
+                        ? LocalDate.of(2026, 10, 29) : null);
         when(repository.readObservationsBetween(anyString(), any(), any())).thenAnswer(invocation -> {
             if (!Datasets.OBS_NEWS_HEADLINE.equals(invocation.getArgument(0))) {
                 return List.of();
@@ -345,6 +363,29 @@ class PacketBuilderTest {
      * 기준일 뒤(10-30)에 낸 10-K는 FY2026 연간과 9개월 매출 정정값(999,999)을 싣습니다 — 보이면 시점 규칙이 깨진 것.
      * withNotes면 1년 전 자산·자본을 빼고 주식수를 옛 표지 기준일로 두어 계산 메모가 생기게 합니다(크기 시험의 최악에 가깝게).
      */
+    /**
+     * 어닝 서프라이즈 저장본 한 행 — 수집기 payload 그대로({@code smallBase}는 수집기 규칙 |추정치| &lt; 0.05, 추정치가 없으면 null)에
+     * 저장소가 붙이는 obsDate(발표 시각의 미국 동부 날짜 = reportedAt의 날짜 부분).
+     */
+    private void eps(String ticker, String reportedAt, String periodEnd, Double actual, Double estimate,
+                     Double surprisePct, String currency) {
+        ObjectNode p = MAPPER.createObjectNode();
+        p.put("periodEnd", periodEnd);
+        p.put("actual", actual);
+        p.put("estimate", estimate);
+        p.put("surprisePct", surprisePct);
+        p.put("currency", currency);
+        if (estimate == null) {
+            p.putNull("smallBase");
+        } else {
+            p.put("smallBase", Math.abs(estimate) < 0.05);
+        }
+        p.put("reportedAt", reportedAt);
+        p.put("source", "yfinance quoteSummary earnings.earningsChart");
+        p.put("obsDate", reportedAt.substring(0, 10));
+        earnings.computeIfAbsent(ticker, k -> new ArrayList<>()).add(p);
+    }
+
     private void appleLike(String ticker, double scale, boolean withNotes) {
         double k = scale * M;
         filing(ticker, "2024-08-02", "10-Q", "USD", REVENUES, "2023-10-01", "2024-06-29", 296_105 * k);
@@ -587,6 +628,22 @@ class PacketBuilderTest {
         // 재무: CCC는 AAPL 모양(10-30에 낸 10-K 포함 — 기준일 뒤), BBB는 IFRS·유로 20-F. 나머지 종목은 저장본 없음.
         appleLike("CCC", 1, false);
         ifrsEuro("BBB");
+
+        // 어닝 서프라이즈(8b eps): 수집기 earnings_surprise 모양(collector/app/services/earnings_surprise.py) — obs_date = 발표 시각의
+        // 미국 동부 날짜. CCC는 AAPL 값(고정본 collector/tests/fixtures/earnings) + 기준일 10-23 장 마감 뒤(16:05 ET) 발표, 다섯 분기라
+        // 가장 오래된 것은 4분기 상한 밖. BBB는 유로 EPS, 추정치 없는 분기(상장 직후 SPCX 모양)·작은 추정치(INTC 모양, smallBase),
+        // 10-23 19:55 ET 발표(결정 시각 10-24 07:30 KST = 10-23 18:30 ET 뒤 — 단계 0의 PBR 모양)와 기준일 뒤 10-29 발표.
+        eps("CCC", "2025-10-30T16:30:00-04:00", "2025-09-27", 1.85, 1.76993, 4.52, "USD");
+        eps("CCC", "2026-01-29T16:30:00-05:00", "2025-12-27", 2.84, 2.6708, 6.34, "USD");
+        eps("CCC", "2026-04-30T16:30:00-04:00", "2026-03-28", 2.01, 1.94275, 3.46, "USD");
+        eps("CCC", "2026-07-30T16:30:00-04:00", "2026-06-27", 2.02, 1.89243, 6.74, "USD");
+        eps("CCC", "2026-10-23T16:05:00-04:00", "2026-09-30", 1.97, 1.8521, 6.37, "USD");
+        eps("BBB", "2025-10-29T07:00:00-04:00", "2025-09-30", 0.40, 0.42, -4.76, "EUR");
+        eps("BBB", "2026-02-05T07:00:00-05:00", "2025-12-31", 0.52, 0.48, 8.33, "EUR");
+        eps("BBB", "2026-04-29T07:00:00-04:00", "2026-03-31", 0.31, null, null, "EUR");
+        eps("BBB", "2026-07-30T07:00:00-04:00", "2026-06-30", 0.45, 0.012, 3650.0, "EUR");
+        eps("BBB", "2026-10-23T19:55:00-04:00", "2026-09-30", 0.58, 0.55, 5.45, "EUR");
+        eps("BBB", "2026-10-29T07:00:00-04:00", "2026-09-30", 0.61, 0.55, 10.91, "EUR");
 
         // 일정(1b): 수집기 us_calendar 모양(collector/app/tasks/us_calendar.py) — 10-27 06:40 KST 수집, 단계 0 날짜.
         snapshot(Datasets.SNAP_US_CALENDAR, calendarPayload("ok"), CALENDAR_AT);
@@ -1653,6 +1710,128 @@ class PacketBuilderTest {
         assertThat(FundamentalsSection.FIELD_CODES.values()).doesNotHaveDuplicates();
     }
 
+    // ------------------------------------------------------------------ 8b 어닝 서프라이즈(2단계 C)
+    /** 8b 한 줄의 eps 칸(문자열). */
+    private static String epsOf(JsonNode body, String ticker) {
+        return fundamentalsRow(body, ticker).get("eps").toString();
+    }
+
+    @Test
+    @DisplayName("서프라이즈(8b eps, 10-23 초기 결정 재현): 발표일 ≤ 10-23이고 결정 시각(10-24 07:30 KST) 전 발표만 — 10-23 장 마감 뒤(16:05 ET)는 듦, 19:55 ET·10-29 발표는 없음, 최근 4분기 최신순, 추정치 없으면 surprisePct null, 유로·작은 추정치는 머리말")
+    void earningsInitialPacket() {
+        Packet packet = builder.build(FRI, RuleBookService.INITIAL, true);
+        JsonNode body = packet.body();
+        JsonNode section = body.get(PacketBuilder.FUNDAMENTALS);
+
+        assertThat(earningsUntil).as("발표일 ≤ 기준일로 읽음").isEqualTo(FRI);
+        assertThat(section.get("epsColumns").toString())
+                .isEqualTo("[\"reported\",\"periodEnd\",\"actual\",\"estimate\",\"surprisePct\"]");
+        List<String> columns = new ArrayList<>();
+        section.get("columns").forEach(c -> columns.add(c.asString()));
+        assertThat(columns.indexOf("eps")).as("eps 칸은 notes 바로 앞").isEqualTo(columns.indexOf("notes") - 1);
+        // CCC: 다섯 분기 중 최근 넷, 기준일 장 마감 뒤 발표(10-23 16:05 ET)가 맨 앞. 수는 EPS 소수 4자리·% 1자리(끝 0 지움).
+        assertThat(epsOf(body, "CCC")).isEqualTo("[[\"2026-10-23\",\"2026-09-30\",1.97,1.8521,6.4],"
+                + "[\"2026-07-30\",\"2026-06-27\",2.02,1.8924,6.7],[\"2026-04-30\",\"2026-03-28\",2.01,1.9428,3.5],"
+                + "[\"2026-01-29\",\"2025-12-27\",2.84,2.6708,6.3]]");
+        // BBB: 10-23 19:55 ET(결정 시각 18:30 ET 뒤)·10-29(기준일 뒤) 발표는 없음, 추정치 없는 분기는 surprisePct null.
+        assertThat(epsOf(body, "BBB")).isEqualTo("[[\"2026-07-30\",\"2026-06-30\",0.45,0.012,3650],"
+                + "[\"2026-04-29\",\"2026-03-31\",0.31,null,null],[\"2026-02-05\",\"2025-12-31\",0.52,0.48,8.3],"
+                + "[\"2025-10-29\",\"2025-09-30\",0.4,0.42,-4.8]]");
+        assertThat(section.get("epsCurrency").toString()).as("USD가 아닌 종목만").isEqualTo("{\"BBB\":\"EUR\"}");
+        assertThat(section.get("epsSmallBase").toString()).isEqualTo("[\"BBB/2026-06-30\"]");
+        assertThat(section.get("epsNote").asString()).contains("발표일(미국 동부) ≤ 기준일이고 결정 시각(기준일 다음 날 07:30 KST) 전")
+                .contains("기준일 장 마감 뒤 발표도 듦").contains("observations " + Datasets.OBS_US_EARNINGS_SURPRISE)
+                // QA C-PIT-1: 운영 중인 고정 규칙 '재무(8b_fundamentals)는 공시 원자료'와 어긋나지 않게 eps가 SEC 공시가 아님을 밝힘.
+                .contains("eps는 SEC 공시 값이 아님").contains("인용 시 출처 yfinance")
+                .contains("'8b = 공시 원자료' 규칙은 eps 밖 칸");
+        assertThat(section.get("source").asString()).as("섹션 출처(SEC)는 eps 칸을 뺀 범위")
+                .startsWith("observations " + Datasets.OBS_US_FUNDAMENTALS + "(SEC XBRL Company Facts)")
+                .endsWith("eps 칸은 제외(epsNote)");
+        assertThat(section.toString()).as("1b의 다음 실적일(10-29, 현재 수집본)은 따로 — 8b에는 기준일 뒤 발표가 없음")
+                .doesNotContain("2026-10-29").doesNotContain("0.58,0.55").doesNotContain("0.61,0.55");
+        assertThat(datesAfter(body, FRI)).as("기준일 뒤 날짜 없음(결정 시각도 날짜 없이 적음)").isEmpty();
+
+        assertThat(packet.measure().hasEarnings()).isTrue();
+        assertThat(packet.measure().earningsRows()).as("분기가 있는 8b 줄 수").isEqualTo(2);
+        // 같은 저장 상태면 같은 섹션(결정적 — 시계를 읽지 않음).
+        assertThat(newBuilder(Clock.fixed(Instant.parse("2026-11-20T00:00:00Z"), ZoneOffset.UTC))
+                .build(FRI, RuleBookService.INITIAL, true).body().get(PacketBuilder.FUNDAMENTALS)).isEqualTo(section);
+    }
+
+    @Test
+    @DisplayName("서프라이즈(8b eps) 정기 패킷: 기준일 10-26이면 10-23 19:55 ET 발표가 듦(그 결정 시각 전), 설정의 결정 시각이 자름 — 행 없는 종목은 [](알려진 발표 없음)")
+    void earningsScheduledPacket() {
+        activeClaude();   // 보유 BBB, 후보 CCC·BBB
+        earnings.remove("CCC");
+        Packet packet = builder.build(MON, RuleBookService.SCHEDULED, false);
+        JsonNode body = packet.body();
+
+        assertThat(earningsUntil).isEqualTo(MON);
+        assertThat(epsOf(body, "BBB")).startsWith("[[\"2026-10-23\",\"2026-09-30\",0.58,0.55,5.5],"
+                + "[\"2026-07-30\",\"2026-06-30\",0.45,0.012,3650]");
+        assertThat(epsOf(body, "CCC")).as("데이터셋은 있는데 이 종목 행이 없음 — null이 아니라 빈 목록").isEqualTo("[]");
+        assertThat(packet.text()).doesNotContain("0.61,0.55");
+        assertThat(packet.measure().hasEarnings()).isTrue();
+        assertThat(packet.measure().earningsRows()).isEqualTo(1);
+
+        // 결정 시각을 앞당기면(07:30 → 05:00 KST = 10-26 16:00 ET) 그 뒤 발표는 빠집니다 — 기준일 MON에 발표한 분기로 확인.
+        eps("BBB", "2026-10-26T16:30:00-04:00", "2026-12-31", 0.70, 0.60, 16.67, "EUR");
+        assertThat(epsOf(builder.build(MON, RuleBookService.SCHEDULED, false).body(), "BBB"))
+                .as("기준일 장 마감 뒤(16:30 ET)는 07:30 KST 결정 전").startsWith("[[\"2026-10-26\",");
+        ObjectNode early = (ObjectNode) store.settings.body().deepCopy();
+        early.put("decisionTimeKst", "05:00");
+        SettingsRow row = new SettingsRow(2, early, store.dbNow);
+        assertThat(epsOf(builder.build(MON, RuleBookService.SCHEDULED, false, 1, row).body(), "BBB"))
+                .as("05:00 KST 결정은 16:30 ET 발표를 볼 수 없음").startsWith("[[\"2026-10-23\",");
+    }
+
+    @Test
+    @DisplayName("서프라이즈(8b eps): 데이터셋이 없으면 모든 줄 null·'저장본 없음'·측정 null, 대상 종목에만 행이 없으면 [](측정 false·0)")
+    void earningsMissing() {
+        earnings.clear();
+        Packet missing = builder.build(FRI, RuleBookService.INITIAL, true);
+        JsonNode section = missing.body().get(PacketBuilder.FUNDAMENTALS);
+        assertThat(fundamentalsRow(missing.body(), "CCC").get("eps").isNull()).as("0건이 아니라 자료 없음").isTrue();
+        assertThat(fundamentalsRow(missing.body(), "BBB").get("eps").isNull()).isTrue();
+        assertThat(section.get("epsNote").asString()).contains("아직 없어 모든 줄 null");
+        assertThat(section.has("epsColumns")).as("모양은 같음").isTrue();
+        assertThat(section.has("epsCurrency")).isFalse();
+        assertThat(section.has("epsSmallBase")).isFalse();
+        assertThat(missing.measure().hasEarnings()).isNull();
+        assertThat(missing.measure().earningsRows()).isNull();
+
+        eps("ZZZ", "2026-07-30T16:30:00-04:00", "2026-06-30", 1.0, 0.9, 11.11, "USD");   // 대상 밖 종목만
+        Packet none = builder.build(FRI, RuleBookService.INITIAL, true);
+        assertThat(epsOf(none.body(), "CCC")).isEqualTo("[]");
+        assertThat(none.body().get(PacketBuilder.FUNDAMENTALS).get("epsNote").asString()).contains("[] = 기준일까지 알려진 발표 없음");
+        assertThat(none.measure().hasEarnings()).isFalse();
+        assertThat(none.measure().earningsRows()).isZero();
+    }
+
+    @Test
+    @DisplayName("서프라이즈(8b eps) 변환: 저장본 행 → 계산 입력(obsDate = 발표일, reportedAt = 동부 오프셋 ISO), 틀린 칸은 null(0으로 채우지 않음)")
+    void earningsConversion() {
+        ObjectNode payload = MAPPER.createObjectNode();
+        payload.put("obsDate", "2026-10-23");
+        payload.put("periodEnd", "2026-09-30");
+        payload.put("actual", 0.23);
+        payload.put("estimate", "0.007");   // 문자열 — 숫자가 아님
+        payload.put("surprisePct", 3162.41);
+        payload.put("currency", "USD");
+        payload.put("smallBase", "yes");
+        payload.put("reportedAt", "2026-10-23T16:01:00-04:00");
+        com.macrodash.analytics.EarningsHistory.Report r = FundamentalsSection.report(payload);
+        assertThat(r.reported()).isEqualTo(FRI);
+        assertThat(r.periodEnd()).isEqualTo(LocalDate.of(2026, 9, 30));
+        assertThat(r.actual()).isEqualTo(0.23);
+        assertThat(r.estimate()).as("숫자가 아니면 null").isNull();
+        assertThat(r.smallBase()).as("불리언이 아니면 null").isNull();
+        assertThat(r.reportedAt()).isEqualTo(Instant.parse("2026-10-23T20:01:00Z"));
+        payload.put("reportedAt", "어제 저녁");
+        assertThat(FundamentalsSection.report(payload).reportedAt()).as("읽을 수 없는 시각은 null — 날짜 규칙만").isNull();
+        assertThat(FundamentalsSection.report(MAPPER.createObjectNode()).reported()).isNull();
+    }
+
     // ------------------------------------------------------------------ 1b 일정
     @Test
     @DisplayName("일정(1b): 1_basis 바로 뒤, 기준일 다음 세션부터 10거래일(10-27~11-09) 안의 FOMC·발표일과 대상(8b와 같은 보유·후보) 실적일만 — 창 밖·대상 밖 없음, 출처·갱신 시각, 측정 태그")
@@ -1689,7 +1868,8 @@ class PacketBuilderTest {
 
         assertThat(packet.measure().hasCalendar()).isTrue();
         assertThat(packet.measure().calendarItems()).isEqualTo(6);
-        assertThat(packet.measure().hasEarnings()).as("서프라이즈(C)는 아직 없음").isNull();
+        assertThat(packet.measure().hasEarnings()).as("서프라이즈(C) — 8b 두 줄 모두 분기가 있음").isTrue();
+        assertThat(packet.measure().earningsRows()).isEqualTo(2);
         assertThat(body.has(DecisionMeasure.KEY)).as("측정 태그는 Claude에게 보내는 본문 밖").isFalse();
         assertThat(packet.text()).doesNotContain("hasCalendar");
         // 같은 입력이면 같은 섹션(결정적) — 시계를 읽지 않음.
@@ -1748,7 +1928,7 @@ class PacketBuilderTest {
         body.propertyNames().forEach(keys::add);
         assertThat(keys.indexOf(PacketBuilder.EVENTS)).isEqualTo(keys.indexOf(PacketBuilder.NOTES) + 1);
         assertThat(keys.indexOf(PacketBuilder.HARD_RULES)).isEqualTo(keys.indexOf(PacketBuilder.EVENTS) + 1);
-        assertThat(body.get(PacketBuilder.BASIS).get("packetVersion").asInt()).isEqualTo(4);
+        assertThat(body.get(PacketBuilder.BASIS).get("packetVersion").asInt()).isEqualTo(5);
 
         JsonNode section = body.get(PacketBuilder.EVENTS);
         assertThat(section.get("source").asString()).startsWith("observations " + Datasets.OBS_NEWS_HEADLINE);
@@ -1893,7 +2073,7 @@ class PacketBuilderTest {
 
     // ------------------------------------------------------------------ 크기
     @Test
-    @DisplayName("크기: 상한을 꽉 채운 패킷(재무 25종목·일정 거시 6건 + 실적 25종목·메모 6,000자·사건 10건(가장 큰 줄·메모) 포함)도 32,500토큰(어림) 이하")
+    @DisplayName("크기: 상한을 꽉 채운 패킷(재무 25종목 × 서프라이즈 4분기(가장 긴 수·모든 분기 작은 추정치·모든 종목 외화)·일정 거시 6건 + 실적 25종목·메모 6,000자·사건 10건(가장 큰 줄·메모) 포함)도 35,500토큰(어림) 이하")
     void fitsTokenBudget() {
         largeFixture();
         // 섹션 11을 글자 상한(6,000자 — 구분자·제목 포함)까지 채운 시황 메모 둘(한글 1자 ≈ 1토큰이라 가장 비싼 글).
@@ -1922,7 +2102,16 @@ class PacketBuilderTest {
             assertThat(r.get(7).isNull()).as("매출 TTM이 찬 줄(최악의 크기)").isFalse();
             assertThat(r.get(FundamentalsSection.COLUMNS.size() - 1).asString()).as("계산 메모도 찬 줄(상한에서 자름)")
                     .hasSizeBetween(40, FundamentalsSection.MAX_NOTE_CHARS);
+            JsonNode eps = r.get(FundamentalsSection.COLUMNS.indexOf("eps"));
+            assertThat(eps).as("줄마다 4분기").hasSize(com.macrodash.analytics.EarningsHistory.LAST);
+            assertThat(eps.get(0).toString()).as("가장 긴 수 — 서프라이즈율 14자")
+                    .isEqualTo("[\"2026-10-22\",\"2026-09-30\",-9999.9999,-0.0001,-19607842841.2]");
         });
+        assertThat(fundamentalsSection.get("epsSmallBase")).as("모든 분기에 작은 추정치 표시")
+                .hasSize(FundamentalsSection.MAX_ROWS * com.macrodash.analytics.EarningsHistory.LAST);
+        assertThat(fundamentalsSection.get("epsCurrency")).as("모든 종목이 USD가 아님").hasSize(FundamentalsSection.MAX_ROWS);
+        fundamentalsSection.get("epsCurrency").forEach(c ->
+                assertThat(c.asString()).as("분기마다 통화가 섞인 가장 긴 표기").isEqualTo("CNY,USD"));
         JsonNode calendar = body.get(PacketBuilder.CALENDAR);
         assertThat(calendar.get("macro").get("rows")).hasSize(6);
         assertThat(calendar.get("earnings").get("rows")).as("실적 대상은 8b와 같은 25종목")
@@ -1945,7 +2134,8 @@ class PacketBuilderTest {
                 .startsWith("창 끝 10시간 전(");
         assertThat(events.get("feedNote").asString()).as("상태에 실패로 남을 수 있는 가장 긴 피드 여섯")
                 .contains("investing_economy").doesNotContain("bls_cpi");
-        assertThat(tokens).as("큰 패킷 %d자 · 일정 섹션 약 %d토큰 · 사건 섹션 약 %d토큰", packet.text().length(),
+        assertThat(tokens).as("큰 패킷 %d자(약 %d토큰) · 재무 섹션 약 %d토큰 · 일정 섹션 약 %d토큰 · 사건 섹션 약 %d토큰",
+                packet.text().length(), tokens, PacketBuilder.estimateTokens(fundamentalsSection.toString()),
                 PacketBuilder.estimateTokens(calendar.toString()), PacketBuilder.estimateTokens(events.toString()))
                 .isLessThanOrEqualTo(PacketBuilder.TARGET_TOKENS);
         assertThat(PacketBuilder.estimateTokens("가나다abc")).isEqualTo(4);
@@ -2024,6 +2214,21 @@ class PacketBuilderTest {
         for (int i = 0; i < 400; i++) {
             history(String.format("T%03d", i), 20 + i % 50, LocalDate.of(2025, 6, 2), MON);
             appleLike(String.format("T%03d", i), 1.23456789 + i / 97.0, true);
+        }
+        // 어닝 서프라이즈(8b eps): 줄마다 4분기를 전제 안에서 가장 긴 모양으로(QA C-PIT-3 — 전에는 추정치 -0.0001로 서프라이즈율이
+        // 11자라 '가장 긴 모양'이 아니었음). 전제: |EPS| < 1만, 추정치는 패킷에 0이 아닌 값으로 찍힘(|추정치| ≥ 0.00005 — 4자리
+        // HALF_UP). EPS는 그 안에서 가장 긴 값(-9999.9999 — 정수 4자리 + 소수 4자리, 음수 — 엔·원화 EPS도 덮음), 추정치는 -0.000051
+        // (패킷에는 -0.0001 — 모든 분기에 작은 추정치 표시(epsSmallBase)가 붙음). 서프라이즈율은 저장된 원래 추정치로 계산한 값이라
+        // (수집기 공식 — 패킷의 반올림된 추정치로 다시 계산하지 않음) 전제 안에서 가장 긴 14자(-19,607,842,841.2%). 통화는 분기마다
+        // CNY·USD가 섞여 epsCurrency가 25종목 모두 "CNY,USD". 추정치가 0에 더 가까우면 서프라이즈율 자릿수에는 상한이 없습니다(패킷
+        // 추정치는 0으로 찍힘 — 실제로는 보지 못한 모양). 저장본은 다섯 분기(가장 오래된 것은 4분기 상한 밖).
+        earnings.clear();
+        for (int i = 0; i < 400; i++) {
+            for (int q = 0; q < 5; q++) {
+                LocalDate reported = LocalDate.of(2026, 10, 22).minusMonths(3L * q);
+                eps(String.format("T%03d", i), reported + "T16:05:00-04:00", reported.minusDays(22).toString(),
+                        -9999.9999, -0.000051, -19_607_842_841.18, q % 2 == 0 ? "CNY" : "USD");
+            }
         }
 
         store.books.put(PaperBooks.CLAUDE, new Book(PaperBooks.CLAUDE, PaperBooks.KIND_CLAUDE, "Claude 재량 책", 100_000,
