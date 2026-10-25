@@ -85,6 +85,7 @@ cd collector && TEST_DATABASE_URL=postgresql://macro:macro@localhost:5433/macrod
 | `useApi.test.ts` | 자동 갱신 한 번 실패로 화면이 비는 것, 수동 새로고침이 세션 확인까지 다시 돌려 화면 상태가 초기화되는 것, 늦게 온 이전 응답이 화면을 되돌리는 것 |
 | `ArchitectureRulesTest` | 계산 패키지가 스프링·JSON을 알게 되는 것, 컨트롤러가 저장소·수집기를 직접 부르는 것, 패키지 사이 순환(기반 패키지 포함, [ADR 0001](adr/0001-feature-modules-and-dependency-rules.md)) |
 | `test_db_scripts.py` | 백업·복원이 실패를 성공으로 알리는 것, 복원이 반만 되는 것([ADR 0003](adr/0003-backup-and-restore.md)) |
+| `test_aws_scripts.py` | AWS 서버 배포가 한꺼번에 빌드하거나 실패를 성공으로 알리는 것, 서버 `.env`에 로컬 포트가 섞이는 것, 지난 백업을 다시 올리는 것, 터널이 꺼진 서버에 끝없이 다시 붙는 것([ADR 0019](adr/0019-aws-personal-deployment.md)) |
 | `endpoints.test.ts` | 화면이 만든 API 주소가 깨지거나(인코딩) 문서에 없는 경로를 부르는 것 |
 | `chartData.test.ts`·`SpreadSection.test.tsx` | 모르는 값을 0으로 채워 막대·변화량을 만드는 것 |
 
@@ -275,3 +276,133 @@ git config credential.https://github.com.username <아이디>
 | `LocalDate.now()` 사용 | KST 00~09시에 날짜가 하루 어긋남 | `Kst.today()`를 쓰세요 |
 | 화면에서 직접 외부 API 호출 | 오프라인에서 깨지고 출처 추적 불가 | 백엔드를 거치세요 |
 | 값 배열과 날짜 배열을 따로 필터링 | 인덱스가 밀려 조용히 틀린 수익률 | `SectorSeriesAlignmentTest` |
+
+---
+
+## 7. AWS 개인용 서버
+
+운영본(🧪 모의 매매가 24시간 도는 곳)은 AWS 서울의 EC2 `my-macro-app` 한 대입니다. 구성과 이유는
+[ADR 0019](adr/0019-aws-personal-deployment.md), 그림은 [ARCHITECTURE §9](ARCHITECTURE.md#9-배포-aws-개인용-서버)에 있습니다.
+서버에는 인바운드 포트가 없어 화면도 셸도 SSM으로만 엽니다. 아래 명령의 `<AWS_INSTANCE_ID>`·`<버킷>`은 PC `.env`의
+`AWS_INSTANCE_ID`·서버 `.env`의 `AWS_BACKUP_BUCKET` 값입니다.
+
+### 서버 만들기 (처음 한 번)
+
+자원은 ADR 0019 결정 1~5·13 그대로입니다(서울 리전, 태그 `Project=my-macro`). v3 데모 스택(portfolio-*)은 건드리지 않습니다.
+
+1. IAM 역할·인스턴스 프로필 `my-macro-ec2`: `AmazonSSMManagedInstanceCore` + 인라인 정책 — 백업 버킷에 `s3:ListBucket`(버킷),
+   `s3:GetObject`·`s3:PutObject`(`<버킷>/*`), `s3:DeleteObject`(`<버킷>/bootstrap/*`만 — 서버가 뚫려도 `db/` 백업을 지우지는 못하게. 같은 키로 덮어쓰는 것은 막지 못함, ADR 0019 남은 위험).
+2. S3 `my-macro-backups-<임의 8자>`: 퍼블릭 액세스 차단 넷 모두, 기본 암호화 SSE-S3, 수명주기 60일 만료. 버전 관리는 켜지 않습니다
+   (켜면 지운 `bootstrap/.env`가 이전 버전으로 남음).
+3. 보안 그룹 `my-macro-ec2`: 인바운드 규칙 없음, 아웃바운드 전체. 예산 `my-macro-monthly-45usd`(COST, 80%·100% 알림).
+4. EC2 `my-macro-app`: SSM 공개 파라미터의 최신 Ubuntu 24.04 arm64 AMI, t4g.medium, ap-northeast-2a 기본 서브넷(공인 IPv4 자동 할당),
+   키페어 없음, 루트 gp3 30 GB 암호화, 메타데이터 `HttpTokens=required`·`HttpPutResponseHopLimit=1`(컨테이너가 인스턴스 역할의 자격 증명을
+   꺼내지 못하게 — 호스트의 aws CLI는 그대로 됨), user-data는 `scripts/aws/bootstrap.sh`. 만든 뒤 인스턴스 ID를 PC `.env`의 `AWS_INSTANCE_ID`에 적습니다.
+5. 세션 설정(`SSM-SessionManagerRunShell`)의 유휴 제한을 60분(최대값)으로. 서버 셸(아래)에서 `tail /var/log/cloud-init-output.log`로
+   bootstrap이 끝났는지(`== 끝: Docker … · 스왑 2G`) 봅니다.
+6. 저장소 받기 — 이 저장소 하나만 읽는 **배포 키**(쓰기 권한 없음)를 씁니다. PC의 GitHub 토큰은 서버에 두지 않고, 원격 주소에 토큰을 넣지 않습니다.
+
+   ```bash
+   # 서버(ubuntu): 키를 만들고 GitHub의 호스트 키를 받아 둡니다(받지 않으면 첫 clone이 묻고 멈춤)
+   ssh-keygen -t ed25519 -N '' -C my-macro-app -f ~/.ssh/id_ed25519 && cat ~/.ssh/id_ed25519.pub
+   ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts && ssh-keygen -lf ~/.ssh/known_hosts
+   # PC: 위 지문이 GitHub가 공개한 값과 같은지 보고, 공개키(위 cat 출력)를 읽기 전용 배포 키로 등록합니다
+   gh api meta --jq .ssh_key_fingerprints.SHA256_ED25519
+   gh repo deploy-key add <공개키 파일> --repo Jinyoung-Kang/My_macro_dashboard_v1 --title my-macro-app
+   # 서버(ubuntu): 폴더 이름 그대로 — compose 프로젝트·DB 볼륨 이름이 폴더 이름을 따릅니다
+   git clone git@github.com:Jinyoung-Kang/My_macro_dashboard_v1.git ~/My_macro_dashboard_v1
+   ```
+
+   `gh`로 등록한 배포 키는 그때의 `gh` 인증 토큰에 묶여, 그 토큰을 끊으면 함께 지워집니다 — 서버의 `git fetch`가 `Permission denied`면 다시 등록합니다.
+7. 아래 '서버 .env 전달' → '배포' → '화면 열기'로 확인 → '데이터 전환' → '백업(cron)' 순서로 이어 갑니다.
+
+### 화면 열기 (PC)
+
+```bash
+bash scripts/aws/tunnel.sh
+```
+
+- 필요한 것: aws CLI v2 · session-manager-plugin · `aws login`으로 로그인한 세션 · PC `.env`의 `AWS_INSTANCE_ID`.
+- 브라우저 <http://localhost:8201>에서 운영자 계정(`OWNER_EMAIL`)으로 로그인합니다. 비밀번호는 그 계정을 만들 때의 `APP_PASSWORD`입니다 — 로컬 DB를
+  서버로 옮긴 뒤에는 로컬에서 계정을 만들 때의 값(화면에서 바꿨다면 그 값). 메일이 꺼져 있어 재설정 화면은 없습니다.
+- 같은 PC에서 QA 스택(`localhost:13001`, 로그인 모드)도 쓰면 세션 쿠키 이름이 같아 서로 로그아웃시킵니다 — 그때는 <http://127.0.0.1:8201>로 엽니다.
+- 세션이 끊기면(유휴 제한 60분·네트워크) 3초 뒤 다시 잇습니다. 5번 연달아 곧바로 끊기면(서버가 꺼짐·SSM 에이전트 끊김) 멈추고,
+  로그인이 만료되면 `aws login`을 하라고 알리고 멈춥니다.
+- 로그인해도 다시 로그인 화면이 나오면(브라우저가 `http://localhost`의 `Secure` 쿠키를 받지 않음 — Safari가 그렇고 Chrome·Firefox는 받음)
+  서버 `.env`에 `COOKIE_SECURE=false`를 적고 `docker compose up -d backend`(서버 셸) 뒤 ADR 0019 결정 10에 기록합니다. 터널 안은 암호화돼 있습니다.
+
+### 서버 셸 (SSM)
+
+```bash
+aws ssm start-session --region ap-northeast-2 --target <AWS_INSTANCE_ID>   # PC에서
+sudo -iu ubuntu                    # SSM 셸은 ssm-user로 열립니다 — 저장소·docker는 ubuntu 사용자
+cd ~/My_macro_dashboard_v1
+docker compose ps                  # 서버 .env의 COMPOSE_FILE 덕분에 덧붙임(caddy 포함)까지 봅니다
+make logs S=backend                # make status · make db · make backup도 그대로
+```
+
+### 배포
+
+```bash
+bash ~/My_macro_dashboard_v1/scripts/aws/deploy.sh
+```
+
+- 서버에서는 **`make up`을 쓰지 않습니다** — 이미지를 한꺼번에 빌드해 4 GiB에서 메모리가 모자랄 수 있습니다. `deploy.sh`가 main을
+  fast-forward로 받고, backend → frontend → collector를 하나씩 빌드한 뒤 기동하고(건강해질 때까지 최대 5분), 스키마를 적용합니다(QA-016).
+  서버에서 고친 파일이 있거나, 서버 `.env`에 적지 않는 이름이 있거나(`COOKIE_SECURE`·`PAPER_ENABLED`는 알리기만), 어느 단계든 실패하면 멈추고
+  0이 아닌 값으로 끝납니다.
+- 첫 빌드는 15~25분 걸립니다. 빌드 중 메모리 부족(종료 코드 137, `sudo dmesg | grep -i oom`)이 나면 인스턴스를 멈추고 유형을 t4g.large로 바꿔 빌드한 뒤
+  t4g.medium으로 되돌립니다(디스크는 그대로).
+- 코드를 바꾸지 않고 `.env`만 바꿨으면 `docker compose up -d`로 컨테이너만 다시 만들어도 됩니다(화면 빌드 인자는 `.env`와 무관).
+
+### 서버 .env 전달 (처음 한 번, 바꿀 때)
+
+서버 `.env` = 로컬 `.env` − 적지 않는 이름 + 서버 전용 두 줄([.env.aws.example](../.env.aws.example)). 값은 화면·로그 어디에도 찍지 않고
+S3를 한 번만 거칩니다. 전환 뒤 로컬 `.env`의 `PAPER_ENABLED=false`도 거릅니다(서버는 비우면 켜짐).
+
+```bash
+# PC — 걸러 낸 사본을 S3에 한 번 올리고 지웁니다
+tmp="$(mktemp)" && grep -Ev '^[[:space:]]*(DATABASE_PORT|BACKEND_PORT|COLLECTOR_PORT|FRONTEND_PORT|COOKIE_SECURE|LOCAL_NO_LOGIN|FRONTEND_ORIGIN|PUBLIC_URL|AWS_INSTANCE_ID|PAPER_ENABLED)=' .env > "$tmp" \
+  && printf 'COMPOSE_FILE=docker-compose.yml:compose.aws.yml\nAWS_BACKUP_BUCKET=%s\n' "<버킷>" >> "$tmp" \
+  && aws s3 cp --only-show-errors "$tmp" "s3://<버킷>/bootstrap/.env"; rm -f "$tmp"
+# 서버(ubuntu) — 받아서 600으로 두고 S3 객체는 바로 지웁니다(umask는 괄호 안에서만 — 셸에 남으면 git이 0600 파일을 씀)
+( umask 077 && aws s3 cp --only-show-errors "s3://<버킷>/bootstrap/.env" ~/My_macro_dashboard_v1/.env ) \
+  && chmod 600 ~/My_macro_dashboard_v1/.env && aws s3 rm --only-show-errors "s3://<버킷>/bootstrap/.env"
+```
+
+다시 전달하면 서버 `.env`를 통째로 덮어씁니다. 서버에만 적은 줄(`COOKIE_SECURE=false`, 서버 정기 작업을 일부러 끈 `PAPER_ENABLED=false`,
+`COMPUTE_MAX_CONCURRENT` 등)은 다시 덧붙입니다. `deploy.sh`는 `PAPER_ENABLED`가 꺼져 있으면 알립니다.
+
+### 데이터 전환 (로컬 v1 → 서버, 한 번)
+
+모의 매매 정기 작업이 **두 곳에서 동시에 돌면 안 됩니다**(같은 계좌를 두 장부가 따로 결정·체결). 07:30 KST 정기 결정이 끝난 뒤 그날 22:30 KST
+전에 합니다(미국 장 밖 — 장중은 서머타임 22:30~05:00, 11월~3월 23:30~06:00 KST).
+
+1. 로컬: `.env`에 `PAPER_ENABLED=false`를 넣고 `make up` → `curl -s http://localhost:8081/api/paper/status | jq .enabled`가 `false`인지 봅니다.
+   (먼저 끄므로 백업 뒤에 로컬에서 결정·체결이 더 쌓이지 않습니다.)
+2. 로컬: `make backup` → `aws s3 cp --only-show-errors backups/<파일>.sql s3://<버킷>/db/`
+3. 서버: `aws s3 cp --only-show-errors s3://<버킷>/db/<파일>.sql backups/` → `make restore F=backups/<파일>.sql`(교체 전 자동 백업, ADR 0003)
+   → `make migrate`(스키마 적용 한 번 더 — 덤프가 서버 이미지보다 오래된 스키마일 때)
+4. 확인: 터널 화면 `/paper` 개요의 계좌 4개 순자산이 로컬과 같은지, `/api/paper/status`의 `enabled`가 `true`이고 `jobs`에 서버에서 돈
+   5분 리스크 작업(`paper_job_runs`)이 쌓이는지.
+
+되돌릴 때(서버 확인이 안 됨)는 **서버 정기 작업을 먼저 끕니다** — 서버 `.env`에 `PAPER_ENABLED=false`를 적고 `docker compose up -d backend`,
+터널 화면의 `/api/paper/status`에서 `enabled`가 `false`인지 본 뒤에 로컬 `.env`의 `PAPER_ENABLED=false`를 지우고 `make up`. 로컬 DB는 백업 시점
+그대로입니다. 컨테이너만 멈추면(`docker compose stop backend`) 다음 `deploy.sh`가 다시 켜므로 `.env`로 끕니다(`deploy.sh`도 그 줄을 보고 알림).
+다시 전환할 때는 1단계부터 하고, 서버 `.env`의 그 줄은 3단계 복원 뒤에 지우고 `docker compose up -d backend`.
+
+### 백업 (cron)
+
+```bash
+# 서버(ubuntu) — 매일 21:10 UTC(06:10 KST). 서버 시간대는 UTC입니다
+(crontab -l 2>/dev/null | grep -v 'scripts/aws/backup-s3.sh'; echo '10 21 * * * /home/ubuntu/My_macro_dashboard_v1/scripts/aws/backup-s3.sh') | crontab -
+journalctl -t my-macro-backup --since yesterday       # 결과(실패는 err)
+```
+
+S3 백업으로 되돌리기: `aws s3 ls s3://<버킷>/db/` → 받을 파일을 `backups/`로 받은 뒤 `make restore F=backups/<파일>.sql`.
+
+### 날마다·달마다 볼 것
+
+- 예산 `my-macro-monthly-45usd`(80%·100% 알림). 월 약 $37이 정상입니다.
+- CloudWatch `CPUSurplusCreditsCharged`가 0인지 — t4g 무제한 크레딧은 기준선(vCPU당 20%)을 오래 넘기면 요금이 붙습니다.
+- 디스크: `deploy.sh` 끝에 사용률을 찍습니다(30 GB, 오래된 이미지·빌드 캐시는 배포 때 정리).

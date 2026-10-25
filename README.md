@@ -3,7 +3,7 @@
 글로벌 매크로 지표 · 연준 순유동성 · 섹터 로테이션 · CFTC COT · KRX 파생 ·
 SEC 13F · 국내 수급을 **한 화면에서** 보는 개인용 대시보드입니다. 운영자 전용
 🧪 모의 알고리즘 매매(규칙·Claude·SPY·60/40 네 계좌, $100k씩)도 들어 있습니다.
-맥에서 Docker 한 줄로 띄웁니다.
+맥에서 Docker 한 줄로 띄우고, 모의 매매가 24시간 도는 운영본은 AWS의 개인용 서버(EC2 한 대)에 둡니다.
 
 > 이 저장소(`My_macro_dashboard_v1`)는 2026-10-25에 `Local_macro_dashboard_v3`에서 갈라져 나온
 > **Private 저장소이고 공개하지 않습니다**(모의 매매 프롬프트·투자 OS 원문 포함). 모의 매매는 이 저장소에만 있습니다.
@@ -53,8 +53,8 @@ open http://localhost:3001
 ```
 
 로컬 실행은 **로그인 없이 이 맥에서만** 열립니다 — 화면·API는 `127.0.0.1`에만 열리고, 이 맥의 브라우저는 운영자 계정으로
-바로 들어갑니다(휴대폰 등 다른 기기에서는 열리지 않음, [ADR 0016](docs/adr/0016-local-no-login.md)). 잠금 화면(접근 코드)과
-로그인은 웹(AWS) 버전에만 있습니다. 운영자 계정은 처음 기동할 때 계정이 없으면 `.env`의 `OWNER_EMAIL`과 `APP_PASSWORD`로
+바로 들어갑니다(휴대폰 등 다른 기기에서는 열리지 않음, [ADR 0016](docs/adr/0016-local-no-login.md)). 로그인 화면은
+AWS 개인용 서버(터널로 여는 화면, [아래](#aws-개인용-서버))에만 있습니다. 운영자 계정은 처음 기동할 때 계정이 없으면 `.env`의 `OWNER_EMAIL`과 `APP_PASSWORD`로
 만듭니다. `APP_PASSWORD`가 비어 있으면 `make setup`이 무작위 값을 만들어 넣고 한 번 보여 주고, `OWNER_EMAIL`은 직접 넣어야
 합니다(기본값 없음). 이 비밀번호는 로그인 모드(`LOCAL_NO_LOGIN=false`)·QA 스택·이 DB를 복원한 곳에서 씁니다.
 
@@ -219,8 +219,10 @@ make down            # 정지
 │       ├── hooks/           useApi · useUsdKrw · 새로고침 신호
 │       └── lib/             포맷·거래소 달력·타입
 ├── db/migrations/      스키마
+├── deploy/aws/         AWS 개인용 서버의 앞단 설정(Caddyfile)
 ├── docs/               문서
 └── scripts/            setup · update · version · doctor
+    └── aws/             AWS 개인용 서버: bootstrap(첫 기동) · deploy(배포) · backup-s3(cron) · tunnel(PC의 SSM 터널)
 ```
 
 ### Docker 없이 개발하기
@@ -291,7 +293,7 @@ make test-frontend     # 자가검증 + 훅 테스트(vitest) + 린트 + 빌드(
 | `DATA_GO_KR_SERVICE_KEY` | 공공데이터포털 **일반 인증키 하나**로 특일정보·주식시세를 씁니다(서비스별 활용신청 필요). 없으면 시계는 내장 휴일 표(2025~2028)로, 공식 시세·PER·PBR은 비어 있음 |
 | `DART_API_KEY` | 수급 레이더의 재무 체크만 비어 있음 |
 | `LOCAL_NO_LOGIN` | 비우면 `true` — 로컬은 로그인 없이 이 맥에서 운영자로 열림. `false`면 로그인 화면(웹·QA 덧붙임은 늘 `false`로 고정, [ADR 0016](docs/adr/0016-local-no-login.md)) |
-| `COOKIE_SECURE` | HTTPS로만 접속할 때 `true` (http://에서 켜면 로그인이 안 됨). `LOCAL_NO_LOGIN=false`와 함께 — 로그인 없는 로컬과 함께 켜면 백엔드가 기동하지 않음 |
+| `COOKIE_SECURE` | HTTPS로만 접속할 때 `true` (http://에서 켜면 로그인이 안 됨). `LOCAL_NO_LOGIN=false`와 함께 — 로그인 없는 로컬과 함께 켜면 백엔드가 기동하지 않음. AWS 개인용 서버는 덧붙임이 기본 `true`로 둠(터널의 `http://localhost`는 Chrome·Firefox가 받음) — 로컬 값을 서버 `.env`에 옮기지 않음 |
 | `AI_TIMEOUT_SECONDS` | 엔진을 직접 고른 경우의 대기 한도 (기본 240초) |
 | `AI_AUTO_ATTEMPT_SECONDS` / `AI_AUTO_BUDGET_SECONDS` | `⚡ 자동 탐색`의 엔진별·전체 시간 예산 (기본 60초 / 180초) |
 | `COMPUTE_MAX_CONCURRENT` | 캐시에 없는 비싼 계산(스코어카드·기관 위험·13F 조합 등)의 동시 실행 상한. 비우거나 0이면 자동(코어 수의 절반, 최소 1). 넘친 요청은 2초 기다린 뒤 429 |
@@ -445,7 +447,7 @@ bash ~/My_macro_dashboard_v1/scripts/aws/deploy.sh   # main 받기 → 이미지
 | AI | Claude API (Haiku 5.5, 공식 Java SDK) · NVIDIA · Cerebras · Cloudflare | 수집 원본으로 리포트 생성. 엔진이 실패하면 다음 엔진으로 자동 전환. 모의 매매 Claude 계좌는 같은 SDK의 구조화 출력으로 Sonnet 5.5(설정에서 Haiku 5.5) 한 모델만 부름(전환 없음) |
 | Store | PostgreSQL 16 | 수집기와 API가 다른 프로세스라 파일 공유 불가. JSONB로 저장해 SQL로 질의 |
 | Collector | Python 3.11 · FastAPI · pandas · yfinance · pykrx · feedparser(RSS 읽기만) | 금융 데이터 수집·파싱 라이브러리 생태계 |
-| DevOps | Docker Compose · GitHub Actions | 네 프로세스를 한 명령으로, 세 언어 테스트를 매 푸시마다 |
+| DevOps | Docker Compose · GitHub Actions · AWS(EC2 t4g · SSM Session Manager · S3) · Caddy | 네 프로세스를 한 명령으로, 세 언어 테스트를 매 푸시마다. 운영본은 인바운드 포트 없이 SSM 터널로만 여는 EC2 한 대([ADR 0019](docs/adr/0019-aws-personal-deployment.md)) |
 
 **의도적으로 쓰지 않은 것** — Kafka/CDC(하루 수천 건 규모라 브로커가 처리할
 트래픽이 없음), BigQuery/ClickHouse(전체 수십 MB), 네이티브 앱(같은 기능을 두 벌
