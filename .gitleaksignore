@@ -18,3 +18,6 @@ da0148e5c3339c22a50b28fd869f6641ff17559f:collector/tests/test_dart.py:generic-ap
 
 # 91275c5: QA-030 테스트의 지수 선물 항목 키("kospi200_night") — 위 3a976e6과 같은 데이터셋 키 문자열이다.
 91275c58ae81e20d8540ac4dba457874f0da91bf:collector/tests/test_bond_override.py:generic-api-key:153
+
+# 509afc3: 발표·실적 일정 테스트의 가짜 FRED 키(32자, 같은 16자 hex를 두 번 이어 붙인 자리표시) — 오류 메시지에 키가 새지 않는지 보는 표지 값이다.
+509afc3cdacd086a75cae4b0455182a60f32cf1a:collector/tests/test_us_calendar.py:generic-api-key:43
