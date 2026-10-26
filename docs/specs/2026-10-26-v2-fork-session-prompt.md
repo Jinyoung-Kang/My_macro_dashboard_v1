@@ -16,7 +16,9 @@
 먼저 읽을 것(순서대로)
 1. `CLAUDE.md`(아직 v1 기준 — G 항목에서 네가 고친다)
 2. `docs/specs/2026-10-26-v2-program-plan.md` — 전체 순서·사용자 결정 V1~V8·전환 절차
-3. `docs/specs/2026-10-26-v2-step0-fork.md` — 지금 할 일. **A는 끝났다. B부터 I까지 순서대로**
+3. `docs/specs/2026-10-26-v2-step0-fork.md` — 지금 할 일. **A는 clone·origin 설정까지 끝났고 GitHub 저장소 만들기·첫 push가 남았다**(A-1·A-2 결과 줄).
+   첫 일: `gh repo view Jinyoung-Kang/My_macro_dashboard_v2`로 저장소가 있는지 본다. 있으면 `git push -u origin main`, 없으면 사용자에게 알리고
+   허락을 받아 `gh repo create … --private --source=. --remote=origin --push`. 그 뒤 **B부터 I까지 순서대로**
 4. `docs/specs/2026-10-26-v2-ui-design.md`, `docs/specs/2026-10-26-v2-kr-paper-spec.md`, `docs/specs/2026-10-26-v2-oss-adoption.md` — 1·2단계 설계(지금은 읽기만)
 5. `docs/PRINCIPLES.md`, `docs/adr/README.md`, `docs/DEVELOPMENT.md`
 
