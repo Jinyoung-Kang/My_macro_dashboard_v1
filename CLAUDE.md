@@ -13,6 +13,8 @@ PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너
 - API 경로(`RouteInventoryTest`·`endpoints.test.ts`가 이 문서와 대조): [docs/API.md](docs/API.md)
 - 수집 태스크 27개와 소스별 한계: [docs/DATA_SOURCES.md](docs/DATA_SOURCES.md)
 - 지난 리뷰·QA의 결함 목록과 남은 위험: [docs/reviews/](docs/reviews/) · [docs/qa/](docs/qa/) (결함 번호 `QA-###`)
+- **v2 프로그램(2026-10-26)**: 이 저장소를 `My_macro_dashboard_v2`로 갈라내 화면 개편·한국 증시 모의매매를 진행 중 — [docs/specs/2026-10-26-v2-program-plan.md](docs/specs/2026-10-26-v2-program-plan.md).
+  교체 전까지 **이 저장소(v1)가 AWS 운영본**이다. v1에는 운영 유지와 긴급 수정만 넣고, 새 기능은 v2에서 한다. v2 폴더·볼륨(3002/8082/8002/5434)을 여기서 건드리지 않는다.
 
 ## 명령 (전부 `make`, 저장소 최상위에서)
 - 기동·진단: `make up` · `make doctor` · `make status` · `make logs S=backend`

@@ -437,6 +437,7 @@ bash ~/My_macro_dashboard_v1/scripts/aws/deploy.sh   # main 받기 → 이미지
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 기여 절차, 브랜치·Git 문제 해결, 테스트 상세 |
 | [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) | 맥 설치·실행 상세, 포트 변경, launchd 상주 |
 | [CLAUDE.md](CLAUDE.md) | Claude Code가 매 대화 시작 때 읽는 작업 규칙 요약 — 위 문서들의 핵심과 절대 규칙 |
+| [docs/specs/2026-10-26-v2-program-plan.md](docs/specs/2026-10-26-v2-program-plan.md) | **v2 프로그램 계획(2026-10-26)** — 이 저장소를 `My_macro_dashboard_v2`로 갈라내 화면 전면 개편·한국 증시 모의매매를 더하고 AWS의 v1을 교체하는 순서·결정·전환 절차. 교체 전까지 v1은 그대로 운영 |
 
 ---
 
