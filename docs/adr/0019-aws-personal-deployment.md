@@ -175,3 +175,7 @@ v3 데모 덧붙임(`compose.aws.yml`)은 공개 데모용이었습니다 — RD
   (로그인 없는 로컬 v1은 쿠키를 쓰지 않아 상관없음). 둘을 함께 쓸 때는 터널을 `http://127.0.0.1:8201`로 엽니다(허용 출처에 있음).
 - 수집기 상주 메모리가 상한(1g)에 가깝습니다(로컬 실측 937MiB, 기동 43분 뒤). 넘치면 OOM으로 재시작돼 그 회차 수집만 빠집니다 — 서버에서 `docker stats`로 봅니다.
 - t4g.medium은 vCPU가 2개라 비싼 계산 동시 실행 상한이 자동 1입니다(QA-131). 캐시가 빈 첫 화면에서 429가 잦으면 `.env`에 `COMPUTE_MAX_CONCURRENT=2`.
+- **v2로 교체(2026-10-29 23:10~23:17 KST, 사용자 결정 — 4단계를 앞당김)**: 서버의 v1을 백업(paper_books 4·decisions 9·orders 23·notes 17·
+  framework_versions 4·observations 30,472·snapshots 95·timeseries 1,473,734행)한 뒤 내리고, `~/My_macro_dashboard_v2`를 읽기 전용 배포 키로 받아
+  v1 `.env`를 복사해 v2 `deploy.sh` → 백업 복원(스키마 1~16) → 정기 작업 켜기 순서로 올렸습니다. 행 수·순자산·프레임 v3·설정 v6이 백업과 같았고,
+  백업 cron은 v2 경로로 바꿨습니다. v1 폴더·볼륨은 되돌리기용으로 남깁니다. 기록은 v2 ADR 0020.
