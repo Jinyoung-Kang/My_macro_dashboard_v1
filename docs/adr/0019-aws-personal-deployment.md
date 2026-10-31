@@ -179,3 +179,5 @@ v3 데모 덧붙임(`compose.aws.yml`)은 공개 데모용이었습니다 — RD
   framework_versions 4·observations 30,472·snapshots 95·timeseries 1,473,734행)한 뒤 내리고, `~/My_macro_dashboard_v2`를 읽기 전용 배포 키로 받아
   v1 `.env`를 복사해 v2 `deploy.sh` → 백업 복원(스키마 1~16) → 정기 작업 켜기 순서로 올렸습니다. 행 수·순자산·프레임 v3·설정 v6이 백업과 같았고,
   백업 cron은 v2 경로로 바꿨습니다. v1 폴더·볼륨은 되돌리기용으로 남깁니다. 기록은 v2 ADR 0020.
+- **서버 v1 삭제(2026-10-31, 사용자 결정 — '한 주 뒤'를 앞당김)**: 지우기 전에 v1 볼륨을 덤프해 S3 `db/v1-final-20261031.sql`에 두고(전환 백업과 같은 크기 —
+  전환 뒤 바뀐 것 없음, S3에 없던 로컬 덤프 둘은 `db/v1-local/`) 서버 `~/My_macro_dashboard_v1`·볼륨·v1 이미지를 지웠습니다. 서버에는 v2만 남습니다. 기록은 v2 ADR 0020.

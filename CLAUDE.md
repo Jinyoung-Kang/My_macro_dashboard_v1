@@ -15,7 +15,7 @@ PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너
 - 지난 리뷰·QA의 결함 목록과 남은 위험: [docs/reviews/](docs/reviews/) · [docs/qa/](docs/qa/) (결함 번호 `QA-###`)
 - **v2 프로그램(2026-10-26)**: 이 저장소를 `My_macro_dashboard_v2`로 갈라내 화면 개편·한국 증시 모의매매를 진행 중 — [docs/specs/2026-10-26-v2-program-plan.md](docs/specs/2026-10-26-v2-program-plan.md).
   **2026-10-29 23:17 KST부터 AWS 운영본은 v2**다(서버 `~/My_macro_dashboard_v2`, 4단계 교체를 사용자 결정으로 앞당김 — v1 백업을 복원). 이 저장소(v1)는 로컬 3001 스택과
-  되돌리기용으로만 두고 새 작업은 v2에서 한다. 서버의 v1 폴더·볼륨은 되돌리기용으로 남긴다(한 주 뒤 삭제). v2 폴더·볼륨(3002/8082/8002/5434)을 여기서 건드리지 않는다.
+  되돌리기용으로만 두고 새 작업은 v2에서 한다. 서버의 v1 폴더·볼륨은 2026-10-31에 지웠다(지우기 전 마지막 덤프는 S3 `db/v1-final-20261031.sql` — v2 ADR 0020 결과). v2 폴더·볼륨(3002/8082/8002/5434)을 여기서 건드리지 않는다.
 
 ## 명령 (전부 `make`, 저장소 최상위에서)
 - 기동·진단: `make up` · `make doctor` · `make status` · `make logs S=backend`
@@ -24,7 +24,7 @@ PostgreSQL ← 수집기(FastAPI, `collector/`). Docker Compose 네 컨테이너
 - 코드 받기는 `make update`. `git pull`은 쓰지 않는다(다른 브랜치의 작업을 조용히 놓침).
 - AWS 개인용 서버(ADR 0019, [docs/DEVELOPMENT.md §7](docs/DEVELOPMENT.md)): 화면은 PC에서 `bash scripts/aws/tunnel.sh` → http://localhost:8201,
   셸은 SSM(`aws ssm start-session` 뒤 `sudo -iu ubuntu`). 교체 뒤 서버 배포는 v2의 `bash ~/My_macro_dashboard_v2/scripts/aws/deploy.sh`다 —
-  **서버에서 v1의 `deploy.sh`·`make up`을 실행하지 않는다**(v2와 정기 작업이 두 곳에서 돈다). 되돌릴 때만 v2 `make down` 뒤 v1을 올린다(v2 계획서 §5-7).
+  **서버에 v1을 다시 올리지 않는다**(v2와 정기 작업이 두 곳에서 돈다 — 서버 v1 폴더는 2026-10-31에 지움, 되돌리기는 S3 덤프 복원으로만).
   서버는 매일 KST 21:55~08:00(토 ~10:00)만 켜진다(EventBridge Scheduler) — 창 밖에 보려면 `bash scripts/aws/instance.sh start`(다음 정지 일정에 꺼짐), 상태는 `instance.sh status`.
   계정 고유 값(인스턴스 ID·버킷 이름)은 공개 저장소에 적지 않고 로컬 `.env`·메모리에만 둔다.
   서버에 인바운드 규칙·공인 IP 앱 포트·Tailscale을 두지 않는다. v3의 데모 스택(portfolio-*)은 건드리지 않는다.
